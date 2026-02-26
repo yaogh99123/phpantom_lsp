@@ -4299,3 +4299,490 @@ class OrderController {
         methods
     );
 }
+
+// ─── Body-inferred relationships (no @return annotation) ────────────────────
+
+#[tokio::test]
+async fn test_body_inferred_has_many_produces_property() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function posts() { return $this->hasMany(Post::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function getTitle(): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "Body-inferred hasMany should produce a 'posts' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_has_one_produces_property() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function profile() { return $this->hasOne(Profile::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let profile_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Profile extends Model {
+    public function getBio(): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Profile.php", profile_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"profile"),
+        "Body-inferred hasOne should produce a 'profile' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_belongs_to_produces_property() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function author() { return $this->belongsTo(User::class); }
+    public function test() {
+        $post = new Post();
+        $post->
+    }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function getName(): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Post.php", post_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"author"),
+        "Body-inferred belongsTo should produce an 'author' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_morph_to_produces_property() {
+    let comment_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Comment extends Model {
+    public function commentable() { return $this->morphTo(); }
+    public function test() {
+        $c = new Comment();
+        $c->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Comment.php", comment_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Comment.php", comment_php, 7, 13).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"commentable"),
+        "Body-inferred morphTo should produce a 'commentable' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_relationship_chain_resolves() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function profile() { return $this->hasOne(Profile::class); }
+    public function test() {
+        $user = new User();
+        $user->profile->
+    }
+}
+";
+    let profile_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Profile extends Model {
+    public function getBio(): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Profile.php", profile_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 24).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getBio"),
+        "Chaining through body-inferred hasOne property should resolve to related class, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_fqn_class_argument() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function posts() { return $this->hasMany(\\App\\Models\\Post::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function getTitle(): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "Body-inferred hasMany with FQN class argument should produce a 'posts' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_empty_body_still_skipped() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function posts() {}
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        !props.contains(&"posts"),
+        "Empty method body should not produce a virtual property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_with_extra_arguments() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function posts() { return $this->hasMany(Post::class, 'author_id', 'id'); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "Body-inferred hasMany with extra FK arguments should produce a 'posts' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_does_not_override_docblock() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this> */
+    public function posts() { return $this->hasMany(Post::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function getTitle(): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "Docblock @return should still produce a 'posts' property (body inference not needed), got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_relationship_with_chained_builder() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function posts() { return $this->hasMany(Post::class)->latest(); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "Body-inferred hasMany with chained ->latest() should produce a 'posts' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_morph_many_produces_property() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function comments() { return $this->morphMany(Comment::class, 'commentable'); }
+    public function test() {
+        $post = new Post();
+        $post->
+    }
+}
+";
+    let comment_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Comment extends Model {}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/Comment.php", comment_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Post.php", post_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"comments"),
+        "Body-inferred morphMany should produce a 'comments' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_belongs_to_many_produces_property() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function roles() { return $this->belongsToMany(Role::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let role_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Role extends Model {}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Role.php", role_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"roles"),
+        "Body-inferred belongsToMany should produce a 'roles' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_this_arrow_shows_relationship_properties() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function posts() { return $this->hasMany(Post::class); }
+    public function test() {
+        $this->
+    }
+}
+";
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 6, 16).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "$this-> should show body-inferred relationship properties, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_body_inferred_non_model_class_no_property() {
+    let service_php = "\
+<?php
+namespace App\\Services;
+class UserService {
+    public function posts() { return $this->hasMany(Post::class); }
+    public function test() {
+        $s = new UserService();
+        $s->
+    }
+}
+";
+    let (backend, dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\Services\\": "src/Services/" } } }"#,
+        &[("src/Services/UserService.php", service_php)],
+    );
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Services/UserService.php",
+        service_php,
+        5,
+        13,
+    )
+    .await;
+    let props = property_names(&items);
+
+    assert!(
+        !props.contains(&"posts"),
+        "Non-model classes should not get virtual relationship properties even if body matches, got: {:?}",
+        props
+    );
+}

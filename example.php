@@ -817,6 +817,9 @@ class SwitchDemo
 // Methods returning Eloquent relationship types (HasMany, HasOne, BelongsTo, etc.)
 // automatically produce virtual properties. Accessing $author->posts resolves to a
 // Collection<BlogPost>, while $author->profile resolves directly to AuthorProfile.
+// Relationships work with explicit @return annotations (Larastan-style) and also
+// without them: when no annotation is present, the method body is scanned for
+// patterns like $this->hasMany(Post::class) to infer the relationship type.
 //
 // Methods starting with "scope" (e.g. scopeActive) produce virtual methods with
 // the prefix stripped and first letter lowercased (e.g. active). The $query
@@ -885,6 +888,45 @@ class BlogAuthor extends \Illuminate\Database\Eloquent\Model
         BlogAuthor::whereIn('id', [1, 2])->groupBy('genre')->get();
         // Compleation for relations after a query
         BlogAuthor::where('active', 1)->first()->profile->getBio();
+    }
+}
+
+
+// ── Body-Inferred Relationships (no @return annotation) ─────────────────────
+// Many Laravel projects don't use Larastan-style @return annotations on their
+// relationship methods. PHPantom scans the method body for patterns like
+// $this->hasMany(Post::class) and infers the relationship type automatically.
+
+class BodyInferredRelationshipDemo extends \Illuminate\Database\Eloquent\Model
+{
+    // No @return annotation — inferred from $this->hasMany(BlogPost::class)
+    public function posts()
+    {
+        return $this->hasMany(BlogPost::class);
+    }
+
+    // No @return annotation — inferred from $this->hasOne(AuthorProfile::class)
+    public function profile()
+    {
+        return $this->hasOne(AuthorProfile::class);
+    }
+
+    // No @return annotation — inferred from $this->morphTo()
+    public function commentable()
+    {
+        return $this->morphTo();
+    }
+
+    public function demo(): void
+    {
+        $m = new BodyInferredRelationshipDemo();
+
+        // Body-inferred relationship properties
+        $m->posts;                    // virtual property → Collection<BlogPost>
+        $m->posts->first();           // chains to Collection methods
+        $m->profile;                  // virtual property → AuthorProfile
+        $m->profile->getBio();        // chains to AuthorProfile methods
+        $m->commentable;              // virtual property → Model (morphTo)
     }
 }
 

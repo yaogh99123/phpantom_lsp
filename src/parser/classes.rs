@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use mago_span::HasSpan;
 use mago_syntax::ast::attribute::AttributeList;
-use mago_syntax::ast::class_like::method::MethodBody;
+use mago_syntax::ast::class_like::method::{Method, MethodBody};
 use mago_syntax::ast::class_like::trait_use::{
     TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification,
 };
@@ -28,6 +28,7 @@ use mago_syntax::ast::*;
 use crate::Backend;
 use crate::docblock;
 use crate::types::*;
+use crate::virtual_members::laravel::infer_relationship_from_body;
 
 use super::DocblockCtx;
 
@@ -152,6 +153,35 @@ fn extract_custom_collection(
     }
 
     None
+}
+
+/// Try to infer an Eloquent relationship return type from a method's body.
+///
+/// When a method has no `@return` annotation and no native return type
+/// hint, this function extracts the method body text and scans it for
+/// patterns like `$this->hasMany(Post::class)`.  If found, it returns
+/// a synthesized return type string (e.g. `HasMany<Post>`).
+///
+/// This enables relationship property synthesis on models that don't
+/// use Larastan-style `@return` annotations.
+fn infer_relationship_from_method<'a>(
+    method: &Method<'a>,
+    doc_ctx: Option<&DocblockCtx<'a>>,
+) -> Option<String> {
+    let ctx = doc_ctx?;
+    let MethodBody::Concrete(block) = &method.body else {
+        return None;
+    };
+    let start = block.left_brace.start.offset as usize;
+    let end = block.right_brace.end.offset as usize;
+    if end > ctx.content.len() || start >= end {
+        return None;
+    }
+    // Adjust to valid UTF-8 char boundaries.
+    let start = ctx.content.floor_char_boundary(start);
+    let end = ctx.content.floor_char_boundary(end);
+    let body_text = &ctx.content[start..end];
+    infer_relationship_from_body(body_text)
 }
 
 impl Backend {
@@ -1057,6 +1087,17 @@ impl Backend {
                             }
                         }
                     }
+
+                    // When no return type was resolved from docblocks or
+                    // native type hints, try to infer an Eloquent
+                    // relationship type from the method body text.
+                    // For example, `$this->hasMany(Post::class)` produces
+                    // a return type of `HasMany<Post>`.
+                    let return_type = if return_type.is_none() {
+                        infer_relationship_from_method(method, doc_ctx)
+                    } else {
+                        return_type
+                    };
 
                     methods.push(MethodInfo {
                         name,

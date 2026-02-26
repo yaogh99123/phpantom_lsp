@@ -46,9 +46,26 @@ use super::{VirtualMemberProvider, VirtualMembers};
 /// The fully-qualified name of the Eloquent base model.
 const ELOQUENT_MODEL_FQN: &str = "Illuminate\\Database\\Eloquent\\Model";
 
+/// Maps Eloquent relationship builder method names to their corresponding
+/// relationship class short names.  Used by [`infer_relationship_from_body`]
+/// to synthesize a return type from the method body when no `@return`
+/// annotation is present.
+const RELATIONSHIP_METHOD_MAP: &[(&str, &str)] = &[
+    ("hasOne", "HasOne"),
+    ("hasMany", "HasMany"),
+    ("belongsTo", "BelongsTo"),
+    ("belongsToMany", "BelongsToMany"),
+    ("morphOne", "MorphOne"),
+    ("morphMany", "MorphMany"),
+    ("morphTo", "MorphTo"),
+    ("morphToMany", "MorphToMany"),
+    ("hasManyThrough", "HasManyThrough"),
+    ("hasOneThrough", "HasOneThrough"),
+];
+
 /// Known Eloquent relationship class short names that yield a single
 /// (nullable) related model instance when accessed as a property.
-const SINGULAR_RELATIONSHIPS: &[&str] = &["HasOne", "MorphOne", "BelongsTo"];
+const SINGULAR_RELATIONSHIPS: &[&str] = &["HasOne", "MorphOne", "BelongsTo", "HasOneThrough"];
 
 /// Known Eloquent relationship class short names that yield a
 /// `Collection<TRelated>` when accessed as a property.
@@ -308,6 +325,84 @@ fn camel_to_snake(s: &str) -> String {
         }
     }
     result
+}
+
+/// Infer a relationship return type from a method's body text.
+///
+/// When a relationship method has no `@return` annotation, this function
+/// scans the body for patterns like `$this->hasMany(Post::class)` and
+/// synthesizes a return type string (e.g. `HasMany<Post>`).
+///
+/// Supports all standard Eloquent relationship builder methods:
+/// `hasOne`, `hasMany`, `belongsTo`, `belongsToMany`, `morphOne`,
+/// `morphMany`, `morphTo`, `morphToMany`, `hasManyThrough`, and
+/// `hasOneThrough`.
+///
+/// Returns `None` if no recognisable pattern is found.
+pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
+    for &(method_name, class_name) in RELATIONSHIP_METHOD_MAP {
+        // Look for `$this->methodName(` in the body text.
+        let needle = format!("$this->{method_name}(");
+        let Some(call_pos) = body_text.find(&needle) else {
+            continue;
+        };
+
+        // `morphTo` never carries a related-model generic parameter;
+        // the concrete type is determined at runtime.
+        if method_name == "morphTo" {
+            return Some(class_name.to_string());
+        }
+
+        // Extract the first argument from the call.  We look for
+        // `SomeName::class` as the first positional argument.
+        let args_start = call_pos + needle.len();
+        let after_paren = &body_text[args_start..];
+
+        if let Some(class_arg) = extract_class_argument(after_paren) {
+            return Some(format!("{class_name}<{class_arg}>"));
+        }
+
+        // No `::class` argument found — return the bare relationship
+        // name without generics.  The provider will handle it the same
+        // way it handles annotated relationships without generics.
+        return Some(class_name.to_string());
+    }
+
+    None
+}
+
+/// Extract a class name from the first `X::class` argument in a
+/// parenthesised argument list.
+///
+/// Given the text after the opening `(`, e.g. `Post::class, 'user_id')`,
+/// returns `Some("Post")`.  Also handles fully-qualified names like
+/// `\App\Models\Post::class` and `self::class` / `static::class`.
+///
+/// Returns `None` if no `::class` token is found before the closing `)`.
+fn extract_class_argument(after_paren: &str) -> Option<String> {
+    // Find the closing paren to bound our search.
+    let end = after_paren.find(')')?;
+    let args_region = &after_paren[..end];
+
+    // Isolate the first argument (before the first comma) and look for
+    // `X::class` within it.
+    let first_arg = args_region.split(',').next().unwrap_or(args_region);
+    let class_pos = first_arg.find("::class")?;
+    let before = first_arg[..class_pos].trim();
+
+    if before.is_empty() {
+        return None;
+    }
+
+    // Strip leading backslash for FQNs and extract the short name.
+    let name = before.strip_prefix('\\').unwrap_or(before);
+    let short_name = name.rsplit('\\').next().unwrap_or(name);
+
+    if short_name.is_empty() {
+        return None;
+    }
+
+    Some(short_name.to_string())
 }
 
 /// Determine whether a method is an Eloquent scope.
@@ -2530,6 +2625,313 @@ mod tests {
         assert!(
             prop.unwrap().is_deprecated,
             "Deprecated flag should be preserved"
+        );
+    }
+
+    // ── infer_relationship_from_body ─────────────────────────────────────
+
+    #[test]
+    fn infer_has_many_from_body() {
+        let body = "{ return $this->hasMany(Post::class); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasMany<Post>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_has_one_from_body() {
+        let body = "{ return $this->hasOne(Profile::class); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasOne<Profile>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_belongs_to_from_body() {
+        let body = "{ return $this->belongsTo(User::class); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("BelongsTo<User>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_belongs_to_many_from_body() {
+        let body = "{ return $this->belongsToMany(Role::class); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("BelongsToMany<Role>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_morph_one_from_body() {
+        let body = "{ return $this->morphOne(Image::class, 'imageable'); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("MorphOne<Image>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_morph_many_from_body() {
+        let body = "{ return $this->morphMany(Comment::class, 'commentable'); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("MorphMany<Comment>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_morph_to_from_body() {
+        // morphTo never has a related model class argument.
+        let body = "{ return $this->morphTo(); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("MorphTo".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_morph_to_many_from_body() {
+        let body = "{ return $this->morphToMany(Tag::class, 'taggable'); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("MorphToMany<Tag>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_has_many_through_from_body() {
+        let body = "{ return $this->hasManyThrough(Post::class, Country::class); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasManyThrough<Post>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_has_one_through_from_body() {
+        let body = "{ return $this->hasOneThrough(Owner::class, Car::class); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasOneThrough<Owner>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_relationship_fqn_class_argument() {
+        let body = r"{ return $this->hasMany(\App\Models\Post::class); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasMany<Post>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_relationship_with_extra_arguments() {
+        let body = "{ return $this->hasMany(Post::class, 'user_id', 'id'); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasMany<Post>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_relationship_with_whitespace() {
+        let body = "{
+            return $this->hasMany(  Post::class  );
+        }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasMany<Post>".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_no_relationship_in_empty_body() {
+        let body = "{ }";
+        assert_eq!(infer_relationship_from_body(body), None);
+    }
+
+    #[test]
+    fn infer_no_relationship_for_non_relationship_call() {
+        let body = "{ return $this->query(); }";
+        assert_eq!(infer_relationship_from_body(body), None);
+    }
+
+    #[test]
+    fn infer_relationship_without_class_argument() {
+        // Some projects use string-based relationship definitions.
+        let body = "{ return $this->hasMany('App\\Models\\Post'); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasMany".to_string()),
+            "Without ::class argument, returns bare relationship name"
+        );
+    }
+
+    #[test]
+    fn infer_morph_to_with_arguments() {
+        // morphTo can optionally take a name and type column.
+        let body =
+            "{ return $this->morphTo('commentable', 'commentable_type', 'commentable_id'); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("MorphTo".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_relationship_multiline_body() {
+        let body = "{
+            return $this
+                ->hasMany(Post::class, 'author_id');
+        }";
+        // The needle `$this->hasMany(` won't match across a line break,
+        // so this returns None.  This is an acceptable limitation
+        // documented in the todo.
+        assert_eq!(infer_relationship_from_body(body), None);
+    }
+
+    #[test]
+    fn infer_relationship_same_line_chain() {
+        let body = "{ return $this->hasMany(Post::class)->latest(); }";
+        assert_eq!(
+            infer_relationship_from_body(body),
+            Some("HasMany<Post>".to_string())
+        );
+    }
+
+    // ── extract_class_argument ──────────────────────────────────────────
+
+    #[test]
+    fn extract_simple_class_arg() {
+        assert_eq!(
+            extract_class_argument("Post::class)"),
+            Some("Post".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_fqn_class_arg() {
+        assert_eq!(
+            extract_class_argument("\\App\\Models\\Post::class)"),
+            Some("Post".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_class_arg_with_extra_args() {
+        assert_eq!(
+            extract_class_argument("Post::class, 'user_id', 'id')"),
+            Some("Post".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_class_arg_with_whitespace() {
+        assert_eq!(
+            extract_class_argument("  Post::class  )"),
+            Some("Post".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_class_arg_no_class_token() {
+        assert_eq!(extract_class_argument("'App\\Models\\Post')"), None);
+    }
+
+    #[test]
+    fn extract_class_arg_no_closing_paren() {
+        assert_eq!(extract_class_argument("Post::class"), None);
+    }
+
+    #[test]
+    fn extract_class_arg_empty() {
+        assert_eq!(extract_class_argument(")"), None);
+    }
+
+    #[test]
+    fn extract_class_arg_class_in_second_arg_only() {
+        // `::class` appears only after the first comma — should return None.
+        assert_eq!(extract_class_argument("'taggable', Tag::class)"), None);
+    }
+
+    // ── provider integration with body-inferred relationships ───────────
+
+    #[test]
+    fn synthesizes_property_from_body_inferred_has_many() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+
+        // Method with no @return annotation — return_type is set by
+        // the parser from body inference.
+        user.methods.push(MethodInfo {
+            name: "posts".to_string(),
+            parameters: Vec::new(),
+            return_type: Some("HasMany<Post>".to_string()),
+            is_static: false,
+            visibility: Visibility::Public,
+            conditional_return: None,
+            is_deprecated: false,
+            template_params: Vec::new(),
+            template_bindings: Vec::new(),
+        });
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&user, &loader);
+        let prop = result.properties.iter().find(|p| p.name == "posts");
+        assert!(
+            prop.is_some(),
+            "Body-inferred HasMany<Post> should produce a 'posts' property"
+        );
+    }
+
+    #[test]
+    fn synthesizes_property_from_body_inferred_morph_to() {
+        let provider = LaravelModelProvider;
+        let mut comment = make_class("App\\Models\\Comment");
+        comment.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+
+        // morphTo inferred from body — bare name, no generics.
+        comment.methods.push(MethodInfo {
+            name: "commentable".to_string(),
+            parameters: Vec::new(),
+            return_type: Some("MorphTo".to_string()),
+            is_static: false,
+            visibility: Visibility::Public,
+            conditional_return: None,
+            is_deprecated: false,
+            template_params: Vec::new(),
+            template_bindings: Vec::new(),
+        });
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&comment, &loader);
+        let prop = result.properties.iter().find(|p| p.name == "commentable");
+        assert!(
+            prop.is_some(),
+            "Body-inferred MorphTo should produce a 'commentable' property"
         );
     }
 }

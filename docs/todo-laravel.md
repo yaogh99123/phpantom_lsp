@@ -1,6 +1,6 @@
 # PHPantom — Laravel Support: Remaining Work
 
-> Last updated: 2025-07-18
+> Last updated: 2025-07-19
 
 This document tracks bugs, known gaps, and missing features in
 PHPantom's Laravel Eloquent support. For the general architecture and
@@ -14,13 +14,16 @@ The `LaravelModelProvider` in `src/virtual_members/laravel.rs` is the
 highest-priority virtual member provider. It synthesizes virtual members
 for classes that extend `Illuminate\Database\Eloquent\Model`:
 
-1. **Relationship properties.** All 9 relationship types (`HasOne`,
+1. **Relationship properties.** All 10 relationship types (`HasOne`,
    `HasMany`, `BelongsTo`, `BelongsToMany`, `MorphOne`, `MorphMany`,
-   `MorphTo`, `MorphToMany`, `HasManyThrough`). Requires Larastan-style
-   `@return HasMany<Post, $this>` annotations. Chaining through
-   relationship properties resolves end-to-end. Collection-type
-   relationship properties use the *related* model's custom collection
-   (not the owning model's).
+   `MorphTo`, `MorphToMany`, `HasManyThrough`, `HasOneThrough`).
+   Supports Larastan-style `@return HasMany<Post, $this>` annotations
+   and body-inferred relationships: when no `@return` annotation is
+   present, the method body is scanned for patterns like
+   `$this->hasMany(Post::class)` to infer the relationship type
+   automatically. Chaining through relationship properties resolves
+   end-to-end. Collection-type relationship properties use the
+   *related* model's custom collection (not the owning model's).
 
 2. **Scope methods.** `scopeActive(Builder $query)` produces `active()`
    as both static and instance virtual methods. The `$query` parameter is
@@ -52,7 +55,7 @@ for classes that extend `Illuminate\Database\Eloquent\Model`:
    `avatarUrl()` → `avatar_url`). Legacy accessors use the method's
    return type; modern accessors use `mixed`.
 
-Test coverage: 126 unit tests in `laravel.rs`, 61 integration tests in
+Test coverage: 154 unit tests in `laravel.rs`, 75 integration tests in
 `completion_laravel.rs`, 15 integration tests in `definition_laravel.rs`.
 
 ---
@@ -97,21 +100,7 @@ to PHP types. Common mappings: `datetime` → `Carbon\Carbon`,
 `Illuminate\Support\Collection`, custom cast classes → inspect
 their `get()` return type.
 
-### 3. Relations without Larastan annotations
-
-A method like `public function posts() { return $this->hasMany(Post::class); }`
-without a `@return` type hint currently produces nothing. The LSP
-requires explicit `@return HasMany<Post, $this>` annotations. Many
-projects don't use these unless they run Larastan.
-
-**Fallback heuristic:** When a method has no `@return` annotation but
-its body text matches `$this->hasMany(X::class)` (or other relationship
-method patterns), extract the class name from the first `::class`
-argument and infer the relationship type from the method name
-(`hasMany` → `HasMany`, etc.). This is best-effort and will not work
-for dynamic or conditional relationship definitions.
-
-### 4. `newCollection()` override detection
+### 3. `newCollection()` override detection
 
 Laravel supports overriding `newCollection()` on a model to return a
 custom collection class. Currently only `#[CollectedBy]` and
@@ -121,7 +110,7 @@ custom collection class. Currently only `#[CollectedBy]` and
 check if the class has a method named `newCollection` and inspect its
 return type annotation for the custom collection class name.
 
-### 5. Factory support
+### 4. Factory support
 
 `User::factory()->create()` is ubiquitous in Laravel test code. The
 `factory()` static method returns a `HasFactory` trait method that
@@ -135,14 +124,14 @@ produces a factory instance. Resolving the chain requires:
 This is medium complexity because it involves a naming convention
 (model name → factory name) and cross-file resolution.
 
-### 6. Closure parameter inference in collection pipelines
+### 5. Closure parameter inference in collection pipelines
 
 `$users->map(fn($u) => $u->...)` does not infer `$u` as the
 collection's element type. This is a general generics/callable
 inference problem, not Laravel-specific, but Laravel collection
 pipelines are the most common place users encounter it.
 
-### 7. Query scope chaining on Builder instances
+### 6. Query scope chaining on Builder instances
 
 Inside a scope method body, `$query->verified()` (calling another
 scope) does not offer scope method completions. Scope methods are
