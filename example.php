@@ -1779,6 +1779,24 @@ class ClosureParamInferenceDemo
         // Explicit type hint takes precedence over inference.
         $this->users->map(fn(Order $o) => $o->customer);
     }
+
+    public function chunkInference(): void
+    {
+        // $orders is inferred as Collection from chunk's
+        // callable(Collection<int, TModel>, int) signature.
+        \App\Models\BlogAuthor::where('active', true)->chunk(100, function ($orders) {
+            $orders->count();             // resolves to Eloquent Collection
+        });
+    }
+
+    public function whereHasInference(): void
+    {
+        // $q is inferred as Builder from whereHas's
+        // Closure(Builder<TModel>): mixed signature.
+        \App\Models\BlogAuthor::whereHas('posts', function ($q) {
+            $q->where('published', true); // resolves to Builder
+        });
+    }
 }
 
 
@@ -2878,6 +2896,20 @@ namespace Illuminate\Database\Eloquent {
 
         /** @return \Illuminate\Database\Eloquent\Collection<int, TModel> */
         public function get($columns = ['*']) { return new Collection(); }
+
+        /**
+         * @param  string  $relation
+         * @param  (\Closure(\Illuminate\Database\Eloquent\Builder<TModel>): mixed)|null  $callback
+         * @return static
+         */
+        public function whereHas(string $relation, ?\Closure $callback = null): static { return $this; }
+
+        /**
+         * @param  array<array-key, array|(\Closure(\Illuminate\Database\Eloquent\Relations\Relation): mixed)|string>|string  $relations
+         * @param  (\Closure(\Illuminate\Database\Eloquent\Relations\Relation): mixed)|string|null  $callback
+         * @return static
+         */
+        public function with($relations, $callback = null): static { return $this; }
     }
 
     /**
@@ -2892,6 +2924,17 @@ namespace Illuminate\Database\Eloquent {
 }
 
 namespace Illuminate\Database\Eloquent\Relations {
+    /**
+     * @template TRelated of \Illuminate\Database\Eloquent\Model
+     * @template TDeclaringModel of \Illuminate\Database\Eloquent\Model
+     * @template TResult
+     */
+    class Relation {
+        /** @return static */
+        public function where(string $column, $operator = null, $value = null): static { return $this; }
+        /** @return static */
+        public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
+    }
     class HasMany {}
     class HasOne {}
     class BelongsTo {}
@@ -2924,6 +2967,12 @@ namespace Illuminate\Database\Concerns {
     trait BuildsQueries {
         /** @return TValue|null */
         public function first($columns = ['*']) { return null; }
+
+        /**
+         * @param  callable(\Illuminate\Support\Collection<int, TValue>, int): mixed  $callback
+         * @return bool
+         */
+        public function chunk(int $count, callable $callback): bool { return true; }
     }
 }
 
@@ -2949,6 +2998,27 @@ namespace Illuminate\Database\Query {
          * @return \Illuminate\Support\Collection<int, \stdClass>
          */
         public function get($columns = ['*']) {}
+    }
+}
+
+namespace Illuminate\Support {
+
+    /**
+     * @template TKey of array-key
+     * @template TValue
+     */
+    class Collection {
+        /** @return int */
+        public function count(): int { return 0; }
+        /** @return TValue|null */
+        public function first(): mixed { return null; }
+        /** @return array<TKey, TValue> */
+        public function all(): array { return []; }
+        /**
+         * @param callable(TValue, TKey): mixed $callback
+         * @return static
+         */
+        public function each(callable $callback): static { return $this; }
     }
 }
 

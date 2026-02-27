@@ -13,6 +13,7 @@ const COMPOSER_JSON: &str = r#"{
             "App\\Collections\\": "src/Collections/",
             "App\\Concerns\\": "src/Concerns/",
             "Database\\Factories\\": "database/factories/",
+            "Illuminate\\Support\\": "vendor/illuminate/Support/",
             "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
             "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
             "Illuminate\\Database\\Eloquent\\Factories\\": "vendor/illuminate/Eloquent/Factories/",
@@ -136,6 +137,18 @@ class Builder {
     public function exists(): bool { return false; }
     /** @return string */
     public function toSql(): string { return ''; }
+    /**
+     * @param  string  $relation
+     * @param  (\\Closure(\\Illuminate\\Database\\Eloquent\\Builder<TModel>): mixed)|null  $callback
+     * @return static
+     */
+    public function whereHas(string $relation, ?\\Closure $callback = null): static { return $this; }
+    /**
+     * @param  array<array-key, array|(\\Closure(\\Illuminate\\Database\\Eloquent\\Relations\\Relation): mixed)|string>|string  $relations
+     * @param  (\\Closure(\\Illuminate\\Database\\Eloquent\\Relations\\Relation): mixed)|string|null  $callback
+     * @return static
+     */
+    public function with(mixed $relations, mixed $callback = null): static { return $this; }
 }
 ";
 
@@ -167,6 +180,55 @@ trait BuildsQueries {
     public function firstOrFail(): mixed { return null; }
     /** @return TValue|null */
     public function sole(): mixed { return null; }
+    /**
+     * @param  callable(\\Illuminate\\Support\\Collection<int, TValue>, int): mixed  $callback
+     * @return bool
+     */
+    public function chunk(int $count, callable $callback): bool { return true; }
+}
+";
+
+const SUPPORT_COLLECTION_PHP: &str = "\
+<?php
+namespace Illuminate\\Support;
+/**
+ * @template TKey of array-key
+ * @template TValue
+ */
+class Collection {
+    /** @return int */
+    public function count(): int { return 0; }
+    /** @return TValue|null */
+    public function first(): mixed { return null; }
+    /** @return array<TKey, TValue> */
+    public function all(): array { return []; }
+    /**
+     * @param callable(TValue, TKey): mixed $callback
+     * @return static
+     */
+    public function each(callable $callback): static { return $this; }
+    /**
+     * @template TMapValue
+     * @param callable(TValue, TKey): TMapValue $callback
+     * @return static<TKey, TMapValue>
+     */
+    public function map(callable $callback): static { return $this; }
+}
+";
+
+const RELATION_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelated of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TResult
+ */
+class Relation {
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /** @return static */
+    public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
 }
 ";
 
@@ -277,6 +339,14 @@ fn framework_stubs() -> Vec<(&'static str, &'static str)> {
         (
             "vendor/illuminate/Eloquent/Factories/Factory.php",
             FACTORY_PHP,
+        ),
+        (
+            "vendor/illuminate/Support/Collection.php",
+            SUPPORT_COLLECTION_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/Relation.php",
+            RELATION_PHP,
         ),
     ]
 }
@@ -8826,5 +8896,282 @@ class Brand extends Model {
         methods.contains(&"isActive"),
         "Scope isActive() should be available after single-line closure, got: {:?}",
         methods
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Closure parameter inference in Laravel pipelines
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_chunk_closure_param_inferred_via_local_collection() {
+    // Minimal reproduction: a locally defined generic class with a chunk
+    // method whose callable parameter receives Collection<int, TValue>.
+    // This isolates the callable-param-inference machinery from Laravel's
+    // Builder-as-static forwarding and cross-file resolution.
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/chunk_local.php").unwrap();
+
+    let src = "\
+<?php
+class Brand {
+    public string $name;
+    public function getName(): string { return ''; }
+}
+/**
+ * @template TKey of array-key
+ * @template TValue
+ */
+class MyCollection {
+    /** @return int */
+    public function count(): int { return 0; }
+    /** @return TValue|null */
+    public function first(): mixed { return null; }
+}
+/**
+ * @template TModel
+ */
+class MyBuilder {
+    /**
+     * @param callable(MyCollection<int, TModel>, int): mixed $callback
+     * @return bool
+     */
+    public function chunk(int $count, callable $callback): bool { return true; }
+    /** @return static */
+    public function where(string $col, mixed $val = null): static { return $this; }
+}
+class Service {
+    /** @return MyBuilder<Brand> */
+    public function query(): MyBuilder { return new MyBuilder(); }
+    public function run(): void {
+        $builder = $this->query();
+        $builder->chunk(100, function ($orders) {
+            $orders->
+        });
+    }
+}
+";
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: src.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // line 33: "            $orders->"  cursor after ->
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 33,
+                character: 22,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let items = match backend.completion(completion_params).await.unwrap() {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        None => vec![],
+    };
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"count"),
+        "Expected count() from MyCollection<int, Brand>, got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "Expected first() from MyCollection<int, Brand>, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_chunk_closure_param_inferred_as_collection_of_model() {
+    // BuildsQueries::chunk($count, callable(Collection<int, TValue>, int): mixed)
+    // Builder uses: @use BuildsQueries<TModel>
+    // Brand::where()->chunk(100, function ($orders) { $orders-> })
+    //   => $orders should be Collection<int, Brand>
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Brand extends Model {
+    public string $name;
+    public function test() {
+        Brand::where('active', true)->chunk(100, function ($orders) {
+            $orders->
+        });
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // line 7: "            $orders->"  cursor after ->
+    let items = complete_at(&backend, &dir, "src/Models/Brand.php", brand_php, 7, 22).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"count"),
+        "Expected count() from Collection<int, Brand>, got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "Expected first() from Collection<int, Brand>, got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"each"),
+        "Expected each() from Support\\Collection<int, Brand>, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_where_has_closure_param_inferred_as_builder() {
+    // Builder::whereHas(string $relation, Closure(Builder<TModel>): mixed $callback)
+    // Brand::whereHas('orders', function ($q) { $q-> })
+    //   => $q should be Builder<Brand> (has where, orderBy, etc.)
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Brand extends Model {
+    public function scopeIsActive(\\Illuminate\\Database\\Eloquent\\Builder $query): void {}
+    public function test() {
+        Brand::whereHas('orders', function ($q) {
+            $q->
+        });
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // line 7: "            $q->"  cursor after ->
+    let items = complete_at(&backend, &dir, "src/Models/Brand.php", brand_php, 7, 16).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"where"),
+        "Expected where() from Builder<Brand>, got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"orderBy"),
+        "Expected orderBy() from Builder<Brand>, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_with_closure_param_inferred_as_relation() {
+    // Builder::with($relations, Closure(Relation): mixed $callback)
+    // When called as an instance method on Builder, the closure param
+    // should be inferred as Relation (has where, orderBy, etc.)
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    /** @param Builder<Brand> $builder */
+    public function test(Builder $builder) {
+        $builder->with('translations', function ($query) {
+            $query->
+        });
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // line 8: "            $query->"  cursor after ->
+    let items = complete_at(&backend, &dir, "src/Models/Brand.php", brand_php, 8, 20).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"where"),
+        "Expected where() from Relation, got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"orderBy"),
+        "Expected orderBy() from Relation, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_chunk_explicit_type_hint_takes_precedence() {
+    // When a user explicitly types the parameter, the explicit type wins.
+    // Brand::where()->chunk(100, function (Collection $orders) { $orders-> })
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Collection;
+class Brand extends Model {
+    public function test() {
+        Brand::where('active', true)->chunk(100, function (Collection $orders) {
+            $orders->
+        });
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // line 7: "            $orders->"  cursor after ->
+    let items = complete_at(&backend, &dir, "src/Models/Brand.php", brand_php, 7, 22).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"count"),
+        "Explicit Collection type should resolve; expected count() in {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_chunk_chain_continues_after_closure() {
+    // The outer chain should still work after chunk's closure.
+    // Brand::where()->chunk(100, function ($orders) { ... })
+    // The return type of chunk is bool, so no chaining, but the
+    // important thing is the variable inside the closure resolves.
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Brand extends Model {
+    public function test() {
+        Brand::where('active', true)->chunk(100, function ($orders) {
+            $orders->each(function ($brand) {
+                $brand->
+            });
+        });
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // line 7: "                $brand->"  cursor after ->
+    // $orders is Collection<int, Brand>, and Collection::each has
+    // callable(TValue, TKey): mixed. TValue=Brand, so $brand=Brand.
+    let items = complete_at(&backend, &dir, "src/Models/Brand.php", brand_php, 7, 24).await;
+    let methods = method_names(&items);
+
+    // Brand extends Model, so it should at least have Model's static
+    // methods forwarded. But as a model instance it should have basic
+    // methods. At minimum the completion should not be empty.
+    assert!(
+        !methods.is_empty(),
+        "Expected completions for $brand inside nested closure, got empty list"
     );
 }

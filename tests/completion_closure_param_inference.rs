@@ -625,3 +625,65 @@ fn test_extract_callable_param_types_array_shape() {
         Some(vec!["array{name: string, age: int}".to_string()]),
     );
 }
+
+#[test]
+fn test_extract_callable_param_types_union_with_null() {
+    use phpantom_lsp::docblock::extract_callable_param_types;
+
+    // `Closure(Builder): mixed|null` — union at the top level
+    assert_eq!(
+        extract_callable_param_types("Closure(Builder): mixed|null"),
+        Some(vec!["Builder".to_string()]),
+    );
+
+    // `callable(User): void|null`
+    assert_eq!(
+        extract_callable_param_types("callable(User): void|null"),
+        Some(vec!["User".to_string()]),
+    );
+
+    // `null|callable(Order): bool`
+    assert_eq!(
+        extract_callable_param_types("null|callable(Order): bool"),
+        Some(vec!["Order".to_string()]),
+    );
+}
+
+#[test]
+fn test_extract_callable_param_types_parenthesized_group() {
+    use phpantom_lsp::docblock::extract_callable_param_types;
+
+    // `(Closure(Builder<Brand>): mixed)|null` — parenthesized callable in union
+    assert_eq!(
+        extract_callable_param_types("(Closure(Builder<Brand>): mixed)|null"),
+        Some(vec!["Builder<Brand>".to_string()]),
+    );
+
+    // `(\\Closure(\\App\\Models\\User): mixed)|string|null`
+    assert_eq!(
+        extract_callable_param_types("(\\Closure(\\App\\Models\\User): mixed)|string|null"),
+        Some(vec!["\\App\\Models\\User".to_string()]),
+    );
+}
+
+#[test]
+fn test_extract_callable_param_types_parenthesized_no_union() {
+    use phpantom_lsp::docblock::extract_callable_param_types;
+
+    // Bare parenthesized callable without union suffix
+    assert_eq!(
+        extract_callable_param_types("(Closure(Config): void)"),
+        Some(vec!["Config".to_string()]),
+    );
+}
+
+#[test]
+fn test_extract_callable_param_types_union_non_callable_parts() {
+    use phpantom_lsp::docblock::extract_callable_param_types;
+
+    // Union where no part is a callable — should return None
+    assert_eq!(extract_callable_param_types("string|null"), None,);
+
+    // Union with a class name but no callable signature
+    assert_eq!(extract_callable_param_types("Closure|null"), None,);
+}

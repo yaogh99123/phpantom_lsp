@@ -53,8 +53,11 @@ pub(crate) fn split_type_token(s: &str) -> (&str, &str) {
                 angle_depth -= 1;
                 // If we just closed the outermost `<`, the type ends here
                 // (but only when we're not also inside braces or parens).
+                // Continue consuming any union/intersection suffix so
+                // that `Collection<int, User>|null` stays one token.
                 if angle_depth == 0 && brace_depth == 0 && paren_depth == 0 {
                     let end = i + c.len_utf8();
+                    let end = consume_union_intersection_suffix(s, end);
                     return (&s[..end], &s[end..]);
                 }
             }
@@ -63,8 +66,11 @@ pub(crate) fn split_type_token(s: &str) -> (&str, &str) {
                 brace_depth -= 1;
                 // If we just closed the outermost `{`, the type ends here
                 // (but only when we're not also inside angle brackets or parens).
+                // Continue consuming any union/intersection suffix so
+                // that `array{id: int}|null` stays one token.
                 if brace_depth == 0 && angle_depth == 0 && paren_depth == 0 {
                     let end = i + c.len_utf8();
+                    let end = consume_union_intersection_suffix(s, end);
                     return (&s[..end], &s[end..]);
                 }
             }
@@ -91,12 +97,24 @@ pub(crate) fn split_type_token(s: &str) -> (&str, &str) {
                             let ret_start_in_s = colon_start_in_s
                                 + (after_colon.as_ptr() as usize
                                     - s[colon_start_in_s..].as_ptr() as usize);
-                            let end = ret_start_in_s + ret_tok.len();
+                            let mut end = ret_start_in_s + ret_tok.len();
+
+                            // After a callable return type, continue
+                            // consuming union/intersection suffixes so
+                            // that `(Closure(Builder): mixed)|null`
+                            // is kept as one token.
+                            end = consume_union_intersection_suffix(s, end);
+
                             return (&s[..end], &s[end..]);
                         }
                     }
-                    // No return type — the token ends here (e.g. bare `callable(int)`).
-                    return (&s[..after_paren], &s[after_paren..]);
+                    // After a bare parenthesized group (no callable
+                    // return type), continue consuming any
+                    // union/intersection suffix.  This handles DNF
+                    // types like `(A&B)|C` and grouped callables
+                    // like `(Closure(X): Y)|null`.
+                    let end = consume_union_intersection_suffix(s, after_paren);
+                    return (&s[..end], &s[end..]);
                 }
             }
             c if c.is_whitespace() && angle_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
@@ -107,6 +125,46 @@ pub(crate) fn split_type_token(s: &str) -> (&str, &str) {
         prev_char = c;
     }
     (s, "")
+}
+
+/// After a parenthesized type group or callable return type, consume
+/// any `|Type` or `&Type` continuation so the full union/intersection
+/// is kept as a single token.
+///
+/// `pos` is the byte offset just past the already-consumed portion of
+/// `s`.  Returns the updated end offset after consuming zero or more
+/// `|`/`&`-separated type parts.
+fn consume_union_intersection_suffix(s: &str, pos: usize) -> usize {
+    let mut end = pos;
+    loop {
+        let rest = &s[end..];
+        // Allow optional whitespace before the operator, but only if
+        // the operator is `|` or `&` (not a plain space which would
+        // signal the start of the next token like a parameter name).
+        let rest_trimmed = rest.trim_start();
+        let first = rest_trimmed.chars().next();
+        if first == Some('|') || first == Some('&') {
+            // Skip the operator character.
+            let after_op = &rest_trimmed[1..];
+            let after_op = after_op.trim_start();
+            if after_op.is_empty() {
+                break;
+            }
+            // Consume the next type token.
+            let (tok, _) = split_type_token(after_op);
+            if tok.is_empty() {
+                break;
+            }
+            // Compute the absolute end position from the consumed
+            // token.  `after_op` is a sub-slice of `s`, so pointer
+            // arithmetic gives us the byte offset.
+            let tok_start_in_s = after_op.as_ptr() as usize - s.as_ptr() as usize;
+            end = tok_start_in_s + tok.len();
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 /// Split a type string on `|` at nesting depth 0, respecting `<…>`,
@@ -991,6 +1049,34 @@ pub fn extract_callable_return_type(type_str: &str) -> Option<String> {
 /// string                          → None
 /// ```
 pub fn extract_callable_param_types(type_str: &str) -> Option<Vec<String>> {
+    // Unwrap union types: `(Closure(X): Y)|null` → `Closure(X): Y`,
+    // `Closure(X): Y|null` → try `Closure(X): Y|null` first, then
+    // fall back to splitting on `|` and trying each part.
+    if let Some(result) = extract_callable_param_types_inner(type_str) {
+        return Some(result);
+    }
+
+    // Try each union member individually — handles `Closure(X)|null`,
+    // `null|callable(Y)`, and parenthesized groups like
+    // `(Closure(X): Y)|null`.
+    for part in split_union_depth0(type_str) {
+        let part = part.trim();
+        // Strip outer parens from grouped callables: `(Closure(X): Y)` → `Closure(X): Y`
+        let inner = part
+            .strip_prefix('(')
+            .and_then(|p| p.strip_suffix(')'))
+            .unwrap_or(part);
+        if let Some(result) = extract_callable_param_types_inner(inner) {
+            return Some(result);
+        }
+    }
+
+    None
+}
+
+/// Inner implementation: try to parse a single callable/Closure type
+/// string (not a union) and extract its parameter types.
+fn extract_callable_param_types_inner(type_str: &str) -> Option<Vec<String>> {
     let s = type_str.strip_prefix('\\').unwrap_or(type_str);
     let s = s.strip_prefix('?').unwrap_or(s);
 

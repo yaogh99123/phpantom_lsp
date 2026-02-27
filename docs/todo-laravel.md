@@ -8,21 +8,6 @@ virtual member provider design, see `ARCHITECTURE.md`.
 
 ---
 
-## Missing features
-
-### 2. Closure parameter inference in collection pipelines
-
-`$users->map(fn($u) => $u->...)` does not infer `$u` as the
-collection's element type. This is a general generics/callable
-inference problem, not Laravel-specific, but Laravel collection
-pipelines are the most common place users encounter it.
-Other cases:
-- MyModel::whereIn()->chunk(self::CHUNK_SIZE, function (Collection $orders) {})
-- MyModel::whereHas('order', function (Builder $q) {})
-- MyModel::with(['translations' => function (Relation $query) {}]) // translations is the name of the relation on MyModel, Relation will become the return type of that relation
-
----
-
 ## Out of scope (and why)
 
 | Item | Reason |
