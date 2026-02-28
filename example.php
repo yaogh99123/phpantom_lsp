@@ -1155,28 +1155,32 @@ class EloquentPropertyDemo
     {
         $bakery = new Bakery();
 
-        $bakery->apricot;            // $casts 'boolean'           → bool
-        $bakery->baguettes;          // relationship HasMany       → Collection<Loaf>
-        $bakery->croissant;          // $attributes default        → string
-        $bakery->dough_temp;         // $casts 'float'             → float
-        $bakery->egg_count;          // $attributes default        → int
-        $bakery->flour;              // $fillable (no cast/attr)   → mixed
-        $bakery->gluten_free;        // $attributes default        → bool
-        $bakery->headBaker;          // relationship HasOne        → Baker
-        $bakery->icing;              // $casts custom class        → ?Frosting
-        $bakery->jam_flavor;         // $casts enum                → JamFlavor
-        $bakery->kitchen_id;         // $guarded (no cast/attr)    → mixed
-        $bakery->loaf_name;          // legacy accessor            → string
-        $bakery->masterRecipe;       // relationship BelongsToMany → Collection<BakeryRecipe>
-        $bakery->notes;              // $casts 'array'             → array
-        $bakery->oven_code;          // $hidden (no cast/attr)     → mixed
-        $bakery->proved_at;          // $casts 'datetime'          → \Carbon\Carbon
-        $bakery->quality;            // casts() method 'float'     → float
-        $bakery->rye_blend;          // $visible (no cast/attr)    → mixed
-        $bakery->sprinkle;           // modern accessor Attribute  → string
-        $bakery->topping('choc');    // scope method               → Builder
-        $bakery->unbaked();          // scope method               → Builder
-        $bakery->vendor;             // body-inferred morphTo      → Model
+        $bakery->apricot;             // $casts 'boolean'           → bool
+        $bakery->baguettes;           // relationship HasMany       → Collection<Loaf>
+        $bakery->baguettes_count;     // relationship count         → int
+        $bakery->croissant;           // $attributes default        → string
+        $bakery->dough_temp;          // $casts 'float'             → float
+        $bakery->egg_count;           // $attributes default        → int
+        $bakery->flour;               // $fillable (no cast/attr)   → mixed
+        $bakery->gluten_free;         // $attributes default        → bool
+        $bakery->headBaker;           // relationship HasOne        → Baker
+        $bakery->head_baker_count;    // relationship count         → int
+        $bakery->icing;               // $casts custom class        → ?Frosting
+        $bakery->jam_flavor;          // $casts enum                → JamFlavor
+        $bakery->kitchen_id;          // $guarded (no cast/attr)    → mixed
+        $bakery->loaf_name;           // legacy accessor            → string
+        $bakery->masterRecipe;        // relationship BelongsToMany → Collection<BakeryRecipe>
+        $bakery->master_recipe_count; // relationship count         → int
+        $bakery->notes;               // $casts 'array'             → array
+        $bakery->oven_code;           // $hidden (no cast/attr)     → mixed
+        $bakery->proved_at;           // $casts 'datetime'          → \Carbon\Carbon
+        $bakery->quality;             // casts() method 'float'     → float
+        $bakery->rye_blend;           // $visible (no cast/attr)    → mixed
+        $bakery->sprinkle;            // modern accessor Attribute  → string
+        $bakery->topping('choc');     // scope method               → Builder
+        $bakery->unbaked();           // scope method               → Builder
+        $bakery->vendor;              // body-inferred morphTo      → Model
+        $bakery->vendor_count;        // relationship count         → int
         // MUST NOT appear: secret_ingredient (private $attributes field)
     }
 }

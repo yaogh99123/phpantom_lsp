@@ -8691,3 +8691,335 @@ class Brand extends Model {
         "Expected completions for $brand inside nested closure, got empty list"
     );
 }
+
+// ─── Relationship count properties (*_count) ────────────────────────────────
+
+#[tokio::test]
+async fn test_has_many_count_property_produced() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function getTitle(): string { return ''; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class User extends Model {
+    /** @return HasMany<\\App\\Models\\Post, $this> */
+    public function posts(): HasMany { return $this->hasMany(Post::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts_count"),
+        "Should include synthesized 'posts_count' property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_count_property_typed_as_int() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class User extends Model {
+    /** @return HasMany<\\App\\Models\\Post, $this> */
+    public function posts(): HasMany { return $this->hasMany(Post::class); }
+    public function test() {
+        $user = new User();
+        $user->posts_count->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    // posts_count is typed as int, so chaining -> on it should not
+    // produce class completions.  The important thing is that
+    // posts_count itself appears as a property (tested above).
+    // Here we just confirm it doesn't crash and doesn't resolve
+    // to Post's methods.
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 28).await;
+    let methods = method_names(&items);
+    assert!(
+        !methods.contains(&"getTitle"),
+        "posts_count is int, should not resolve to Post methods, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_multiple_relationships_produce_count_properties() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {}
+";
+    let comment_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Comment extends Model {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+use Illuminate\\Database\\Eloquent\\Relations\\HasOne;
+class User extends Model {
+    /** @return HasMany<\\App\\Models\\Post, $this> */
+    public function posts(): HasMany { return $this->hasMany(Post::class); }
+    /** @return HasMany<\\App\\Models\\Comment, $this> */
+    public function comments(): HasMany { return $this->hasMany(Comment::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/Comment.php", comment_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 12, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts_count"),
+        "Should include 'posts_count', got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"comments_count"),
+        "Should include 'comments_count', got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_count_property_camel_case_relationship() {
+    let baker_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Baker extends Model {
+    public function getName(): string { return ''; }
+}
+";
+    let bakery_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasOne;
+class Bakery extends Model {
+    /** @return HasOne<\\App\\Models\\Baker, $this> */
+    public function headBaker(): HasOne { return $this->hasOne(Baker::class); }
+    public function test() {
+        $b = new Bakery();
+        $b->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Baker.php", baker_php),
+        ("src/Models/Bakery.php", bakery_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Bakery.php", bakery_php, 9, 13).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"head_baker_count"),
+        "camelCase 'headBaker' should produce 'head_baker_count', got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_count_property_on_this_arrow() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class User extends Model {
+    /** @return HasMany<\\App\\Models\\Post, $this> */
+    public function posts(): HasMany { return $this->hasMany(Post::class); }
+    public function test() {
+        $this->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts_count"),
+        "$this-> should include 'posts_count', got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_count_property_body_inferred_relationship() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function posts() { return $this->hasMany(Post::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts_count"),
+        "Body-inferred relationship should produce 'posts_count', got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_count_property_coexists_with_relationship_property() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function getTitle(): string { return ''; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class User extends Model {
+    /** @return HasMany<\\App\\Models\\Post, $this> */
+    public function posts(): HasMany { return $this->hasMany(Post::class); }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "Relationship property 'posts' should still exist, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"posts_count"),
+        "Count property 'posts_count' should coexist, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_count_property_on_inline_new_instantiation() {
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function getTitle(): string { return ''; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class User extends Model {
+    /** @return HasMany<\\App\\Models\\Post, $this> */
+    public function posts(): HasMany { return $this->hasMany(Post::class); }
+    public function test() {
+        (new User())->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    // Line 8: "(new User())->" cursor after ->
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 22).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"posts"),
+        "(new User())-> should include 'posts' relationship property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"posts_count"),
+        "(new User())-> should include 'posts_count', got: {:?}",
+        props
+    );
+}

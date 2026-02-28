@@ -57,6 +57,7 @@ today and what is still missing.
 | Legacy accessors (`getXAttribute()`) | Method's return type | |
 | Modern accessors (returns `Attribute`) | First generic arg of `Attribute<TGet>`, or `mixed` when unparameterised | |
 | Relationship methods | Generic params or body inference | |
+| Relationship `*_count` properties | `int` | `{snake_name}_count` for each relationship method |
 
 ### Gaps (ranked by impact ÷ effort)
 
@@ -73,33 +74,7 @@ benefit) and an **Effort** estimate (implementation complexity):
 
 ---
 
-#### 1. `*_count` relationship count properties
-
-| | |
-|---|---|
-| **Impact** | ★★★★ — `withCount`/`loadCount` is one of the most common Eloquent patterns; `$model->posts_count` appears in nearly every non-trivial app. |
-| **Effort** | ★★ — After synthesizing relationship properties, iterate relationships again and push `{snake_name}_count` typed as `int`. |
-
-Accessing `$user->posts_count` is a very common Laravel pattern
-(`withCount`, `loadCount`, or eager-loaded counts). We don't
-synthesize these today.
-
-```php
-$user->posts_count; // int, but we know nothing about it
-```
-
-Larastan handles this **declaratively** — no call-site tracking
-required.  When a property name ends with `_count`, it strips the
-suffix, checks whether the remainder (converted to camelCase) is a
-relationship method, and if so types the property as `int`.
-
-**Where to change:** In `LaravelModelProvider::provide`, after
-synthesizing relationship properties, iterate the relationship methods
-again and push a `{snake_name}_count` property typed as `int` for
-each one.  The property should have lower priority than explicit
-`@property` tags.
-
-#### 2. `#[Scope]` attribute (Laravel 11+)
+#### 1. `#[Scope]` attribute (Laravel 11+)
 
 | | |
 |---|---|
@@ -129,7 +104,7 @@ methods with the `#[Scope]` attribute the same as `scopeX` methods
 (strip the first `$query` parameter, expose as both static and
 instance virtual methods).
 
-#### 3. `$dates` array (deprecated)
+#### 2. `$dates` array (deprecated)
 
 | | |
 |---|---|
@@ -148,7 +123,7 @@ Merge these into `casts_definitions` at a lower priority than explicit
 `$casts` entries, or add a separate field on `ClassInfo` and handle
 priority in the provider.
 
-#### 4. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
+#### 3. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
 
 | | |
 |---|---|
@@ -186,7 +161,7 @@ declares a custom builder via `@use HasBuilder<X>` in `use_generics`
 or a `newEloquentBuilder()` method with a non-default return type.
 If found, load and resolve that builder class instead.
 
-#### 5. `abort_if`/`abort_unless` type narrowing
+#### 4. `abort_if`/`abort_unless` type narrowing
 
 | | |
 |---|---|
@@ -230,7 +205,7 @@ to subsequent code:
 This is similar to the existing guard clause narrowing but triggered
 by specific function names rather than `if` + early return.
 
-#### 6. `collect()` and other helper functions lose generic type info
+#### 5. `collect()` and other helper functions lose generic type info
 
 | | |
 |---|---|
@@ -278,7 +253,7 @@ before passing it to `type_hint_to_classes`.  See the general TODO
 item (§ PHP Language Feature Gaps, "Function-level `@template`
 generic resolution") for the full implementation plan.
 
-#### 7. Factory `has*`/`for*` relationship methods
+#### 6. Factory `has*`/`for*` relationship methods
 
 | | |
 |---|---|
@@ -316,7 +291,7 @@ The `has*` variant should accept optional `int $count` and
 `array|callable $state` parameters; `for*` should accept
 `array|callable $state`.
 
-#### 8. `$pivot` property on BelongsToMany related models
+#### 7. `$pivot` property on BelongsToMany related models
 
 | | |
 |---|---|
@@ -362,7 +337,7 @@ the `BelongsToMany` relationship stubs. If the user's stub set
 includes these annotations, it already works through our PHPDoc
 provider.
 
-#### 9. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
+#### 8. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
 
 | | |
 |---|---|
@@ -378,7 +353,7 @@ aggregate function (`withSum`/`withAvg` → `float`,
 
 The `@property` workaround applies here too.
 
-#### 10. Higher-order collection proxies
+#### 9. Higher-order collection proxies
 
 | | |
 |---|---|
@@ -401,7 +376,7 @@ and `HigherOrderCollectionProxyExtension`, which resolve the proxy's
 template types and delegate property/method lookups to the collection's
 value type.
 
-#### 11. `SoftDeletes` trait methods on Builder
+#### 10. `SoftDeletes` trait methods on Builder
 
 | | |
 |---|---|
@@ -429,7 +404,7 @@ type — e.g. `Builder<static>` instead of `Builder<User>`.  This is
 a minor gap but not worth a dedicated fix until custom builder
 support (gap §7) is implemented.
 
-#### 12. `View::withX()` and `RedirectResponse::withX()` dynamic methods
+#### 11. `View::withX()` and `RedirectResponse::withX()` dynamic methods
 
 | | |
 |---|---|
@@ -461,7 +436,7 @@ hard-coding the two known classes.  A simpler approach: add
 `@method` tags to bundled stubs for the most common dynamic `with*`
 methods, or document this as a known limitation.
 
-#### 13. `$appends` array
+#### 12. `$appends` array
 
 | | |
 |---|---|

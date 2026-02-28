@@ -802,6 +802,32 @@ pub(crate) fn is_accessor_method(class: &ClassInfo, method_name: &str) -> bool {
     is_legacy_accessor(method) || is_modern_accessor(method)
 }
 
+/// Map a `*_count` virtual property name back to the relationship method
+/// name that produced it.
+///
+/// Returns `Some(method_name)` when `property_name` ends with `_count`
+/// and the stripped/camelCased remainder is a relationship method on
+/// `class`.  Go-to-definition uses this so that clicking on
+/// `posts_count` jumps to the `posts()` method, and
+/// `master_recipe_count` jumps to `masterRecipe()`.
+pub(crate) fn count_property_to_relationship_method(
+    class: &ClassInfo,
+    property_name: &str,
+) -> Option<String> {
+    let base = property_name.strip_suffix("_count")?;
+    if base.is_empty() {
+        return None;
+    }
+    let method_name = snake_to_camel(base);
+    let method = class.methods.iter().find(|m| m.name == method_name)?;
+    let return_type = method.return_type.as_deref()?;
+    if classify_relationship(return_type).is_some() {
+        Some(method_name)
+    } else {
+        None
+    }
+}
+
 /// Infer a relationship return type from a method's body text.
 ///
 /// When a relationship method has no `@return` annotation, this function
@@ -1294,6 +1320,34 @@ impl VirtualMemberProvider for LaravelModelProvider {
             }
         }
 
+        // ── Relationship count properties (`*_count`) ───────────────
+        // `withCount`/`loadCount` is one of the most common Eloquent
+        // patterns.  For each relationship method, synthesize a
+        // `{snake_name}_count` property typed as `int`.  Skip if a
+        // property with that name already exists (e.g. from an explicit
+        // `@property` tag).
+        for method in &class.methods {
+            let return_type = match method.return_type.as_deref() {
+                Some(rt) => rt,
+                None => continue,
+            };
+            if classify_relationship(return_type).is_none() {
+                continue;
+            }
+            let count_name = format!("{}_count", camel_to_snake(&method.name));
+            if properties.iter().any(|p| p.name == count_name) {
+                continue;
+            }
+            properties.push(PropertyInfo {
+                name: count_name,
+                name_offset: 0,
+                type_hint: Some("int".to_string()),
+                is_static: false,
+                visibility: Visibility::Public,
+                is_deprecated: false,
+            });
+        }
+
         // ── Builder-as-static forwarding ────────────────────────────
         let forwarded = build_builder_forwarded_methods(class, class_loader);
         methods.extend(forwarded);
@@ -1782,14 +1836,19 @@ mod tests {
             .push(make_method("posts", Some("HasMany<Post, $this>")));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1);
-        assert_eq!(result.properties[0].name, "posts");
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "posts")
+            .unwrap();
         assert_eq!(
-            result.properties[0].type_hint.as_deref(),
+            rel_prop.type_hint.as_deref(),
             Some("\\Illuminate\\Database\\Eloquent\\Collection<Post>")
         );
-        assert_eq!(result.properties[0].visibility, Visibility::Public);
-        assert!(!result.properties[0].is_static);
+        assert_eq!(rel_prop.visibility, Visibility::Public);
+        assert!(!rel_prop.is_static);
+        // Also produces posts_count
+        assert!(result.properties.iter().any(|p| p.name == "posts_count"));
     }
 
     #[test]
@@ -1801,9 +1860,12 @@ mod tests {
             .push(make_method("profile", Some("HasOne<Profile, $this>")));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1);
-        assert_eq!(result.properties[0].name, "profile");
-        assert_eq!(result.properties[0].type_hint.as_deref(), Some("Profile"));
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "profile")
+            .unwrap();
+        assert_eq!(rel_prop.type_hint.as_deref(), Some("Profile"));
     }
 
     #[test]
@@ -1815,9 +1877,12 @@ mod tests {
             .push(make_method("author", Some("BelongsTo<User, $this>")));
 
         let result = provider.provide(&post, &no_loader);
-        assert_eq!(result.properties.len(), 1);
-        assert_eq!(result.properties[0].name, "author");
-        assert_eq!(result.properties[0].type_hint.as_deref(), Some("User"));
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "author")
+            .unwrap();
+        assert_eq!(rel_prop.type_hint.as_deref(), Some("User"));
     }
 
     #[test]
@@ -1830,11 +1895,21 @@ mod tests {
             .push(make_method("commentable", Some("MorphTo")));
 
         let result = provider.provide(&comment, &no_loader);
-        assert_eq!(result.properties.len(), 1);
-        assert_eq!(result.properties[0].name, "commentable");
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "commentable")
+            .unwrap();
         assert_eq!(
-            result.properties[0].type_hint.as_deref(),
+            rel_prop.type_hint.as_deref(),
             Some("\\Illuminate\\Database\\Eloquent\\Model")
+        );
+        // MorphTo also gets a _count property
+        assert!(
+            result
+                .properties
+                .iter()
+                .any(|p| p.name == "commentable_count")
         );
     }
 
@@ -1847,10 +1922,13 @@ mod tests {
             .push(make_method("roles", Some("BelongsToMany<Role, $this>")));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1);
-        assert_eq!(result.properties[0].name, "roles");
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "roles")
+            .unwrap();
         assert_eq!(
-            result.properties[0].type_hint.as_deref(),
+            rel_prop.type_hint.as_deref(),
             Some("\\Illuminate\\Database\\Eloquent\\Collection<Role>")
         );
     }
@@ -1868,12 +1946,16 @@ mod tests {
             .push(make_method("roles", Some("BelongsToMany<Role, $this>")));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 3);
+        // 3 relationship properties + 3 _count properties = 6
+        assert_eq!(result.properties.len(), 6);
 
         let names: Vec<&str> = result.properties.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"posts"));
         assert!(names.contains(&"profile"));
         assert!(names.contains(&"roles"));
+        assert!(names.contains(&"posts_count"));
+        assert!(names.contains(&"profile_count"));
+        assert!(names.contains(&"roles_count"));
     }
 
     #[test]
@@ -1912,18 +1994,23 @@ mod tests {
         ));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1);
-        assert_eq!(result.properties[0].name, "posts");
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "posts")
+            .unwrap();
         assert_eq!(
-            result.properties[0].type_hint.as_deref(),
+            rel_prop.type_hint.as_deref(),
             Some("\\Illuminate\\Database\\Eloquent\\Collection<Post>")
         );
+        assert!(result.properties.iter().any(|p| p.name == "posts_count"));
     }
 
     #[test]
     fn relationship_without_generics_and_singular_produces_nothing() {
         // A singular relationship without generics has no TRelated,
-        // so we cannot determine the property type.
+        // so we cannot determine the relationship property type.
+        // However, a _count property is still produced.
         let provider = LaravelModelProvider;
         let mut user = make_class("App\\Models\\User");
         user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
@@ -1931,9 +2018,16 @@ mod tests {
 
         let result = provider.provide(&user, &no_loader);
         assert!(
-            result.properties.is_empty(),
-            "Singular relationship without generics should not produce a property"
+            !result.properties.iter().any(|p| p.name == "profile"),
+            "Singular relationship without generics should not produce a relationship property"
         );
+        // But a _count property is still valid
+        let count_prop = result.properties.iter().find(|p| p.name == "profile_count");
+        assert!(
+            count_prop.is_some(),
+            "Even without generics, a _count property should be produced"
+        );
+        assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
     }
 
     #[test]
@@ -1946,13 +2040,18 @@ mod tests {
         user.methods.push(make_method("posts", Some("HasMany")));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1);
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "posts")
+            .unwrap();
         assert_eq!(
-            result.properties[0].type_hint.as_deref(),
+            rel_prop.type_hint.as_deref(),
             Some(
                 "\\Illuminate\\Database\\Eloquent\\Collection<\\Illuminate\\Database\\Eloquent\\Model>"
             )
         );
+        assert!(result.properties.iter().any(|p| p.name == "posts_count"));
     }
 
     #[test]
@@ -1982,11 +2081,16 @@ mod tests {
         ));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1);
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "posts")
+            .unwrap();
         assert_eq!(
-            result.properties[0].type_hint.as_deref(),
+            rel_prop.type_hint.as_deref(),
             Some("\\Illuminate\\Database\\Eloquent\\Collection<\\App\\Models\\Post>")
         );
+        assert!(result.properties.iter().any(|p| p.name == "posts_count"));
     }
 
     #[test]
@@ -2000,10 +2104,320 @@ mod tests {
         ));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1);
+        let rel_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "profile")
+            .unwrap();
         assert_eq!(
-            result.properties[0].type_hint.as_deref(),
+            rel_prop.type_hint.as_deref(),
             Some("\\App\\Models\\Profile")
+        );
+    }
+
+    // ── Relationship count properties (*_count) ─────────────────────────
+
+    #[test]
+    fn synthesizes_count_property_for_has_many() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        let count_prop = result.properties.iter().find(|p| p.name == "posts_count");
+        assert!(
+            count_prop.is_some(),
+            "HasMany relationship should produce a posts_count property"
+        );
+        assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn synthesizes_count_property_for_has_one() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("profile", Some("HasOne<Profile, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        let count_prop = result.properties.iter().find(|p| p.name == "profile_count");
+        assert!(
+            count_prop.is_some(),
+            "HasOne relationship should produce a profile_count property"
+        );
+        assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn synthesizes_count_property_for_belongs_to_many() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("roles", Some("BelongsToMany<Role, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        let count_prop = result.properties.iter().find(|p| p.name == "roles_count");
+        assert!(
+            count_prop.is_some(),
+            "BelongsToMany should produce a roles_count property"
+        );
+        assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn synthesizes_count_property_for_morph_to() {
+        let provider = LaravelModelProvider;
+        let mut comment = make_class("App\\Models\\Comment");
+        comment.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        comment
+            .methods
+            .push(make_method("commentable", Some("MorphTo")));
+
+        let result = provider.provide(&comment, &no_loader);
+        let count_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "commentable_count");
+        assert!(
+            count_prop.is_some(),
+            "MorphTo should produce a commentable_count property"
+        );
+        assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn count_property_camel_case_method_name() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("headBaker", Some("HasOne<Baker, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        let count_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "head_baker_count");
+        assert!(
+            count_prop.is_some(),
+            "camelCase method 'headBaker' should produce 'head_baker_count', got: {:?}",
+            result
+                .properties
+                .iter()
+                .map(|p| &p.name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn count_property_is_public_and_not_static() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        let count_prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "posts_count")
+            .unwrap();
+        assert_eq!(count_prop.visibility, Visibility::Public);
+        assert!(!count_prop.is_static);
+    }
+
+    #[test]
+    fn count_property_coexists_with_relationship_property() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        let rel_prop = result.properties.iter().find(|p| p.name == "posts");
+        let count_prop = result.properties.iter().find(|p| p.name == "posts_count");
+        assert!(rel_prop.is_some(), "Relationship property should exist");
+        assert!(count_prop.is_some(), "Count property should also exist");
+    }
+
+    #[test]
+    fn count_property_multiple_relationships() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+        user.methods
+            .push(make_method("comments", Some("HasMany<Comment, $this>")));
+        user.methods
+            .push(make_method("profile", Some("HasOne<Profile, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        assert!(result.properties.iter().any(|p| p.name == "posts_count"));
+        assert!(result.properties.iter().any(|p| p.name == "comments_count"));
+        assert!(result.properties.iter().any(|p| p.name == "profile_count"));
+    }
+
+    #[test]
+    fn count_property_skipped_when_already_exists_from_casts() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+        // Simulate a $casts entry that already defines posts_count
+        user.casts_definitions
+            .push(("posts_count".to_string(), "integer".to_string()));
+
+        let result = provider.provide(&user, &no_loader);
+        let count_props: Vec<_> = result
+            .properties
+            .iter()
+            .filter(|p| p.name == "posts_count")
+            .collect();
+        assert_eq!(
+            count_props.len(),
+            1,
+            "Should not duplicate posts_count when already defined via $casts"
+        );
+        // The casts version should win (int from casts, not from count)
+        assert_eq!(count_props[0].type_hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn count_property_not_synthesized_for_non_relationship_methods() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods.push(make_method("getName", Some("string")));
+        user.methods.push(make_method("save", Some("bool")));
+
+        let result = provider.provide(&user, &no_loader);
+        assert!(
+            !result.properties.iter().any(|p| p.name.ends_with("_count")),
+            "Non-relationship methods should not produce _count properties"
+        );
+    }
+
+    #[test]
+    fn count_property_snake_case_method_already_snake() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+
+        let result = provider.provide(&user, &no_loader);
+        // "posts" is already snake_case, so count property is "posts_count"
+        let count_prop = result.properties.iter().find(|p| p.name == "posts_count");
+        assert!(count_prop.is_some());
+    }
+
+    #[test]
+    fn count_property_for_body_inferred_relationship() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        // Body-inferred relationship — return_type is set by the parser
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post>")));
+
+        let result = provider.provide(&user, &no_loader);
+        let count_prop = result.properties.iter().find(|p| p.name == "posts_count");
+        assert!(
+            count_prop.is_some(),
+            "Body-inferred relationship should also produce a _count property"
+        );
+        assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
+    }
+
+    // ── count_property_to_relationship_method ───────────────────────────
+
+    #[test]
+    fn count_to_relationship_simple() {
+        let mut user = make_class("App\\Models\\User");
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+        assert_eq!(
+            count_property_to_relationship_method(&user, "posts_count"),
+            Some("posts".to_string())
+        );
+    }
+
+    #[test]
+    fn count_to_relationship_camel_case() {
+        let mut bakery = make_class("App\\Models\\Bakery");
+        bakery
+            .methods
+            .push(make_method("headBaker", Some("HasOne<Baker, $this>")));
+        assert_eq!(
+            count_property_to_relationship_method(&bakery, "head_baker_count"),
+            Some("headBaker".to_string())
+        );
+    }
+
+    #[test]
+    fn count_to_relationship_multi_word() {
+        let mut model = make_class("App\\Models\\Order");
+        model.methods.push(make_method(
+            "masterRecipe",
+            Some("BelongsToMany<Recipe, $this>"),
+        ));
+        assert_eq!(
+            count_property_to_relationship_method(&model, "master_recipe_count"),
+            Some("masterRecipe".to_string())
+        );
+    }
+
+    #[test]
+    fn count_to_relationship_morph_to() {
+        let mut comment = make_class("App\\Models\\Comment");
+        comment
+            .methods
+            .push(make_method("commentable", Some("MorphTo")));
+        assert_eq!(
+            count_property_to_relationship_method(&comment, "commentable_count"),
+            Some("commentable".to_string())
+        );
+    }
+
+    #[test]
+    fn count_to_relationship_returns_none_for_non_relationship() {
+        let mut user = make_class("App\\Models\\User");
+        user.methods.push(make_method("getName", Some("string")));
+        assert_eq!(
+            count_property_to_relationship_method(&user, "get_name_count"),
+            None
+        );
+    }
+
+    #[test]
+    fn count_to_relationship_returns_none_without_suffix() {
+        let mut user = make_class("App\\Models\\User");
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+        assert_eq!(count_property_to_relationship_method(&user, "posts"), None);
+    }
+
+    #[test]
+    fn count_to_relationship_returns_none_for_bare_count() {
+        let user = make_class("App\\Models\\User");
+        assert_eq!(count_property_to_relationship_method(&user, "_count"), None);
+    }
+
+    #[test]
+    fn count_to_relationship_returns_none_when_method_missing() {
+        let user = make_class("App\\Models\\User");
+        assert_eq!(
+            count_property_to_relationship_method(&user, "posts_count"),
+            None
         );
     }
 
@@ -2340,8 +2754,10 @@ mod tests {
         ));
 
         let result = provider.provide(&user, &no_loader);
-        assert_eq!(result.properties.len(), 1, "One relationship property");
-        assert_eq!(result.properties[0].name, "posts");
+        // posts + posts_count = 2 properties
+        assert_eq!(result.properties.len(), 2);
+        assert!(result.properties.iter().any(|p| p.name == "posts"));
+        assert!(result.properties.iter().any(|p| p.name == "posts_count"));
         assert_eq!(
             result.methods.len(),
             2,

@@ -1742,3 +1742,116 @@ class Brand extends Model {
         line
     );
 }
+
+// ─── *_count relationship count property GTD ────────────────────────────────
+
+#[tokio::test]
+async fn test_goto_definition_count_property_jumps_to_relationship_method() {
+    // Ctrl+click on `$user->posts_count` should jump to the `posts()` method.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this> */
+    public function posts(): \\Illuminate\\Database\\Eloquent\\Relations\\HasMany {
+        return $this->hasMany(Post::class);
+    }
+    public function demo(): void {
+        $user = new User();
+        $user->posts_count;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "posts_count" on line 10, cursor within the name
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 10, 18).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $user->posts_count should resolve"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to posts() method on line 5, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_count_property_camel_case_relationship() {
+    // Ctrl+click on `$bakery->head_baker_count` should jump to `headBaker()`.
+    let bakery_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Bakery extends Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasOne<Baker, $this> */
+    public function headBaker(): \\Illuminate\\Database\\Eloquent\\Relations\\HasOne {
+        return $this->hasOne(Baker::class);
+    }
+    public function demo(): void {
+        $b = new Bakery();
+        $b->head_baker_count;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Bakery.php", bakery_php)]);
+
+    // "head_baker_count" on line 10, cursor within the name
+    let result =
+        goto_definition_at(&backend, &dir, "src/Models/Bakery.php", bakery_php, 10, 15).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $b->head_baker_count should resolve to headBaker()"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to headBaker() method on line 5, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_count_property_on_this() {
+    // Ctrl+click on `$this->posts_count` inside the same model.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this> */
+    public function posts(): \\Illuminate\\Database\\Eloquent\\Relations\\HasMany {
+        return $this->hasMany(Post::class);
+    }
+    public function demo(): void {
+        $this->posts_count;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "$this->posts_count" on line 9, cursor within the name
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 9, 18).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $this->posts_count should resolve"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to posts() method on line 5, got: {}",
+        line
+    );
+}
