@@ -662,7 +662,17 @@ impl Backend {
         let rctx = ctx.as_resolution_ctx();
         let receiver_classes = Self::resolve_target_classes(obj_text, AccessKind::Arrow, &rctx);
 
-        Self::find_callable_params_on_classes(&receiver_classes, method_name, arg_idx, ctx)
+        let params =
+            Self::find_callable_params_on_classes(&receiver_classes, method_name, arg_idx, ctx);
+
+        // Replace `$this` / `static` tokens with the receiver class FQN
+        // so that `resolve_closure_params_with_inferred` resolves them
+        // against the declaring class rather than the user's current class.
+        if let Some(receiver) = receiver_classes.first() {
+            Self::replace_self_references(params, &receiver.name)
+        } else {
+            params
+        }
     }
 
     /// Infer callable parameter types for a closure passed at position
@@ -689,10 +699,73 @@ impl Backend {
         });
         if let Some(ref cls) = owner {
             let resolved = Self::resolve_class_fully(cls, ctx.class_loader);
-            Self::find_callable_params_on_method(&resolved, method_name, arg_idx, ctx)
+            let params = Self::find_callable_params_on_method(&resolved, method_name, arg_idx, ctx);
+            Self::replace_self_references(params, &cls.name)
         } else {
             vec![]
         }
+    }
+
+    /// Replace `$this` and `static` tokens in inferred callable parameter
+    /// type strings with the given class FQN.  This ensures that when a
+    /// method signature uses `$this` or `static` (e.g.
+    /// `callable($this): $this`), the inferred types reference the
+    /// declaring/receiver class rather than the class the user is editing.
+    fn replace_self_references(params: Vec<String>, class_fqn: &str) -> Vec<String> {
+        params
+            .into_iter()
+            .map(|ty| {
+                // Replace whole-word occurrences of `$this` and `static`.
+                // These appear as standalone type tokens in callable
+                // signatures, e.g. `callable($this, mixed): $this`.
+                let result = ty.as_str();
+                // Fast path: nothing to replace.
+                if !result.contains("$this") && !result.contains("static") {
+                    return ty;
+                }
+                let mut out = String::with_capacity(result.len());
+                let mut rest = result;
+                while !rest.is_empty() {
+                    if let Some(pos) = rest.find("$this") {
+                        // Check that it's a word boundary (not part of a
+                        // longer identifier).
+                        let after = pos + 5;
+                        let is_boundary =
+                            after >= rest.len() || !rest.as_bytes()[after].is_ascii_alphanumeric();
+                        if is_boundary {
+                            out.push_str(&rest[..pos]);
+                            out.push_str(class_fqn);
+                            rest = &rest[after..];
+                            continue;
+                        }
+                        // Not a boundary — consume past this occurrence.
+                        out.push_str(&rest[..after]);
+                        rest = &rest[after..];
+                        continue;
+                    }
+                    if let Some(pos) = rest.find("static") {
+                        let before_ok =
+                            pos == 0 || !rest.as_bytes()[pos - 1].is_ascii_alphanumeric();
+                        let after = pos + 6;
+                        let after_ok =
+                            after >= rest.len() || !rest.as_bytes()[after].is_ascii_alphanumeric();
+                        if before_ok && after_ok {
+                            out.push_str(&rest[..pos]);
+                            out.push_str(class_fqn);
+                            rest = &rest[after..];
+                            continue;
+                        }
+                        out.push_str(&rest[..after]);
+                        rest = &rest[after..];
+                        continue;
+                    }
+                    // No more occurrences.
+                    out.push_str(rest);
+                    break;
+                }
+                out
+            })
+            .collect()
     }
 
     /// Search for the method `method_name` on each of `classes` and

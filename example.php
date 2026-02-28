@@ -1259,6 +1259,15 @@ class ClosureParamInferenceDemo
         BlogAuthor::whereHas('posts', function ($query) {
             $query->where('published', true); // resolves to Builder
         });
+
+        // $this in callable param resolves to receiver, not current class
+        $pipeline = new ScaffoldingPipeline();
+        $pipeline->when(true, function ($pipe) {
+            $pipe->send('data');          // resolves to ScaffoldingPipeline, not this demo class
+        });
+
+        // Arrow function variant
+        $pipeline->tap(fn($p) => $p->through([]));
     }
 }
 
@@ -1791,6 +1800,24 @@ class ScaffoldingClosureParamInference
 {
     /** @var FluentCollection<int, Pen> */
     public FluentCollection $items;
+}
+
+class ScaffoldingPipeline
+{
+    /**
+     * @param callable($this, mixed): $this $callback
+     * @return $this
+     */
+    public function when(bool $condition, callable $callback): static { return $this; }
+
+    /**
+     * @param callable($this): void $callback
+     * @return $this
+     */
+    public function tap(callable $callback): static { return $this; }
+
+    public function send(mixed $data): static { return $this; }
+    public function through(array $pipes): static { return $this; }
 }
 
 class ScaffoldingFirstClassCallable

@@ -687,3 +687,177 @@ fn test_extract_callable_param_types_union_non_callable_parts() {
     // Union with a class name but no callable signature
     assert_eq!(extract_callable_param_types("Closure|null"), None,);
 }
+
+// ─── $this / static in callable param types resolve to receiver class ───────
+
+/// When a method signature uses `$this` in a callable parameter type (e.g.
+/// `callable($this, mixed): $this`), the inferred closure parameter should
+/// resolve to the receiver class, not the class the user is editing.
+#[tokio::test]
+async fn test_this_in_callable_param_resolves_to_receiver() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_this_receiver.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "trait Conditionable {\n",
+        "    /**\n",
+        "     * @param callable($this, mixed): $this $callback\n",
+        "     * @return $this\n",
+        "     */\n",
+        "    public function when(bool $condition, callable $callback): static {}\n",
+        "}\n",
+        "class Builder {\n",
+        "    use Conditionable;\n",
+        "    public function where(string $col, mixed $val): static { return $this; }\n",
+        "    public function orderBy(string $col): static { return $this; }\n",
+        "}\n",
+        "class UserController {\n",
+        "    public function index(): void {\n",
+        "        $builder = new Builder();\n",
+        "        $builder->when(true, function ($query) {\n",
+        "            $query->\n",
+        "        });\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Line 17: `            $query->`  cursor after `->`
+    let items = complete_at(&backend, &uri, src, 17, 21).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"where"),
+        "Expected 'where' from Builder (receiver), got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"orderBy"),
+        "Expected 'orderBy' from Builder (receiver), got: {:?}",
+        names,
+    );
+}
+
+/// Same scenario but with `static` instead of `$this` in the callable param type.
+#[tokio::test]
+async fn test_static_in_callable_param_resolves_to_receiver() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_static_receiver.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Pipeline {\n",
+        "    /**\n",
+        "     * @param callable(static): void $callback\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public function tap(callable $callback): static {}\n",
+        "    public function send(mixed $data): static { return $this; }\n",
+        "    public function through(array $pipes): static { return $this; }\n",
+        "}\n",
+        "class SomeService {\n",
+        "    public function run(): void {\n",
+        "        $pipeline = new Pipeline();\n",
+        "        $pipeline->tap(function ($p) {\n",
+        "            $p->\n",
+        "        });\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Line 14: `            $p->`  cursor after `->`
+    let items = complete_at(&backend, &uri, src, 14, 17).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"send"),
+        "Expected 'send' from Pipeline (receiver), got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"through"),
+        "Expected 'through' from Pipeline (receiver), got: {:?}",
+        names,
+    );
+}
+
+/// `$this` in a callable param type on a static method call should also
+/// resolve to the receiver class.
+#[tokio::test]
+async fn test_this_in_callable_param_static_call_resolves_to_receiver() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_this_static_call.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class QueryBuilder {\n",
+        "    /**\n",
+        "     * @param callable($this): void $callback\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public static function create(callable $callback): static {}\n",
+        "    public function limit(int $n): static { return $this; }\n",
+        "    public function offset(int $n): static { return $this; }\n",
+        "}\n",
+        "class Controller {\n",
+        "    public function index(): void {\n",
+        "        QueryBuilder::create(function ($qb) {\n",
+        "            $qb->\n",
+        "        });\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Line 13: `            $qb->`  cursor after `->`
+    let items = complete_at(&backend, &uri, src, 13, 18).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"limit"),
+        "Expected 'limit' from QueryBuilder (static receiver), got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"offset"),
+        "Expected 'offset' from QueryBuilder (static receiver), got: {:?}",
+        names,
+    );
+}
+
+/// Arrow function variant: `$this` in callable param resolves to receiver.
+#[tokio::test]
+async fn test_this_in_callable_param_arrow_fn() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_this_arrow.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Filterable {\n",
+        "    /**\n",
+        "     * @param callable($this): bool $predicate\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public function filter(callable $predicate): static {}\n",
+        "    public function isActive(): bool { return true; }\n",
+        "    public function getName(): string { return ''; }\n",
+        "}\n",
+        "class App {\n",
+        "    public function run(): void {\n",
+        "        $f = new Filterable();\n",
+        "        $f->filter(fn($item) => $item->);\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Line 13: `        $f->filter(fn($item) => $item->);`
+    //                                             ^--- cursor after `->`
+    let items = complete_at(&backend, &uri, src, 13, 39).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"isActive"),
+        "Expected 'isActive' from Filterable (receiver), got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"getName"),
+        "Expected 'getName' from Filterable (receiver), got: {:?}",
+        names,
+    );
+}

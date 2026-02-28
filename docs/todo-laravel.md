@@ -73,43 +73,7 @@ benefit) and an **Effort** estimate (implementation complexity):
 
 ---
 
-#### 1. `$this` in inferred callable parameter types resolves to wrong class
-
-| | |
-|---|---|
-| **Impact** | ★★ — Manifests only when closure params are untyped; most IDE-aware codebases type-hint explicitly. Affects `when()`, `tap()`, and similar higher-order Eloquent/Collection methods. |
-| **Effort** | ★ — Replace literal `$this`/`static` tokens with the receiver's FQN in `infer_callable_params_from_receiver` before returning. |
-
-When a closure parameter is untyped and the inference system extracts
-callable param types from the called method's signature, `$this` in
-the extracted type resolves to the **calling class** (the class
-containing the user's code) instead of the class that declares the
-method.
-
-```php
-// Builder::when() signature (from Conditionable trait):
-// @param callable($this, mixed): $this $callback
-
-// In a controller:
-User::when($active, function ($query) {
-    $query->  // $query inferred as Controller, not Builder<User>
-});
-```
-
-The callable param types are extracted as raw strings by
-`extract_callable_param_types`.  When `$this` appears in these
-strings, `resolve_closure_params_with_inferred` passes them to
-`type_hint_to_classes`, which resolves `$this` relative to
-`ctx.current_class` — the class the user is editing, not the class
-that owns the method.
-
-**Where to change:** In `infer_callable_params_from_receiver` (and
-the static variant), after extracting callable param types, replace
-any literal `$this` or `static` tokens with the FQN of the receiver
-class before returning them.  This ensures the inferred types
-reference the declaring class rather than the calling class.
-
-#### 2. `*_count` relationship count properties
+#### 1. `*_count` relationship count properties
 
 | | |
 |---|---|
@@ -135,7 +99,7 @@ again and push a `{snake_name}_count` property typed as `int` for
 each one.  The property should have lower priority than explicit
 `@property` tags.
 
-#### 3. `#[Scope]` attribute (Laravel 11+)
+#### 2. `#[Scope]` attribute (Laravel 11+)
 
 | | |
 |---|---|
@@ -165,7 +129,7 @@ methods with the `#[Scope]` attribute the same as `scopeX` methods
 (strip the first `$query` parameter, expose as both static and
 instance virtual methods).
 
-#### 4. `$dates` array (deprecated)
+#### 3. `$dates` array (deprecated)
 
 | | |
 |---|---|
@@ -184,7 +148,7 @@ Merge these into `casts_definitions` at a lower priority than explicit
 `$casts` entries, or add a separate field on `ClassInfo` and handle
 priority in the provider.
 
-#### 5. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
+#### 4. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
 
 | | |
 |---|---|
@@ -222,7 +186,7 @@ declares a custom builder via `@use HasBuilder<X>` in `use_generics`
 or a `newEloquentBuilder()` method with a non-default return type.
 If found, load and resolve that builder class instead.
 
-#### 6. `abort_if`/`abort_unless` type narrowing
+#### 5. `abort_if`/`abort_unless` type narrowing
 
 | | |
 |---|---|
@@ -266,7 +230,7 @@ to subsequent code:
 This is similar to the existing guard clause narrowing but triggered
 by specific function names rather than `if` + early return.
 
-#### 7. `collect()` and other helper functions lose generic type info
+#### 6. `collect()` and other helper functions lose generic type info
 
 | | |
 |---|---|
@@ -314,7 +278,7 @@ before passing it to `type_hint_to_classes`.  See the general TODO
 item (§ PHP Language Feature Gaps, "Function-level `@template`
 generic resolution") for the full implementation plan.
 
-#### 8. Factory `has*`/`for*` relationship methods
+#### 7. Factory `has*`/`for*` relationship methods
 
 | | |
 |---|---|
@@ -352,7 +316,7 @@ The `has*` variant should accept optional `int $count` and
 `array|callable $state` parameters; `for*` should accept
 `array|callable $state`.
 
-#### 9. `$pivot` property on BelongsToMany related models
+#### 8. `$pivot` property on BelongsToMany related models
 
 | | |
 |---|---|
@@ -398,7 +362,7 @@ the `BelongsToMany` relationship stubs. If the user's stub set
 includes these annotations, it already works through our PHPDoc
 provider.
 
-#### 10. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
+#### 9. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
 
 | | |
 |---|---|
@@ -414,7 +378,7 @@ aggregate function (`withSum`/`withAvg` → `float`,
 
 The `@property` workaround applies here too.
 
-#### 11. Higher-order collection proxies
+#### 10. Higher-order collection proxies
 
 | | |
 |---|---|
@@ -437,7 +401,7 @@ and `HigherOrderCollectionProxyExtension`, which resolve the proxy's
 template types and delegate property/method lookups to the collection's
 value type.
 
-#### 12. `SoftDeletes` trait methods on Builder
+#### 11. `SoftDeletes` trait methods on Builder
 
 | | |
 |---|---|
@@ -465,7 +429,7 @@ type — e.g. `Builder<static>` instead of `Builder<User>`.  This is
 a minor gap but not worth a dedicated fix until custom builder
 support (gap §7) is implemented.
 
-#### 13. `View::withX()` and `RedirectResponse::withX()` dynamic methods
+#### 12. `View::withX()` and `RedirectResponse::withX()` dynamic methods
 
 | | |
 |---|---|
@@ -497,7 +461,7 @@ hard-coding the two known classes.  A simpler approach: add
 `@method` tags to bundled stubs for the most common dynamic `with*`
 methods, or document this as a known limitation.
 
-#### 14. `$appends` array
+#### 13. `$appends` array
 
 | | |
 |---|---|
