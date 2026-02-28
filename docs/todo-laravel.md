@@ -18,6 +18,11 @@ virtual member provider design, see `ARCHITECTURE.md`.
 | Model column types from DB/migrations | Unreasonable complexity. Require `@property` annotations (via ide-helper or hand-written). |
 | Legacy Laravel versions | We target current Larastan-style annotations. Older code may degrade gracefully. |
 | Application provider scanning | Low-value, high-complexity. |
+| Macro discovery (`Macroable` trait) | Requires booting the application to inspect runtime `$macros` static property. `@method` tags provide a workable fallback. |
+| Auth model from config | Requires reading runtime config (`config/auth.php`). Larastan boots the app for this. |
+| Facade → concrete resolution | Requires booting (`getFacadeRoot()`). `@mixin` on facade stubs handles most cases. |
+| Contract → concrete resolution | Requires container bindings at runtime. |
+| Manager → driver resolution | Requires instantiating the manager at runtime. |
 
 ---
 
@@ -53,9 +58,27 @@ today and what is still missing.
 | Modern accessors (returns `Attribute`) | Always `mixed` | **See gap 1 below** |
 | Relationship methods | Generic params or body inference | |
 
-### Gaps (ranked by impact)
+### Gaps (ranked by impact ÷ effort)
+
+Each gap now carries an **Impact** rating (how many users / codebases
+benefit) and an **Effort** estimate (implementation complexity):
+
+| Rating | Impact meaning | Effort meaning |
+|--------|---------------|----------------|
+| ★ | Rare / niche | Trivial — a few lines |
+| ★★ | Occasionally useful | Small — one function / field |
+| ★★★ | Common pattern | Moderate — touches 2-3 modules |
+| ★★★★ | Very common | Significant — new subsystem or cross-cutting |
+| ★★★★★ | Nearly every codebase | Large — new infrastructure + plumbing |
+
+---
 
 #### 1. Modern accessor `Attribute<TGet>` generic extraction
+
+| | |
+|---|---|
+| **Impact** | ★★★★★ — Modern accessors are the recommended approach since Laravel 9; affects every model with typed accessors. |
+| **Effort** | ★ — `parse_generic_args` already exists; extract first arg and pass through instead of hard-coding `mixed`. |
 
 Modern accessors (Laravel 9+) return `Illuminate\Database\Eloquent\Casts\Attribute`.
 We detect these correctly and synthesize a virtual property, but the
@@ -71,15 +94,17 @@ protected function firstName(): Attribute { ... }
 // Actual:   $first_name typed as `mixed`
 ```
 
-This is the most impactful gap because modern accessors are the
-recommended approach since Laravel 9.
-
 **Where to change:** `is_modern_accessor` already strips generics to
 match the base type. A companion function (or inline logic in `provide`)
 should extract the first generic arg from the return type string via
 `parse_generic_args` and pass it through instead of hard-coding `mixed`.
 
 #### 2. `$visible` array not included in column name extraction
+
+| | |
+|---|---|
+| **Impact** | ★★ — Only affects models that use `$visible` without also declaring the same columns in `$fillable`/`$hidden`/`$casts`. |
+| **Effort** | ★ — Add one string (`"visible"`) to the `targets` array in `extract_column_names`. |
 
 The `$visible` property lists attribute names that should appear in
 serialized output. It functions identically to `$fillable`/`$guarded`/
@@ -88,31 +113,48 @@ serialized output. It functions identically to `$fillable`/`$guarded`/
 **Where to change:** Add `"visible"` to the `targets` array in
 `extract_column_names` in `parser/classes.rs`.
 
-#### 3. `$dates` array (deprecated)
+#### 3. `$this` in inferred callable parameter types resolves to wrong class
 
-Before `$casts`, Laravel used `protected $dates = [...]` to mark
-columns as Carbon instances. This was deprecated in favour of
-`casts()` with a `datetime` type, but older codebases still use it.
-Columns listed in `$dates` should be typed as `\Carbon\Carbon`.
+| | |
+|---|---|
+| **Impact** | ★★ — Manifests only when closure params are untyped; most IDE-aware codebases type-hint explicitly. Affects `when()`, `tap()`, and similar higher-order Eloquent/Collection methods. |
+| **Effort** | ★ — Replace literal `$this`/`static` tokens with the receiver's FQN in `infer_callable_params_from_receiver` before returning. |
 
-**Where to change:** Add a new `extract_dates_definitions` function in
-`parser/classes.rs` (similar to `extract_column_names` but returning
-`Vec<(String, String)>` with each column mapped to `\Carbon\Carbon`).
-Merge these into `casts_definitions` at a lower priority than explicit
-`$casts` entries, or add a separate field on `ClassInfo` and handle
-priority in the provider.
+When a closure parameter is untyped and the inference system extracts
+callable param types from the called method's signature, `$this` in
+the extracted type resolves to the **calling class** (the class
+containing the user's code) instead of the class that declares the
+method.
 
-#### 4. `$appends` array
+```php
+// Builder::when() signature (from Conditionable trait):
+// @param callable($this, mixed): $this $callback
 
-The `$appends` property lists accessor names that should always be
-included in `toArray()` / `toJson()`. These reference existing
-accessors, so in most cases the accessor method itself already produces
-the virtual property. Parsing `$appends` would only help when the
-accessor is defined in an unloaded parent class.
+// In a controller:
+User::when($active, function ($query) {
+    $query->  // $query inferred as Controller, not Builder<User>
+});
+```
 
-**Priority:** Low. The accessor method is the real source of truth.
+The callable param types are extracted as raw strings by
+`extract_callable_param_types`.  When `$this` appears in these
+strings, `resolve_closure_params_with_inferred` passes them to
+`type_hint_to_classes`, which resolves `$this` relative to
+`ctx.current_class` — the class the user is editing, not the class
+that owns the method.
 
-#### 5. `*_count` relationship count properties
+**Where to change:** In `infer_callable_params_from_receiver` (and
+the static variant), after extracting callable param types, replace
+any literal `$this` or `static` tokens with the FQN of the receiver
+class before returning them.  This ensures the inferred types
+reference the declaring class rather than the calling class.
+
+#### 4. `*_count` relationship count properties
+
+| | |
+|---|---|
+| **Impact** | ★★★★ — `withCount`/`loadCount` is one of the most common Eloquent patterns; `$model->posts_count` appears in nearly every non-trivial app. |
+| **Effort** | ★★ — After synthesizing relationship properties, iterate relationships again and push `{snake_name}_count` typed as `int`. |
 
 Accessing `$user->posts_count` is a very common Laravel pattern
 (`withCount`, `loadCount`, or eager-loaded counts). We don't
@@ -133,69 +175,61 @@ again and push a `{snake_name}_count` property typed as `int` for
 each one.  The property should have lower priority than explicit
 `@property` tags.
 
-**Priority:** Medium.  Simple to implement using the Larastan
-approach and covers a very common pattern.
+#### 5. `#[Scope]` attribute (Laravel 11+)
 
-#### 6. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
+| | |
+|---|---|
+| **Impact** | ★★★ — Adoption is growing as the modern alternative to `scopeX`. Already the documented approach in Laravel 11+. |
+| **Effort** | ★★ — Extract `#[Scope]` attributes in the parser; treat them the same as `scopeX` methods in the provider. |
 
-Similar to `withCount`, these aggregate methods produce virtual
-properties named `{relation}_{function}` (e.g.
-`Order::withSum('items', 'price')` → `$order->items_sum`). The same
-call-site tracking challenge applies, and the type depends on the
-aggregate function (`withSum`/`withAvg` → `float`,
-`withMin`/`withMax` → `mixed`).
-
-**Priority:** Low. Unlike gap 5, these can't be inferred declaratively
-from the model alone — you'd need to track call-site string arguments.
-The `@property` workaround applies here too.
-
-#### 7. `$pivot` property on BelongsToMany related models
-
-When a model is accessed through a `BelongsToMany` (or `MorphToMany`)
-relationship, each related model instance gains a `$pivot` property at
-runtime that provides access to intermediate table columns.
+Laravel 11 introduced the `#[Scope]` attribute as an alternative to
+the `scopeX` naming convention. Methods decorated with `#[Scope]`
+are available on the builder without needing the `scope` prefix:
 
 ```php
-/** @return BelongsToMany<Role, $this> */
-public function roles(): BelongsToMany {
-    return $this->belongsToMany(Role::class)->withPivot('expires_at');
+class User extends Model {
+    #[Scope]
+    protected function active(Builder $query): void { ... }
 }
 
-$user->roles->first()->pivot;           // Pivot instance — we know nothing about it
-$user->roles->first()->pivot->expires_at; // accessible at runtime, invisible to us
+User::active()->get(); // works at runtime via #[Scope]
 ```
 
-There are several layers of complexity here:
+Larastan checks for this attribute in `BuilderHelper::searchOnEloquentBuilder()`.
+We currently only detect scopes via the `scopeX` naming convention in
+`is_scope_method`.
 
-1. **Basic `$pivot` property.** Related models accessed through a
-   `BelongsToMany` or `MorphToMany` relationship should have a `$pivot`
-   property typed as `\Illuminate\Database\Eloquent\Relations\Pivot`
-   (or the custom pivot class when `->using(CustomPivot::class)` is
-   used). We don't currently synthesize this property at all.
+**Where to change:** In the parser, extract `#[Scope]` attributes
+from method declarations. In `LaravelModelProvider::provide`, treat
+methods with the `#[Scope]` attribute the same as `scopeX` methods
+(strip the first `$query` parameter, expose as both static and
+instance virtual methods).
 
-2. **`withPivot()` columns.** The `withPivot('col1', 'col2')` call
-   declares which extra columns are available on the pivot object.
-   Tracking these requires parsing the relationship method body for
-   chained `withPivot` calls — similar in difficulty to the
-   `withCount` call-site problem (gap 5).
+#### 6. `$dates` array (deprecated)
 
-3. **Custom pivot models (`using()`).** When `->using(OrderItem::class)`
-   is declared, the pivot is an instance of that custom class, which
-   may have its own properties, casts, and accessors. Detecting this
-   requires parsing the `->using()` call in the relationship body.
+| | |
+|---|---|
+| **Impact** | ★★ — Only affects legacy codebases that haven't migrated to `$casts`. Decreasing relevance over time. |
+| **Effort** | ★★ — New `extract_dates_definitions` function in `parser/classes.rs` + merge logic in the provider at lower priority than `$casts`. |
 
-Note: Larastan does **not** handle pivot properties either — the
-`$pivot` property comes from Laravel's own `@property` annotations on
-the `BelongsToMany` relationship stubs. If the user's stub set
-includes these annotations, it already works through our PHPDoc
-provider.
+Before `$casts`, Laravel used `protected $dates = [...]` to mark
+columns as Carbon instances. This was deprecated in favour of
+`casts()` with a `datetime` type, but older codebases still use it.
+Columns listed in `$dates` should be typed as `\Carbon\Carbon`.
 
-**Priority:** Low-medium. The basic `$pivot` typed as `Pivot` (layer 1)
-would be a modest improvement. Layers 2–3 require relationship body
-parsing that we don't currently do for this purpose. The `@property`
-workaround on a custom Pivot class covers most real-world needs.
+**Where to change:** Add a new `extract_dates_definitions` function in
+`parser/classes.rs` (similar to `extract_column_names` but returning
+`Vec<(String, String)>` with each column mapped to `\Carbon\Carbon`).
+Merge these into `casts_definitions` at a lower priority than explicit
+`$casts` entries, or add a separate field on `ClassInfo` and handle
+priority in the provider.
 
-#### 8. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
+#### 7. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
+
+| | |
+|---|---|
+| **Impact** | ★★★★ — Custom builders are the recommended pattern for complex query scoping in modern Laravel. Without this, users get zero completions for builder-specific methods via static model calls. |
+| **Effort** | ★★★ — In `build_builder_forwarded_methods`, detect `@use HasBuilder<X>` / `newEloquentBuilder()` return type, load the custom builder class, and resolve it instead of the standard `Eloquent\Builder`. |
 
 Laravel 11+ introduced the `HasBuilder` trait and
 `#[UseEloquentBuilder(UserBuilder::class)]` attribute to let models
@@ -228,64 +262,56 @@ declares a custom builder via `@use HasBuilder<X>` in `use_generics`
 or a `newEloquentBuilder()` method with a non-default return type.
 If found, load and resolve that builder class instead.
 
-**Priority:** Medium. Custom builders are the recommended pattern
-for complex query scoping in modern Laravel and Larastan supports
-them. Without this, users of custom builders get no completions for
-their builder-specific methods via static calls on the model.
+#### 8. `abort_if`/`abort_unless` type narrowing
 
-#### 9. `#[Scope]` attribute (Laravel 11+)
+| | |
+|---|---|
+| **Impact** | ★★★★ — These are the standard guard patterns in Laravel controllers and middleware. Without narrowing, variables keep their wider type, causing false "unknown member" warnings and missing completions. |
+| **Effort** | ★★★ — Special-case handling in `type_narrowing.rs` for specific function names; reuses existing guard-clause narrowing logic but triggered differently. |
 
-Laravel 11 introduced the `#[Scope]` attribute as an alternative to
-the `scopeX` naming convention. Methods decorated with `#[Scope]`
-are available on the builder without needing the `scope` prefix:
-
-```php
-class User extends Model {
-    #[Scope]
-    protected function active(Builder $query): void { ... }
-}
-
-User::active()->get(); // works at runtime via #[Scope]
-```
-
-Larastan checks for this attribute in `BuilderHelper::searchOnEloquentBuilder()`.
-We currently only detect scopes via the `scopeX` naming convention in
-`is_scope_method`.
-
-**Where to change:** In the parser, extract `#[Scope]` attributes
-from method declarations. In `LaravelModelProvider::provide`, treat
-methods with the `#[Scope]` attribute the same as `scopeX` methods
-(strip the first `$query` parameter, expose as both static and
-instance virtual methods).
-
-**Priority:** Low-medium. The `scopeX` convention still works and
-is more common. The `#[Scope]` attribute is newer and adoption is
-growing.
-
-#### 10. Higher-order collection proxies
-
-Laravel collections support higher-order proxies via magic properties
-like `$users->map->name` or `$users->filter->isActive()`. These
-produce a `HigherOrderCollectionProxy` that delegates property
-access / method calls to each item in the collection.
+After `abort_if($user === null, 404)`, the type of `$user` should
+be narrowed to exclude `null` in subsequent code.  Similarly,
+`abort_unless($user instanceof Admin, 403)` should narrow `$user`
+to `Admin`.
 
 ```php
-$users->map->email;           // Collection<int, string>
-$users->filter->isVerified(); // Collection<int, User>
-$users->each->notify();       // void (side-effect)
+abort_if($user === null, 404);
+$user->email;  // $user should be non-null here
+
+abort_unless($user instanceof Admin, 403);
+$user->grantPermission('edit');  // $user should be Admin here
 ```
 
-Larastan handles this with `HigherOrderCollectionProxyPropertyExtension`
-and `HigherOrderCollectionProxyExtension`, which resolve the proxy's
-template types and delegate property/method lookups to the collection's
-value type.
+Larastan handles this via `AbortIfFunctionTypeSpecifyingExtension`,
+a PHPStan-specific `TypeSpecifyingExtension` mechanism.  The
+framework does **not** annotate these functions with
+`@phpstan-assert` — there are no stubs for this either.
 
-**Priority:** Low. This is a convenience syntax and most users use
-closures instead. Requires synthesizing virtual properties on
-collection classes that return a proxy type parameterised with the
-collection's value type.
+Our guard clause narrowing already handles the pattern
+`if ($x === null) { return; }` + subsequent code, and we support
+`@phpstan-assert-if-true/false`.  However, `abort_if` / `abort_unless`
+/ `throw_if` / `throw_unless` don't follow either pattern: they are
+standalone function calls (not if-conditions) that conditionally
+throw.
 
-#### 11. `collect()` and other helper functions lose generic type info
+**Where to change:** In `type_narrowing.rs`, add special-case
+handling for standalone `abort_if()`, `abort_unless()`, `throw_if()`,
+and `throw_unless()` calls.  When the first argument is a type check
+expression (instanceof, `=== null`, etc.), apply the inverse narrowing
+to subsequent code:
+- `abort_if($x === null, ...)` → narrow `$x` to non-null after
+- `abort_unless($x instanceof Foo, ...)` → narrow `$x` to `Foo` after
+- `throw_if(...)` / `throw_unless(...)` → same logic
+
+This is similar to the existing guard clause narrowing but triggered
+by specific function names rather than `if` + early return.
+
+#### 9. `collect()` and other helper functions lose generic type info
+
+| | |
+|---|---|
+| **Impact** | ★★★★★ — `collect()` alone is used in virtually every Laravel codebase. Loss of element types breaks completion chains on resulting collections. Also affects `value()`, `retry()`, `tap()`, `with()`, `transform()`, `data_get()`, and non-Laravel functions. |
+| **Effort** | ★★★★ — Requires adding `template_params` / `template_bindings` to `FunctionInfo`, populating from `@template`/`@param` in `parser/functions.rs`, and building substitution maps in `resolve_rhs_function_call`. New infrastructure. |
 
 Laravel's `collect()` helper is annotated with function-level
 `@template` parameters:
@@ -328,45 +354,198 @@ before passing it to `type_hint_to_classes`.  See the general TODO
 item (§ PHP Language Feature Gaps, "Function-level `@template`
 generic resolution") for the full implementation plan.
 
-**Priority:** Medium-high.  `collect()` alone is used in virtually
-every Laravel codebase, and the loss of element types breaks
-completion chains on the resulting collection.
+#### 10. Factory `has*`/`for*` relationship methods
 
-#### 12. `$this` in inferred callable parameter types resolves to wrong class
+| | |
+|---|---|
+| **Impact** | ★★ — Convenience for factory-heavy test suites. Without this, no completion after `->has` or `->for` on factory instances. |
+| **Effort** | ★★★ — Load associated model in `LaravelFactoryProvider::provide`, iterate relationship methods, synthesize `has{Rel}` / `for{Rel}` virtual methods with correct signatures. |
 
-When a closure parameter is untyped and the inference system extracts
-callable param types from the called method's signature, `$this` in
-the extracted type resolves to the **calling class** (the class
-containing the user's code) instead of the class that declares the
+Laravel's `Factory` class supports dynamic `has{Relationship}()` and
+`for{Relationship}()` calls via `__call()`.  For example,
+`UserFactory::new()->hasPosts(3)` checks that `posts` is a valid
+relationship on the `User` model, and
+`UserFactory::new()->forAuthor($state)` delegates to the `for()`
 method.
 
 ```php
-// Builder::when() signature (from Conditionable trait):
-// @param callable($this, mixed): $this $callback
-
-// In a controller:
-User::when($active, function ($query) {
-    $query->  // $query inferred as Controller, not Builder<User>
-});
+UserFactory::new()->hasPosts(3)->create();     // works at runtime
+UserFactory::new()->forAuthor(['name' => 'J'])->create(); // works at runtime
 ```
 
-The callable param types are extracted as raw strings by
-`extract_callable_param_types`.  When `$this` appears in these
-strings, `resolve_closure_params_with_inferred` passes them to
-`type_hint_to_classes`, which resolves `$this` relative to
-`ctx.current_class` — the class the user is editing, not the class
-that owns the method.
+The framework has no `@method` annotations for these — they are
+purely `__call` magic.  Larastan handles this in
+`ModelFactoryMethodsClassReflectionExtension`, which inspects the
+factory's `TModel` template type, checks whether the camelCase
+remainder (after stripping `has`/`for`) is a valid relationship
+method, and synthesizes the method reflection dynamically.
 
-In practice, most users type-hint the closure parameter explicitly
-(`function (Builder $query) { ... }`), which bypasses the inference
-entirely.  The gap only manifests for untyped closure params.
+Our `LaravelFactoryProvider` currently only synthesizes `create()`
+and `make()` methods.
 
-**Where to change:** In `infer_callable_params_from_receiver` (and
-the static variant), after extracting callable param types, replace
-any literal `$this` or `static` tokens with the FQN of the receiver
-class before returning them.  This ensures the inferred types
-reference the declaring class rather than the calling class.
+**Where to change:** In `LaravelFactoryProvider::provide`, after
+synthesizing `create()`/`make()`, load the associated model class.
+For each relationship method on the model, push a `has{Relationship}`
+and `for{Relationship}` virtual method (PascalCase of the method
+name) that returns `static` (i.e. the factory class itself).
+The `has*` variant should accept optional `int $count` and
+`array|callable $state` parameters; `for*` should accept
+`array|callable $state`.
 
-**Priority:** Low.  The explicit type-hint workaround is standard
-practice, and most IDE-aware codebases already type their closure
-parameters.
+#### 11. `$pivot` property on BelongsToMany related models
+
+| | |
+|---|---|
+| **Impact** | ★★★ — Pivot access is common in apps with many-to-many relationships. However, Larastan doesn't handle this either, and `@property` on custom Pivot classes covers most needs. |
+| **Effort** | ★★★★ — Multi-layered: basic `$pivot` typed as `Pivot` is easy, but `withPivot()` columns and `using()` custom pivot classes require relationship body parsing we don't currently do. |
+
+When a model is accessed through a `BelongsToMany` (or `MorphToMany`)
+relationship, each related model instance gains a `$pivot` property at
+runtime that provides access to intermediate table columns.
+
+```php
+/** @return BelongsToMany<Role, $this> */
+public function roles(): BelongsToMany {
+    return $this->belongsToMany(Role::class)->withPivot('expires_at');
+}
+
+$user->roles->first()->pivot;           // Pivot instance — we know nothing about it
+$user->roles->first()->pivot->expires_at; // accessible at runtime, invisible to us
+```
+
+There are several layers of complexity here:
+
+1. **Basic `$pivot` property.** Related models accessed through a
+   `BelongsToMany` or `MorphToMany` relationship should have a `$pivot`
+   property typed as `\Illuminate\Database\Eloquent\Relations\Pivot`
+   (or the custom pivot class when `->using(CustomPivot::class)` is
+   used). We don't currently synthesize this property at all.
+
+2. **`withPivot()` columns.** The `withPivot('col1', 'col2')` call
+   declares which extra columns are available on the pivot object.
+   Tracking these requires parsing the relationship method body for
+   chained `withPivot` calls — similar in difficulty to the
+   `withCount` call-site problem (gap 5).
+
+3. **Custom pivot models (`using()`).** When `->using(OrderItem::class)`
+   is declared, the pivot is an instance of that custom class, which
+   may have its own properties, casts, and accessors. Detecting this
+   requires parsing the `->using()` call in the relationship body.
+
+Note: Larastan does **not** handle pivot properties either — the
+`$pivot` property comes from Laravel's own `@property` annotations on
+the `BelongsToMany` relationship stubs. If the user's stub set
+includes these annotations, it already works through our PHPDoc
+provider.
+
+#### 12. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
+
+| | |
+|---|---|
+| **Impact** | ★★ — Less common than `withCount`; only affects codebases using aggregate eager-loading. |
+| **Effort** | ★★★★ — Cannot be inferred declaratively from the model alone; requires tracking call-site string arguments to `withSum()`/etc. |
+
+Similar to `withCount`, these aggregate methods produce virtual
+properties named `{relation}_{function}` (e.g.
+`Order::withSum('items', 'price')` → `$order->items_sum`). The same
+call-site tracking challenge applies, and the type depends on the
+aggregate function (`withSum`/`withAvg` → `float`,
+`withMin`/`withMax` → `mixed`).
+
+The `@property` workaround applies here too.
+
+#### 13. Higher-order collection proxies
+
+| | |
+|---|---|
+| **Impact** | ★★ — Convenience syntax; most users prefer closures. Niche usage. |
+| **Effort** | ★★★★ — Requires synthesizing virtual properties on collection classes that return a proxy type parameterised with the collection's value type. Complex proxy delegation. |
+
+Laravel collections support higher-order proxies via magic properties
+like `$users->map->name` or `$users->filter->isActive()`. These
+produce a `HigherOrderCollectionProxy` that delegates property
+access / method calls to each item in the collection.
+
+```php
+$users->map->email;           // Collection<int, string>
+$users->filter->isVerified(); // Collection<int, User>
+$users->each->notify();       // void (side-effect)
+```
+
+Larastan handles this with `HigherOrderCollectionProxyPropertyExtension`
+and `HigherOrderCollectionProxyExtension`, which resolve the proxy's
+template types and delegate property/method lookups to the collection's
+value type.
+
+#### 14. `SoftDeletes` trait methods on Builder
+
+| | |
+|---|---|
+| **Impact** | ★ — Already works through `@method` annotations on the `SoftDeletes` trait. Only the generic return type (`Builder<static>` vs `Builder<User>`) is imprecise. |
+| **Effort** | ★ — Not worth a dedicated fix until custom builder support (gap §7) is implemented; would piggyback on that work. |
+
+When a model uses the `SoftDeletes` trait, methods like
+`withTrashed`, `onlyTrashed`, `withoutTrashed`, `restore`,
+`createOrRestore`, and `restoreOrCreate` should be available on
+the Eloquent Builder.
+
+The `SoftDeletes` trait in the framework now ships `@method`
+annotations for these methods, so they are already visible through
+our `@method` PHPDoc provider when the trait is used on a model.
+
+Larastan additionally handles this in
+`EloquentBuilderForwardsCallsExtension` by explicitly checking for
+the `SoftDeletes` trait on the model and forwarding these methods
+through the builder with correct generic return types (e.g.
+`Builder<User>` instead of `Builder<static>`).
+
+**Status:** Mostly covered via `@method` tags on the `SoftDeletes`
+trait.  The generic return types may not carry the concrete model
+type — e.g. `Builder<static>` instead of `Builder<User>`.  This is
+a minor gap but not worth a dedicated fix until custom builder
+support (gap §7) is implemented.
+
+#### 15. `View::withX()` and `RedirectResponse::withX()` dynamic methods
+
+| | |
+|---|---|
+| **Impact** | ★ — Most code uses `->with('key', $value)` instead of the dynamic `->withKey($value)` form. Explicitly declared methods (`withErrors`, `withInput`, etc.) already work. |
+| **Effort** | ★★ — Could hard-code the two known classes or add `@method` tags to bundled stubs. |
+
+Both `Illuminate\View\View` and `Illuminate\Http\RedirectResponse`
+support dynamic `with*()` calls via `__call()`.  For example,
+`view('home')->withUser($user)` is equivalent to
+`->with('user', $user)`.
+
+```php
+view('home')->withUser($user);         // dynamic, no @method annotation
+redirect('/')->withErrors($errors);    // has explicit withErrors(), but withFoo() is dynamic
+```
+
+The framework provides no `@method` annotations for arbitrary
+`with*` calls — only specific ones like `withErrors()`,
+`withInput()`, `withCookies()` etc. are declared as real methods.
+Larastan handles the dynamic case in
+`ViewWithMethodsClassReflectionExtension` and
+`RedirectResponseMethodsClassReflectionExtension`, which treat any
+`with*` call as valid and returning `$this`.
+
+**Where to change:** This could be handled with a lightweight
+virtual member provider that detects classes with a `__call` method
+whose body checks `str_starts_with($method, 'with')`, or by
+hard-coding the two known classes.  A simpler approach: add
+`@method` tags to bundled stubs for the most common dynamic `with*`
+methods, or document this as a known limitation.
+
+#### 16. `$appends` array
+
+| | |
+|---|---|
+| **Impact** | ★ — The accessor method is the real source of truth; `$appends` only helps when the accessor is defined in an unloaded parent class. |
+| **Effort** | ★ — Similar to `$fillable`/`$hidden` extraction. |
+
+The `$appends` property lists accessor names that should always be
+included in `toArray()` / `toJson()`. These reference existing
+accessors, so in most cases the accessor method itself already produces
+the virtual property. Parsing `$appends` would only help when the
+accessor is defined in an unloaded parent class.
