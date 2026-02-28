@@ -847,3 +847,334 @@ async fn test_generator_yield_reverse_inference_cross_file() {
         labels
     );
 }
+
+// ─── Generator yield edge-case tests (from todo.md §33a) ───────────────────
+
+/// When `yield $var` appears inside an `if` block and the cursor is
+/// *inside* the same block (not after it), the variable should still
+/// resolve via reverse yield inference.
+#[tokio::test]
+async fn test_generator_yield_inside_if_block_cursor_inside() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_if_inside.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getEmail(): string {}\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function filteredUsers(): \\Generator {\n",
+        "        if (true) {\n",
+        "            yield $user;\n",
+        "            $user->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor is on line 10 (0-based), after `$user->`
+    let items = complete_at(&backend, &uri, text, 10, 19).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from User when yield and cursor are inside if block. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getEmail")),
+        "Should include 'getEmail' from User when yield and cursor are inside if block. Got: {:?}",
+        labels
+    );
+}
+
+/// When `yield $var` appears inside an `if` block but the cursor is
+/// *after* the block, reverse yield inference should still work.
+#[tokio::test]
+async fn test_generator_yield_inside_if_block_cursor_after() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_if_after.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getEmail(): string {}\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function filteredUsers(): \\Generator {\n",
+        "        if (true) {\n",
+        "            yield $user;\n",
+        "        }\n",
+        "        $user->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 11, 15).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from User when yield is inside if block and cursor is after. Got: {:?}",
+        labels
+    );
+}
+
+/// When `yield $var` appears inside a `foreach` loop body and the cursor
+/// is inside the loop, the variable should still resolve.
+#[tokio::test]
+async fn test_generator_yield_inside_foreach_cursor_inside() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_foreach_in.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function allUsers(): \\Generator {\n",
+        "        foreach ($items as $item) {\n",
+        "            yield $user;\n",
+        "            $user->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 9, 19).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from User when yield and cursor are inside foreach. Got: {:?}",
+        labels
+    );
+}
+
+/// When two separate variables are yielded in the same generator,
+/// the first variable should resolve (cursor after first yield, before second).
+#[tokio::test]
+async fn test_generator_yield_multiple_vars_first() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_multi_first.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getEmail(): string {}\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function allUsers(): \\Generator {\n",
+        "        yield $first;\n",
+        "        $first->\n",
+        "        yield $second;\n",
+        "        $second->getEmail();\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor on `$first->` (line 9, col 16)
+    let items = complete_at(&backend, &uri, text, 9, 16).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from User for $first when multiple yields exist. Got: {:?}",
+        labels
+    );
+}
+
+/// When two separate variables are yielded, the second variable should
+/// also resolve.
+#[tokio::test]
+async fn test_generator_yield_multiple_vars_second() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_multi_second.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getEmail(): string {}\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function allUsers(): \\Generator {\n",
+        "        yield $first;\n",
+        "        $first->getEmail();\n",
+        "        yield $second;\n",
+        "        $second->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor on `$second->` (line 11, col 17)
+    let items = complete_at(&backend, &uri, text, 11, 17).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from User for $second when multiple yields exist. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getEmail")),
+        "Should include 'getEmail' from User for $second when multiple yields exist. Got: {:?}",
+        labels
+    );
+}
+
+/// Chaining a method call on a yield-inferred variable should resolve
+/// the next link.  `$user->getProfile()->` should complete with Profile members.
+#[tokio::test]
+async fn test_generator_yield_chain_method_call() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Profile {\n",
+        "    public string $bio;\n",
+        "}\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    /** @return Profile */\n",
+        "    public function getProfile(): Profile {}\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function withProfiles(): \\Generator {\n",
+        "        yield $user;\n",
+        "        $user->getProfile()->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor after `$user->getProfile()->`  (line 13, col 30)
+    let items = complete_at(&backend, &uri, text, 13, 30).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("bio")),
+        "Should include 'bio' from Profile via chaining on yield-inferred User. Got: {:?}",
+        labels
+    );
+}
+
+/// Chaining a property access on a yield-inferred variable.
+/// `$user->profile->` should complete with the Profile property's type members.
+#[tokio::test]
+async fn test_generator_yield_chain_property() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_chain_prop.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Profile {\n",
+        "    public string $bio;\n",
+        "}\n",
+        "class User {\n",
+        "    public Profile $profile;\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function withProfiles(): \\Generator {\n",
+        "        yield $user;\n",
+        "        $user->profile->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor after `$user->profile->`  (line 11, col 25)
+    let items = complete_at(&backend, &uri, text, 11, 25).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("bio")),
+        "Should include 'bio' from Profile via property chain on yield-inferred User. Got: {:?}",
+        labels
+    );
+}
+
+/// TSend inference (`$var = yield`) should work when the target method
+/// appears after other classes/methods with nested braces, which can
+/// confuse the backward brace scan in `find_enclosing_return_type`.
+#[tokio::test]
+async fn test_generator_tsend_after_multiple_classes_with_braces() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_tsend_multi_class.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Command {\n",
+        "    public string $action;\n",
+        "    public function execute(): void {}\n",
+        "}\n",
+        "class ServiceA {\n",
+        "    public function doSomething(): void {\n",
+        "        if (true) {\n",
+        "            $x = 1;\n",
+        "        }\n",
+        "    }\n",
+        "    public function doMore(): void {\n",
+        "        foreach ([1,2] as $v) {\n",
+        "            $y = $v;\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+        "class ServiceB {\n",
+        "    public function helper(): string {\n",
+        "        return 'ok';\n",
+        "    }\n",
+        "}\n",
+        "class Worker {\n",
+        "    /** @return \\Generator<int, string, Command, void> */\n",
+        "    public function run(): \\Generator {\n",
+        "        $cmd = yield 'ready';\n",
+        "        $cmd->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor on `$cmd->` (line 26, col 14)
+    let items = complete_at(&backend, &uri, text, 26, 14).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("action")),
+        "Should include 'action' from Command via TSend after multiple classes. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("execute")),
+        "Should include 'execute' from Command via TSend after multiple classes. Got: {:?}",
+        labels
+    );
+}
+
+/// TSend inference should work inside deeply nested control flow within the
+/// generator method body.
+#[tokio::test]
+async fn test_generator_tsend_inside_nested_control_flow() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_tsend_nested_flow.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Task {\n",
+        "    public int $priority;\n",
+        "}\n",
+        "class Scheduler {\n",
+        "    /** @return \\Generator<int, string, Task, void> */\n",
+        "    public function schedule(): \\Generator {\n",
+        "        while (true) {\n",
+        "            if (true) {\n",
+        "                $task = yield 'waiting';\n",
+        "                $task->\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor on `$task->` (line 10, col 23 — right after `->`)
+    let items = complete_at(&backend, &uri, text, 10, 23).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("priority")),
+        "Should include 'priority' from Task via TSend inside nested control flow. Got: {:?}",
+        labels
+    );
+}

@@ -445,12 +445,17 @@ impl Backend {
                     if ctx.cursor_offset >= body_start && ctx.cursor_offset <= body_end {
                         // Extract the enclosing function's @return type
                         // for generator yield inference inside the body.
-                        // Use cursor_offset (inside the body) rather than
-                        // body_start (the `{` itself) so the opening
-                        // brace is included in the backward scan.
+                        // Use body_start + 1 (just past the opening `{`)
+                        // so the backward brace scan in
+                        // find_enclosing_return_type immediately finds
+                        // the function's own `{` and does NOT get
+                        // confused by intermediate `{`/`}` from nested
+                        // control-flow (if, while, foreach, etc.) that
+                        // would sit between the cursor and the function
+                        // brace when cursor_offset is used.
                         let enclosing_ret = crate::docblock::find_enclosing_return_type(
                             ctx.content,
-                            ctx.cursor_offset as usize,
+                            (body_start + 1) as usize,
                         );
                         let body_ctx = VarResolutionCtx {
                             var_name: ctx.var_name,
@@ -593,12 +598,17 @@ impl Backend {
                     if ctx.cursor_offset >= blk_start && ctx.cursor_offset <= blk_end {
                         // Extract the enclosing method's @return type for
                         // generator yield inference inside the body.
-                        // Use cursor_offset (inside the body) rather than
-                        // blk_start (the `{` itself) so the opening brace
-                        // is included in the backward scan.
+                        // Use blk_start + 1 (just past the opening `{`)
+                        // so the backward brace scan in
+                        // find_enclosing_return_type immediately finds
+                        // the method's own `{` and does NOT get confused
+                        // by intermediate `{`/`}` from nested control-
+                        // flow (if, while, foreach, etc.) that would sit
+                        // between the cursor and the method brace when
+                        // cursor_offset is used.
                         let enclosing_ret = crate::docblock::find_enclosing_return_type(
                             ctx.content,
-                            ctx.cursor_offset as usize,
+                            (blk_start + 1) as usize,
                         );
                         let body_ctx = VarResolutionCtx {
                             var_name: ctx.var_name,

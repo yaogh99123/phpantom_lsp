@@ -21,7 +21,7 @@ PHPantom focuses on completion and go-to-definition and aims to do them really w
 | Laravel Eloquent | ✅ | ❌ | ❌ | ❌ | 🧩 |
 | Array shape inference | ✅ | ❌ | ✅ | ❌ | 🚧 |
 | Object shape completion | ✅ | ❌ | ✅ | ❌ | 🚧 |
-| Generator body types | 🚧 | ❌ | 🚧 | ❌ | ❌ |
+| Generator body types | ✅ | ❌ | 🚧 | ❌ | ❌ |
 | Hover | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Signature help | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Find references | ❌ | ✅ | ✅ | ✅ | ✅ |

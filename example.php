@@ -1177,6 +1177,39 @@ class GeneratorYieldDemo
         $anotherUser->getName();          // resolves to User
     }
 
+    /** @return \Generator<int, User> */
+    public function yieldInsideControlFlow(): \Generator
+    {
+        // Yield inside control flow: `yield $var` inside if/foreach/while
+        // blocks still infers the variable type from TValue.
+        if (true) {
+            yield $user;
+            $user->getEmail();            // resolves to User inside the block
+        }
+        $user->getName();                 // resolves to User after the block too
+    }
+
+    /** @return \Generator<int, User> */
+    public function multipleYields(): \Generator
+    {
+        // Multiple yields with different variable names: each variable
+        // independently resolves to TValue.
+        yield $first;
+        $first->getEmail();               // resolves to User
+
+        yield $second;
+        $second->getName();               // resolves to User
+    }
+
+    /** @return \Generator<int, User> */
+    public function chainingThroughYieldInferred(): \Generator
+    {
+        // Chaining through a yield-inferred variable: method calls on
+        // the inferred type resolve the next link in the chain.
+        yield $user;
+        $user->getProfile()->getDisplayName(); // resolves through User → UserProfile
+    }
+
     /** @return \Generator<int, string, Request, void> */
     public function coroutine(): \Generator
     {
@@ -1184,6 +1217,20 @@ class GeneratorYieldDemo
         // (3rd param) to $var. Here TSend is Request.
         $request = yield 'ready';
         $request->getUri();               // resolves to Request
+    }
+
+    /** @return \Generator<int, string, Request, void> */
+    public function tsendInsideNestedBlocks(): \Generator
+    {
+        // TSend inference inside nested control flow: the backward brace
+        // scan correctly finds the function's opening brace even when
+        // the yield is deeply nested.
+        while (true) {
+            if (true) {
+                $req = yield 'waiting';
+                $req->getUri();           // resolves to Request
+            }
+        }
     }
 }
 
