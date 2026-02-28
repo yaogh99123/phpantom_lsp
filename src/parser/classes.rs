@@ -9,6 +9,22 @@ use mago_syntax::ast::class_like::trait_use::{
     TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification,
 };
 use mago_syntax::ast::sequence::Sequence;
+
+/// Check whether a method has the `#[Scope]` attribute (Laravel 11+).
+///
+/// Scans the method's attribute lists for an attribute whose short name
+/// is `Scope` (matching `#[Scope]`, `#[\Illuminate\Database\Eloquent\Attributes\Scope]`,
+/// or any use-imported alias that ends with `Scope`).
+fn has_scope_attribute(method: &Method<'_>) -> bool {
+    for attr_list in method.attribute_lists.iter() {
+        for attr in attr_list.attributes.iter() {
+            if attr.name.last_segment() == "Scope" {
+                return true;
+            }
+        }
+    }
+    false
+}
 /// Class, interface, trait, and enum extraction.
 ///
 /// Each class-like declaration is tagged with a [`ClassLikeKind`] so that
@@ -1585,6 +1601,8 @@ impl Backend {
                         }
                     }
 
+                    let has_scope_attr = has_scope_attribute(method);
+
                     methods.push(MethodInfo {
                         name,
                         name_offset,
@@ -1596,6 +1614,7 @@ impl Backend {
                         is_deprecated,
                         template_params: method_template_params,
                         template_bindings: method_template_bindings,
+                        has_scope_attribute: has_scope_attr,
                     });
                 }
                 ClassLikeMember::Property(property) => {

@@ -932,9 +932,19 @@ impl Backend {
         }
 
         // Look for `scopeXxx` on the model's inheritance chain.
+        // For `#[Scope]`-attributed methods, the declaration uses the
+        // original name (e.g. `active`), not `scopeActive`.  Try the
+        // `scopeX` convention first, then fall back to the original name.
         let scope_name = Self::scope_method_name(member_name);
-        let (declaring, fqn) = Self::find_declaring_class(&model, &scope_name, class_loader)?;
-        Some((declaring, fqn, scope_name))
+        if let Some((declaring, fqn)) =
+            Self::find_declaring_class(&model, &scope_name, class_loader)
+        {
+            return Some((declaring, fqn, scope_name));
+        }
+
+        // Fallback: `#[Scope]` attribute — the method keeps its own name.
+        let (declaring, fqn) = Self::find_declaring_class(&model, member_name, class_loader)?;
+        Some((declaring, fqn, member_name.to_string()))
     }
 
     fn resolve_trait_alias(class: &ClassInfo, member_name: &str) -> (String, Option<String>) {

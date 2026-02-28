@@ -238,6 +238,12 @@ namespace Illuminate\\Database\\Eloquent\\Attributes;
 class CollectedBy {}
 ";
 
+const SCOPE_ATTR_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Attributes;
+class Scope {}
+";
+
 const HAS_COLLECTION_PHP: &str = "\
 <?php
 namespace Illuminate\\Database\\Eloquent;
@@ -327,6 +333,10 @@ fn framework_stubs() -> Vec<(&'static str, &'static str)> {
         (
             "vendor/illuminate/Eloquent/Attributes/CollectedBy.php",
             COLLECTED_BY_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Attributes/Scope.php",
+            SCOPE_ATTR_PHP,
         ),
         (
             "vendor/illuminate/Eloquent/HasCollection.php",
@@ -9021,5 +9031,393 @@ class User extends Model {
         props.contains(&"posts_count"),
         "(new User())-> should include 'posts_count', got: {:?}",
         props
+    );
+}
+
+// ─── #[Scope] attribute (Laravel 11+) ───────────────────────────────────────
+
+/// A method with `#[Scope]` should produce completions using its own name
+/// (no prefix stripping), available as both static and instance.
+#[tokio::test]
+async fn test_scope_attribute_completion_static() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    #[Scope]
+    protected function active(Builder $query): void {}
+    public function test() {
+        User::
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "User::" at line 9, character 14
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 14).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"active"),
+        "#[Scope] should produce a static 'active' method, got: {:?}",
+        method_names
+    );
+}
+
+/// `#[Scope]` method should be available as an instance method too.
+#[tokio::test]
+async fn test_scope_attribute_completion_instance() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    #[Scope]
+    protected function active(Builder $query): void {}
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "$user->" at line 10, character 15
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"active"),
+        "#[Scope] should produce an instance 'active' method, got: {:?}",
+        method_names
+    );
+}
+
+/// `#[Scope]` with extra parameters beyond `$query` should preserve them.
+#[tokio::test]
+async fn test_scope_attribute_with_extra_params() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    #[Scope]
+    protected function ofType(Builder $query, string $type): void {}
+    public function test() {
+        User::
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 14).await;
+    let of_type: Vec<&CompletionItem> = items
+        .iter()
+        .filter(|i| {
+            i.kind == Some(CompletionItemKind::METHOD)
+                && i.filter_text.as_deref().unwrap_or(&i.label) == "ofType"
+        })
+        .collect();
+
+    assert!(
+        !of_type.is_empty(),
+        "#[Scope] ofType should appear in completions"
+    );
+}
+
+/// `#[Scope]` scope should work on Builder instances (chaining).
+#[tokio::test]
+async fn test_scope_attribute_on_builder_chain() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    #[Scope]
+    protected function active(Builder $query): void {}
+    public function getName(): string { return ''; }
+    public function test() {
+        User::where('id', 1)->active()->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "->active()->" at line 10, character 40
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 40).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"get"),
+        "After #[Scope] chain, Builder methods like 'get' should be available, got: {:?}",
+        method_names
+    );
+}
+
+/// `#[Scope]` on a Builder instance without static call.
+#[tokio::test]
+async fn test_scope_attribute_on_builder_variable() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    #[Scope]
+    protected function active(Builder $query): void {}
+    public function test() {
+        $q = User::where('status', 'pending');
+        $q->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "$q->" at line 10, character 12
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 12).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"active"),
+        "#[Scope] should be available on Builder variable, got: {:?}",
+        method_names
+    );
+}
+
+/// `#[Scope]` attribute and `scopeX` convention can coexist on the same model.
+#[tokio::test]
+async fn test_scope_attribute_and_convention_coexist() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    public function scopeVerified(Builder $query): void {}
+    #[Scope]
+    protected function active(Builder $query): void {}
+    public function test() {
+        User::
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 14).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"active"),
+        "#[Scope] 'active' should appear, got: {:?}",
+        method_names
+    );
+    assert!(
+        method_names.contains(&"verified"),
+        "Convention 'verified' should appear, got: {:?}",
+        method_names
+    );
+}
+
+/// `#[Scope]` with FQN attribute name should also work.
+#[tokio::test]
+async fn test_scope_attribute_fqn() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class User extends Model {
+    #[\\Illuminate\\Database\\Eloquent\\Attributes\\Scope]
+    protected function active(Builder $query): void {}
+    public function test() {
+        User::
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 14).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"active"),
+        "FQN #[Scope] should produce 'active' method, got: {:?}",
+        method_names
+    );
+}
+
+/// `#[Scope]` defined in a trait used by the model.
+#[tokio::test]
+async fn test_scope_attribute_in_trait() {
+    let trait_php = "\
+<?php
+namespace App\\Concerns;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+trait HasActiveScope {
+    #[Scope]
+    protected function active(Builder $query): void {
+        $query->where('active', true);
+    }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use App\\Concerns\\HasActiveScope;
+class User extends Model {
+    use HasActiveScope;
+    public function test() {
+        User::
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Concerns/HasActiveScope.php", trait_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 14).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"active"),
+        "#[Scope] from trait should produce 'active' method, got: {:?}",
+        method_names
+    );
+}
+
+/// Inside a `#[Scope]` method body, `$query->` should resolve scope methods
+/// from the enclosing model.
+#[tokio::test]
+async fn test_scope_attribute_query_resolution_inside_body() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    public function scopeVerified(Builder $query): void {}
+    #[Scope]
+    protected function active(Builder $query): void {
+        $query->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "$query->" at line 9, character 16
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 16).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"where"),
+        "$query-> inside #[Scope] body should have Builder methods, got: {:?}",
+        method_names
+    );
+    assert!(
+        method_names.contains(&"verified"),
+        "$query-> inside #[Scope] body should have convention scopes, got: {:?}",
+        method_names
+    );
+}
+
+/// `#[Scope]` protected method accessed from *outside* the model class
+/// must still appear as a public scope method in instance completions.
+/// This is the scenario where `$bakery->fresh()` was missing: the
+/// original `protected function fresh()` blocked the virtual public
+/// replacement during merge.
+#[tokio::test]
+async fn test_scope_attribute_instance_from_outside_class() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class User extends Model {
+    #[Scope]
+    protected function active(Builder $query): void {}
+    public function getName(): string { return ''; }
+}
+";
+    let demo_php = "\
+<?php
+namespace App\\Demo;
+use App\\Models\\User;
+class Demo {
+    public function test(): void {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Demo/Demo.php", demo_php),
+    ]);
+
+    // "$user->" at line 6, character 15
+    let items = complete_at(&backend, &dir, "src/Demo/Demo.php", demo_php, 6, 15).await;
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+        .collect();
+
+    assert!(
+        method_names.contains(&"active"),
+        "#[Scope] should appear as public instance method from outside the class, got: {:?}",
+        method_names
+    );
+    assert!(
+        method_names.contains(&"getName"),
+        "regular public method should also appear, got: {:?}",
+        method_names
     );
 }

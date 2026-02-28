@@ -131,6 +131,14 @@ pub struct MethodInfo {
     /// bindings to infer concrete types for each template parameter
     /// from the actual argument expressions.
     pub template_bindings: Vec<(String, String)>,
+    /// Whether this method has the `#[Scope]` attribute (Laravel 11+).
+    ///
+    /// Methods decorated with `#[\Illuminate\Database\Eloquent\Attributes\Scope]`
+    /// are treated as Eloquent scope methods without needing the `scopeX`
+    /// naming convention.  The method's own name is used directly as the
+    /// public-facing scope name (e.g. `#[Scope] protected function active()`
+    /// becomes `User::active()`).
+    pub has_scope_attribute: bool,
 }
 
 /// Stores extracted property information from a parsed PHP class.

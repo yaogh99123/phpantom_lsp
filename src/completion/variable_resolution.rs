@@ -74,20 +74,27 @@ fn build_var_resolver_from_ctx<'a>(
 /// Eloquent scope method Builder parameters.
 ///
 /// When `type_str` resolves to `Builder` (the Eloquent Builder, without
-/// generic parameters) and the enclosing method is a scope (name starts
-/// with `scope`, len > 5) on a class that extends Eloquent Model,
-/// returns `Some("Builder<EnclosingModelName>")`.  Otherwise returns
-/// `None`, meaning the caller should use the original type string.
+/// generic parameters) and the enclosing method is a scope on a class
+/// that extends Eloquent Model, returns
+/// `Some("Builder<EnclosingModelName>")`.  Otherwise returns `None`,
+/// meaning the caller should use the original type string.
+///
+/// A method is considered a scope when it uses the `scopeX` naming
+/// convention (name starts with `scope`, len > 5) **or** when
+/// `has_scope_attr` is `true` (the method has `#[Scope]`).
 fn enrich_builder_type_in_scope(
     type_str: &str,
     method_name: &str,
+    has_scope_attr: bool,
     current_class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
 ) -> Option<String> {
     use crate::virtual_members::laravel::{ELOQUENT_BUILDER_FQN, extends_eloquent_model};
 
-    // Only applies inside scope methods (scopeX where X is at least one char).
-    if !method_name.starts_with("scope") || method_name.len() <= 5 {
+    // Only applies inside scope methods: either the scopeX naming
+    // convention or the #[Scope] attribute.
+    let is_convention_scope = method_name.starts_with("scope") && method_name.len() > 5;
+    if !is_convention_scope && !has_scope_attr {
         return None;
     }
 
@@ -539,9 +546,18 @@ impl Backend {
                         // generic-args path injects scope methods.
                         let enriched_type_str = native_type_str.as_deref().and_then(|ts| {
                             let method_name = method.name.value.to_string();
+                            // Check whether the method has a #[Scope]
+                            // attribute so that the enrichment also
+                            // applies to attribute-style scopes.
+                            let has_scope_attr = method.attribute_lists.iter().any(|al| {
+                                al.attributes
+                                    .iter()
+                                    .any(|a| a.name.last_segment() == "Scope")
+                            });
                             enrich_builder_type_in_scope(
                                 ts,
                                 &method_name,
+                                has_scope_attr,
                                 ctx.current_class,
                                 ctx.class_loader,
                             )
@@ -2416,7 +2432,8 @@ mod tests {
     #[test]
     fn enrich_scope_method_with_builder_type() {
         let model = make_model("App\\Models\\User");
-        let result = enrich_builder_type_in_scope("Builder", "scopeActive", &model, &model_loader);
+        let result =
+            enrich_builder_type_in_scope("Builder", "scopeActive", false, &model, &model_loader);
         assert_eq!(result, Some("Builder<App\\Models\\User>".to_string()));
     }
 
@@ -2426,6 +2443,7 @@ mod tests {
         let result = enrich_builder_type_in_scope(
             "Illuminate\\Database\\Eloquent\\Builder",
             "scopeActive",
+            false,
             &model,
             &model_loader,
         );
@@ -2438,21 +2456,23 @@ mod tests {
     #[test]
     fn enrich_skips_non_scope_method() {
         let model = make_model("App\\Models\\User");
-        let result = enrich_builder_type_in_scope("Builder", "getName", &model, &model_loader);
+        let result =
+            enrich_builder_type_in_scope("Builder", "getName", false, &model, &model_loader);
         assert_eq!(result, None);
     }
 
     #[test]
     fn enrich_skips_bare_scope_name() {
         let model = make_model("App\\Models\\User");
-        let result = enrich_builder_type_in_scope("Builder", "scope", &model, &model_loader);
+        let result = enrich_builder_type_in_scope("Builder", "scope", false, &model, &model_loader);
         assert_eq!(result, None);
     }
 
     #[test]
     fn enrich_skips_non_model_class() {
         let plain = make_class("App\\Services\\SomeService");
-        let result = enrich_builder_type_in_scope("Builder", "scopeActive", &plain, &model_loader);
+        let result =
+            enrich_builder_type_in_scope("Builder", "scopeActive", false, &plain, &model_loader);
         assert_eq!(result, None);
     }
 
@@ -2460,15 +2480,20 @@ mod tests {
     fn enrich_skips_non_builder_type() {
         let model = make_model("App\\Models\\User");
         let result =
-            enrich_builder_type_in_scope("Collection", "scopeActive", &model, &model_loader);
+            enrich_builder_type_in_scope("Collection", "scopeActive", false, &model, &model_loader);
         assert_eq!(result, None);
     }
 
     #[test]
     fn enrich_skips_builder_with_existing_generics() {
         let model = make_model("App\\Models\\User");
-        let result =
-            enrich_builder_type_in_scope("Builder<User>", "scopeActive", &model, &model_loader);
+        let result = enrich_builder_type_in_scope(
+            "Builder<User>",
+            "scopeActive",
+            false,
+            &model,
+            &model_loader,
+        );
         assert_eq!(result, None);
     }
 
@@ -2476,7 +2501,7 @@ mod tests {
     fn enrich_scope_multi_word_method_name() {
         let model = make_model("App\\Models\\User");
         let result =
-            enrich_builder_type_in_scope("Builder", "scopeByAuthor", &model, &model_loader);
+            enrich_builder_type_in_scope("Builder", "scopeByAuthor", false, &model, &model_loader);
         assert_eq!(result, Some("Builder<App\\Models\\User>".to_string()));
     }
 
@@ -2486,6 +2511,7 @@ mod tests {
         let result = enrich_builder_type_in_scope(
             "\\Illuminate\\Database\\Eloquent\\Builder",
             "scopeActive",
+            false,
             &model,
             &model_loader,
         );
@@ -2493,5 +2519,54 @@ mod tests {
             result,
             Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>".to_string())
         );
+    }
+
+    // ── #[Scope] attribute tests ────────────────────────────────────────
+
+    #[test]
+    fn enrich_scope_attribute_method_with_builder_type() {
+        let model = make_model("App\\Models\\User");
+        let result = enrich_builder_type_in_scope("Builder", "active", true, &model, &model_loader);
+        assert_eq!(result, Some("Builder<App\\Models\\User>".to_string()));
+    }
+
+    #[test]
+    fn enrich_scope_attribute_with_fqn_builder() {
+        let model = make_model("App\\Models\\User");
+        let result = enrich_builder_type_in_scope(
+            "Illuminate\\Database\\Eloquent\\Builder",
+            "active",
+            true,
+            &model,
+            &model_loader,
+        );
+        assert_eq!(
+            result,
+            Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>".to_string())
+        );
+    }
+
+    #[test]
+    fn enrich_scope_attribute_skips_non_model_class() {
+        let plain = make_class("App\\Services\\SomeService");
+        let result = enrich_builder_type_in_scope("Builder", "active", true, &plain, &model_loader);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn enrich_scope_attribute_skips_non_builder_type() {
+        let model = make_model("App\\Models\\User");
+        let result =
+            enrich_builder_type_in_scope("Collection", "active", true, &model, &model_loader);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn enrich_no_scope_attribute_and_no_convention_skips() {
+        let model = make_model("App\\Models\\User");
+        // Not a scopeX name and no attribute → should skip.
+        let result =
+            enrich_builder_type_in_scope("Builder", "active", false, &model, &model_loader);
+        assert_eq!(result, None);
     }
 }

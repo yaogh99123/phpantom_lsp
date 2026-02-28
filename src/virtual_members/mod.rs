@@ -106,6 +106,13 @@ pub trait VirtualMemberProvider {
 /// variant of the same method (e.g. Laravel scope methods that are
 /// accessible via both `User::active()` and `$user->active()`).
 ///
+/// **Exception:** when the existing method has `has_scope_attribute: true`,
+/// the virtual method **replaces** it.  `#[Scope]`-attributed methods
+/// share their name with the synthesized scope method, but the original
+/// is a `protected` implementation detail that should not appear in
+/// completion results.  The virtual replacement is `public` with the
+/// first `$query` parameter stripped, which is what callers actually see.
+///
 /// Properties and constants are deduplicated by name only.
 ///
 /// This ensures that real declared members (and contributions from
@@ -113,12 +120,22 @@ pub trait VirtualMemberProvider {
 /// overwritten.
 pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMembers) {
     for method in virtual_members.methods {
-        if !class
+        let existing = class
             .methods
             .iter()
-            .any(|m| m.name == method.name && m.is_static == method.is_static)
-        {
-            class.methods.push(method);
+            .position(|m| m.name == method.name && m.is_static == method.is_static);
+        match existing {
+            Some(idx) if class.methods[idx].has_scope_attribute => {
+                // Replace the #[Scope]-attributed original with the
+                // synthesized virtual scope method.
+                class.methods[idx] = method;
+            }
+            Some(_) => {
+                // Real declared member — keep the original.
+            }
+            None => {
+                class.methods.push(method);
+            }
         }
     }
     for property in virtual_members.properties {
@@ -322,6 +339,7 @@ mod tests {
             is_deprecated: false,
             template_params: Vec::new(),
             template_bindings: Vec::new(),
+            has_scope_attribute: false,
         }
     }
 
@@ -484,6 +502,112 @@ mod tests {
             static_m.return_type.as_deref(),
             Some("Builder"),
             "static variant should be added alongside instance"
+        );
+    }
+
+    #[test]
+    fn merge_replaces_scope_attribute_method_with_virtual() {
+        let mut class = make_class("Foo");
+        let mut original = make_method("active", Some("void"));
+        original.has_scope_attribute = true;
+        original.visibility = Visibility::Protected;
+        class.methods.push(original);
+
+        let mut virtual_scope = make_method("active", Some("Builder<static>"));
+        virtual_scope.visibility = Visibility::Public;
+
+        let virtual_members = VirtualMembers {
+            methods: vec![virtual_scope],
+            properties: Vec::new(),
+            constants: Vec::new(),
+        };
+
+        merge_virtual_members(&mut class, virtual_members);
+
+        assert_eq!(class.methods.len(), 1);
+        assert_eq!(
+            class.methods[0].return_type.as_deref(),
+            Some("Builder<static>"),
+            "#[Scope] original should be replaced by virtual scope method"
+        );
+        assert_eq!(
+            class.methods[0].visibility,
+            Visibility::Public,
+            "replacement should be public"
+        );
+    }
+
+    #[test]
+    fn merge_does_not_replace_non_scope_attribute_method() {
+        let mut class = make_class("Foo");
+        let mut original = make_method("active", Some("string"));
+        original.has_scope_attribute = false;
+        class.methods.push(original);
+
+        let virtual_members = VirtualMembers {
+            methods: vec![make_method("active", Some("int"))],
+            properties: Vec::new(),
+            constants: Vec::new(),
+        };
+
+        merge_virtual_members(&mut class, virtual_members);
+
+        assert_eq!(class.methods.len(), 1);
+        assert_eq!(
+            class.methods[0].return_type.as_deref(),
+            Some("string"),
+            "non-#[Scope] method should not be replaced"
+        );
+    }
+
+    #[test]
+    fn merge_replaces_scope_attribute_and_adds_static_variant() {
+        let mut class = make_class("Foo");
+        let mut original = make_method("active", Some("void"));
+        original.has_scope_attribute = true;
+        original.visibility = Visibility::Protected;
+        class.methods.push(original);
+
+        let mut virtual_instance = make_method("active", Some("Builder<static>"));
+        virtual_instance.visibility = Visibility::Public;
+
+        let mut virtual_static = make_method("active", Some("Builder<static>"));
+        virtual_static.is_static = true;
+        virtual_static.visibility = Visibility::Public;
+
+        let virtual_members = VirtualMembers {
+            methods: vec![virtual_instance, virtual_static],
+            properties: Vec::new(),
+            constants: Vec::new(),
+        };
+
+        merge_virtual_members(&mut class, virtual_members);
+
+        assert_eq!(
+            class.methods.len(),
+            2,
+            "replaced instance + new static should coexist"
+        );
+        let instance = class
+            .methods
+            .iter()
+            .find(|m| m.name == "active" && !m.is_static)
+            .unwrap();
+        assert_eq!(
+            instance.return_type.as_deref(),
+            Some("Builder<static>"),
+            "instance should be the virtual replacement"
+        );
+        assert_eq!(instance.visibility, Visibility::Public);
+        let static_m = class
+            .methods
+            .iter()
+            .find(|m| m.name == "active" && m.is_static)
+            .unwrap();
+        assert_eq!(
+            static_m.return_type.as_deref(),
+            Some("Builder<static>"),
+            "static variant should be added"
         );
     }
 

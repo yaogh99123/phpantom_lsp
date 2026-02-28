@@ -1162,6 +1162,7 @@ class EloquentPropertyDemo
         $bakery->dough_temp;          // $casts 'float'             → float
         $bakery->egg_count;           // $attributes default        → int
         $bakery->flour;               // $fillable (no cast/attr)   → mixed
+        $bakery->fresh();             // #[Scope] method            → Builder
         $bakery->gluten_free;         // $attributes default        → bool
         $bakery->headBaker;           // relationship HasOne        → Baker
         $bakery->head_baker_count;    // relationship count         → int
@@ -1207,8 +1208,9 @@ class EloquentQueryDemo
         BlogAuthor::active();
         BlogAuthor::ofGenre('fiction');
 
-        // Scopes on Builder instances
+        // Scopes on Builder instances (convention and #[Scope] attribute)
         BlogAuthor::where('active', 1)->active()->ofGenre('sci-fi')->get();
+        Bakery::where('open', true)->fresh()->get();
         $query = BlogAuthor::where('genre', 'fiction');
         $query->active();
         $query->orderBy('name')->get();
@@ -2781,6 +2783,12 @@ class Bakery extends \Illuminate\Database\Eloquent\Model
         $query->where('baked', false);
     }
 
+    #[\Illuminate\Database\Eloquent\Attributes\Scope]
+    protected function fresh(\Illuminate\Database\Eloquent\Builder $query): void
+    {
+        $query->where('fresh', true);
+    }
+
     public function getLoafNameAttribute(): string { return ''; }
 
     /** @return \Illuminate\Database\Eloquent\Casts\Attribute<string> */
@@ -2992,6 +3000,7 @@ namespace Illuminate\Database\Eloquent\Relations {
 
 namespace Illuminate\Database\Eloquent\Attributes {
     class CollectedBy {}
+    class Scope {}
 }
 
 namespace Illuminate\Database\Eloquent\Casts {

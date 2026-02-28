@@ -336,6 +336,7 @@ mod tests {
             is_deprecated: false,
             template_params: Vec::new(),
             template_bindings: Vec::new(),
+            has_scope_attribute: false,
         }
     }
 

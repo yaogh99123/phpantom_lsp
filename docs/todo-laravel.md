@@ -74,37 +74,7 @@ benefit) and an **Effort** estimate (implementation complexity):
 
 ---
 
-#### 1. `#[Scope]` attribute (Laravel 11+)
-
-| | |
-|---|---|
-| **Impact** | ★★★ — Adoption is growing as the modern alternative to `scopeX`. Already the documented approach in Laravel 11+. |
-| **Effort** | ★★ — Extract `#[Scope]` attributes in the parser; treat them the same as `scopeX` methods in the provider. |
-
-Laravel 11 introduced the `#[Scope]` attribute as an alternative to
-the `scopeX` naming convention. Methods decorated with `#[Scope]`
-are available on the builder without needing the `scope` prefix:
-
-```php
-class User extends Model {
-    #[Scope]
-    protected function active(Builder $query): void { ... }
-}
-
-User::active()->get(); // works at runtime via #[Scope]
-```
-
-Larastan checks for this attribute in `BuilderHelper::searchOnEloquentBuilder()`.
-We currently only detect scopes via the `scopeX` naming convention in
-`is_scope_method`.
-
-**Where to change:** In the parser, extract `#[Scope]` attributes
-from method declarations. In `LaravelModelProvider::provide`, treat
-methods with the `#[Scope]` attribute the same as `scopeX` methods
-(strip the first `$query` parameter, expose as both static and
-instance virtual methods).
-
-#### 2. `$dates` array (deprecated)
+#### 1. `$dates` array (deprecated)
 
 | | |
 |---|---|
@@ -123,7 +93,7 @@ Merge these into `casts_definitions` at a lower priority than explicit
 `$casts` entries, or add a separate field on `ClassInfo` and handle
 priority in the provider.
 
-#### 3. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
+#### 2. Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)
 
 | | |
 |---|---|
@@ -161,7 +131,7 @@ declares a custom builder via `@use HasBuilder<X>` in `use_generics`
 or a `newEloquentBuilder()` method with a non-default return type.
 If found, load and resolve that builder class instead.
 
-#### 4. `abort_if`/`abort_unless` type narrowing
+#### 3. `abort_if`/`abort_unless` type narrowing
 
 | | |
 |---|---|
@@ -205,7 +175,7 @@ to subsequent code:
 This is similar to the existing guard clause narrowing but triggered
 by specific function names rather than `if` + early return.
 
-#### 5. `collect()` and other helper functions lose generic type info
+#### 4. `collect()` and other helper functions lose generic type info
 
 | | |
 |---|---|
@@ -253,7 +223,7 @@ before passing it to `type_hint_to_classes`.  See the general TODO
 item (§ PHP Language Feature Gaps, "Function-level `@template`
 generic resolution") for the full implementation plan.
 
-#### 6. Factory `has*`/`for*` relationship methods
+#### 5. Factory `has*`/`for*` relationship methods
 
 | | |
 |---|---|
@@ -291,7 +261,7 @@ The `has*` variant should accept optional `int $count` and
 `array|callable $state` parameters; `for*` should accept
 `array|callable $state`.
 
-#### 7. `$pivot` property on BelongsToMany related models
+#### 6. `$pivot` property on BelongsToMany related models
 
 | | |
 |---|---|
@@ -337,7 +307,7 @@ the `BelongsToMany` relationship stubs. If the user's stub set
 includes these annotations, it already works through our PHPDoc
 provider.
 
-#### 8. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
+#### 7. `withSum()` / `withAvg()` / `withMin()` / `withMax()` aggregate properties
 
 | | |
 |---|---|
@@ -353,7 +323,7 @@ aggregate function (`withSum`/`withAvg` → `float`,
 
 The `@property` workaround applies here too.
 
-#### 9. Higher-order collection proxies
+#### 8. Higher-order collection proxies
 
 | | |
 |---|---|
@@ -376,7 +346,7 @@ and `HigherOrderCollectionProxyExtension`, which resolve the proxy's
 template types and delegate property/method lookups to the collection's
 value type.
 
-#### 10. `SoftDeletes` trait methods on Builder
+#### 9. `SoftDeletes` trait methods on Builder
 
 | | |
 |---|---|
@@ -404,7 +374,7 @@ type — e.g. `Builder<static>` instead of `Builder<User>`.  This is
 a minor gap but not worth a dedicated fix until custom builder
 support (gap §7) is implemented.
 
-#### 11. `View::withX()` and `RedirectResponse::withX()` dynamic methods
+#### 10. `View::withX()` and `RedirectResponse::withX()` dynamic methods
 
 | | |
 |---|---|
@@ -436,7 +406,7 @@ hard-coding the two known classes.  A simpler approach: add
 `@method` tags to bundled stubs for the most common dynamic `with*`
 methods, or document this as a known limitation.
 
-#### 12. `$appends` array
+#### 11. `$appends` array
 
 | | |
 |---|---|
