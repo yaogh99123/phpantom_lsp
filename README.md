@@ -7,22 +7,23 @@ A fast, lightweight PHP language server written in Rust. Uses only a few MB of R
 
 ## Features
 
-PHPantom focuses on completion and go-to-definition. Here's how it compares:
+PHPantom focuses on deep type intelligence. Here's how it compares:
 
 | | PHPantom | Intelephense | PHP Tools | Phpactor | PHPStorm |
 |---|---|---|---|---|---|
 | Completion | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Auto-import | ✅ | 💰 | ✅ | ✅ | ✅ |
-| Go-to-definition | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go-to-implementation | 🚧 | ✅ | ❌ | ✅ | ✅ |
 | `@mixin` completion | ✅ | 💰 | ✅ | ✅ | 🚧 |
+| Generics / `@template` | ✅ | 🚧 | ✅ | 🚧 | ✅ |
 | `@phpstan` annotations | ✅ | ❌ | 🚧 | ❌ | 🚧 |
 | Conditional return types | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Laravel Eloquent | ✅ | ❌ | ❌ | ❌ | 🧩 |
+| Laravel Eloquent | ✅ | ❌ | 🚧 | ❌ | 🧩 |
 | Array shape inference | ✅ | ❌ | ✅ | ❌ | 🚧 |
 | Object shape completion | ✅ | ❌ | ✅ | ❌ | 🚧 |
-| Generator body types | ✅ | ❌ | 🚧 | ❌ | ❌ |
 | Closure param inference | ✅ | 🚧 | 🚧 | 🚧 | ❌ |
+| Generator body types | ✅ | ❌ | 🚧 | ❌ | ❌ |
+| Go-to-definition | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Go-to-implementation | 🚧 | ✅ | ❌ | ✅ | ✅ |
 | Hover | 🚧 | ✅ | ✅ | ✅ | ✅ |
 | Signature help | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Find references | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -69,12 +70,12 @@ PHPantom understands Composer projects out of the box:
 
 ## Documentation
 
-- **[Installation](docs/SETUP.md)** — editor-specific setup for Zed, Neovim, PHPStorm, and others
-- **[Building from Source](docs/BUILDING.md)** — build, test, and debug instructions
-- **[Architecture](docs/ARCHITECTURE.md)** — symbol resolution, stub loading, and inheritance merging
+- **[Installation](docs/SETUP.md).** Editor-specific setup for Zed, Neovim, PHPStorm, and others.
+- **[Building from Source](docs/BUILDING.md).** Build, test, and debug instructions.
+- **[Architecture](docs/ARCHITECTURE.md).** Symbol resolution, stub loading, and inheritance merging.
 - **[Contributing](docs/CONTRIBUTING.md)**
 - **[Changelog](docs/CHANGELOG.md)**
-- **Roadmap** — [general](docs/todo.md), [Laravel](docs/todo-laravel.md), [Blade](docs/todo-blade.md)
+- **[Roadmap](docs/todo.md).** Planned features and domain-specific plans.
 
 ## Acknowledgements
 

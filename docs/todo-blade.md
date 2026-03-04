@@ -1,6 +1,5 @@
 # PHPantom — Blade Template Support
 
-> Last updated: 2026-02-27
 
 This document is the implementation plan for Laravel Blade template
 support in PHPantom. For Eloquent model support see `todo-laravel.md`.

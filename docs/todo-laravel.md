@@ -1,6 +1,5 @@
 # PHPantom — Laravel Support: Remaining Work
 
-> Last updated: 2026-02-28
 
 This document tracks bugs, known gaps, and missing features in
 PHPantom's Laravel Eloquent support. For the general architecture and
