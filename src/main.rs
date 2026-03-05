@@ -1,6 +1,6 @@
-use clap::builder::styling::AnsiColor;
-use clap::builder::Styles;
 use clap::Parser;
+use clap::builder::Styles;
+use clap::builder::styling::AnsiColor;
 use phpantom_lsp::Backend;
 use tower_lsp::{LspService, Server};
 

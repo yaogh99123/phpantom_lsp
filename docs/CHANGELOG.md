@@ -37,8 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GTD from parameter and property variables.** Clicking a parameter or property variable at its definition site now jumps to the type hint class, matching the behaviour of assignment variables. Catch variables (`catch (Exception $e)`) with single or union type hints are also supported.
 - **Signature help enriched.** The popup is now two lines: a compact parameter list with native PHP types and return type, plus a per-parameter `@param` description that includes the effective docblock type when it differs from the native hint. Optional parameters display their default value in the label (e.g. `int $limit = 25`).
 
+### Changed
+
+- **Async diagnostics.** Diagnostics now run in a background task with 500 ms debounce instead of blocking every `did_change` response. Completion, hover, and signature help remain responsive while diagnostics compute in the background.
+
 ### Fixed
 
+- **Scope methods on Builder variables.** Hover, signature help, and deprecation diagnostics now find model-specific members (e.g. Eloquent scope methods injected onto `Builder<Model>`) even when the resolved-class cache holds a differently-scoped entry for the same base class.
 - **Vendor class resolution simplified.** Vendor PSR-4 mappings (`vendor/composer/autoload_psr4.php`) are no longer loaded. The Composer classmap is the sole source of truth for vendor code. Go-to-definition now checks the classmap for vendor classes instead of relying on vendor PSR-4. If the classmap is missing or stale, vendor classes fail to resolve visibly instead of being silently papered over (fix: run `composer dump-autoload`). The `config.vendor-dir` setting is read once at startup and cached across all features.
 - **Named-argument resolution for non-variable subjects.** Named arguments now resolve correctly when the call target is a bare class name, a chain result, or a static method whose class name requires variable/chain resolution.
 - **GTD for `@method`/`@property` on interfaces.** Go-to-definition now walks implemented interfaces (own and from parents) before checking `@mixin` classes, so virtual members declared on interfaces resolve correctly.

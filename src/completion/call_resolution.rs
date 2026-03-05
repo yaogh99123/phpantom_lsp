@@ -104,6 +104,28 @@ impl Backend {
         };
 
         for owner in &owner_classes {
+            // `resolve_target_classes` already returns fully-resolved
+            // classes (via `type_hint_to_classes` which calls
+            // `resolve_class_fully` and injects model-specific scope
+            // methods).  Check the candidate directly first so that
+            // model-specific members (e.g. Eloquent scope methods
+            // injected onto Builder<Model>) are found even when the
+            // FQN-keyed resolved_class_cache holds a stale or
+            // differently-scoped entry for the same base class.
+            if let Some(m) = owner
+                .methods
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(method_name))
+            {
+                return Some(ResolvedCallableTarget {
+                    parameters: m.parameters.clone(),
+                    return_type: m.return_type.clone(),
+                });
+            }
+
+            // Fall back to full resolution for candidates that were
+            // produced by a path that skips full resolution (e.g.
+            // bare class name lookup).
             let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
                 owner,
                 rctx.class_loader,

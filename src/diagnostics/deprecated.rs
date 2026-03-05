@@ -162,12 +162,24 @@ impl Backend {
 
                     // Resolve with inheritance + virtual members so we find
                     // members from parent classes and traits too.
+                    //
+                    // Check the base_class directly first: when the base
+                    // comes from variable resolution or call-chain return
+                    // type inference, it may already carry model-specific
+                    // members (e.g. Eloquent scope methods injected onto
+                    // Builder<Model>).  The FQN-keyed cache cannot
+                    // distinguish between generic instantiations, so a
+                    // cached entry may lack these members.
                     let resolved = resolve_class_fully_cached(&base_class, &class_loader, cache);
 
                     if *is_method_call {
-                        // Check method deprecation
-                        if let Some(method) =
-                            resolved.methods.iter().find(|m| m.name == *member_name)
+                        // Check method deprecation — try base_class first
+                        // (preserves scope methods), fall back to resolved.
+                        if let Some(method) = base_class
+                            .methods
+                            .iter()
+                            .find(|m| m.name == *member_name)
+                            .or_else(|| resolved.methods.iter().find(|m| m.name == *member_name))
                             && let Some(msg) = &method.deprecation_message
                             && let Some(range) = offset_range_to_lsp_range(
                                 content,
@@ -183,10 +195,14 @@ impl Backend {
                             ));
                         }
                     } else {
-                        // Property or constant access
-                        // Try property first
-                        if let Some(prop) =
-                            resolved.properties.iter().find(|p| p.name == *member_name)
+                        // Property or constant access — try base_class
+                        // first (same rationale as above), fall back to
+                        // resolved.
+                        if let Some(prop) = base_class
+                            .properties
+                            .iter()
+                            .find(|p| p.name == *member_name)
+                            .or_else(|| resolved.properties.iter().find(|p| p.name == *member_name))
                             && let Some(msg) = &prop.deprecation_message
                             && let Some(range) = offset_range_to_lsp_range(
                                 content,

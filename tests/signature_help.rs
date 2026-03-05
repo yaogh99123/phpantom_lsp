@@ -1415,3 +1415,163 @@ async fn param_doc_class_string_effective_type() {
     let docs = param_docs(&sh);
     assert_eq!(docs[0].as_deref(), Some("`class-string<T>` The class name"));
 }
+
+// ─── Scope method signature help on Builder instances ───────────────────────
+
+/// Reproduces the Builder cache-poisoning scenario for signature help.
+///
+/// When the resolved_class_cache is seeded with a plain Builder entry
+/// (no model-specific scope methods) by resolving a different model's
+/// Builder chain first, subsequent signature help for a scope method
+/// on a *different* model's Builder chain must still work.
+///
+/// This mirrors the hover cache-poisoning test
+/// (`hover_scope_survives_builder_cache_poisoning`) but exercises the
+/// `resolve_instance_method_callable` path used by signature help.
+#[tokio::test]
+async fn sig_help_scope_survives_builder_cache_poisoning() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let content = r#"<?php
+namespace Illuminate\Database\Eloquent {
+    abstract class Model {
+        /** @return \Illuminate\Database\Eloquent\Builder<static> */
+        public static function query() {}
+    }
+
+    /**
+     * @template TModel of \Illuminate\Database\Eloquent\Model
+     * @mixin \Illuminate\Database\Query\Builder
+     */
+    class Builder {
+        /** @return $this */
+        public function where($column, $operator = null, $value = null) {}
+        /** @return \Illuminate\Database\Eloquent\Collection<int, TModel> */
+        public function get($columns = ['*']) { return new Collection(); }
+    }
+
+    /** @template TKey @template TModel */
+    class Collection {}
+}
+
+namespace Illuminate\Database\Query {
+    class Builder {
+        /** @return $this */
+        public function limit(int $value) { return $this; }
+    }
+}
+
+namespace App {
+    use Illuminate\Database\Eloquent\Model;
+    use Illuminate\Database\Eloquent\Builder;
+
+    // Model with NO scope methods — resolving its Builder chain seeds
+    // the cache with a plain Builder entry.
+    class PlainModel extends Model {}
+
+    // Model WITH a scope method that takes a parameter.
+    class ScopedModel extends Model {
+        public function scopeOfCategory(Builder $query, string $category): void {}
+    }
+
+    class Demo {
+        public function run(): void {
+            // Step 1: trigger Builder resolution for PlainModel (no scopes).
+            PlainModel::where('id', 1)->get();
+
+            // Step 2: signature help inside ofCategory() must resolve
+            // even though the Builder cache was seeded without scopes.
+            ScopedModel::where('active', 1)->ofCategory('electronics');
+        }
+    }
+}
+"#;
+
+    // Open the file (triggers update_ast + diagnostics, populating caches).
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: content.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // ── Step 1: Signature help on get() on PlainModel to seed Builder cache ──
+    // We trigger signature help on get() first so the Builder FQN is
+    // cached without ScopedModel's scope methods.
+    let lines: Vec<&str> = content.lines().collect();
+    let get_line_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("PlainModel::where('id', 1)->get("))
+        .map(|(i, _)| i)
+        .expect("should find PlainModel get() line");
+    let get_line = lines[get_line_idx];
+    // Place cursor inside `get(` parens
+    let get_col = get_line.find("get(").expect("should find get(") as u32 + 4;
+    let sh_get = backend
+        .signature_help(SignatureHelpParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: get_line_idx as u32,
+                    character: get_col,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        sh_get.is_some(),
+        "signature help should work on get() after PlainModel::where() (line {})",
+        get_line_idx
+    );
+
+    // ── Step 2: Signature help on ofCategory() after ScopedModel::where() ──
+    let scope_line_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("->ofCategory('electronics')"))
+        .map(|(i, _)| i)
+        .expect("should find ofCategory line");
+    let scope_line = lines[scope_line_idx];
+    // Place cursor inside `ofCategory(` after the opening paren
+    let scope_col = scope_line
+        .find("ofCategory(")
+        .expect("should find ofCategory(") as u32
+        + 11;
+    let sh_scope = backend
+        .signature_help(SignatureHelpParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: scope_line_idx as u32,
+                    character: scope_col,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        sh_scope.is_some(),
+        "signature help should work on ofCategory() after ScopedModel::where() even when Builder cache was seeded by PlainModel (line {})",
+        scope_line_idx
+    );
+
+    // The scope method `scopeOfCategory(Builder $query, string $category)`
+    // is exposed as `ofCategory(string $category)` (first Builder param
+    // stripped).  Verify the signature mentions the parameter.
+    let sh = sh_scope.unwrap();
+    let label = &sh.signatures[0].label;
+    assert!(
+        label.contains("category"),
+        "signature label should mention 'category' param, got: {}",
+        label
+    );
+}

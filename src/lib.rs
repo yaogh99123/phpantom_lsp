@@ -58,6 +58,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use tower_lsp::Client;
@@ -242,6 +243,27 @@ pub struct Backend {
     /// references, go-to-implementation) can skip the vendor directory
     /// without re-reading `composer.json` on every request.
     pub(crate) vendor_dir_name: Mutex<String>,
+    /// Monotonically increasing version counter for diagnostic debouncing.
+    ///
+    /// Bumped on every `did_change`.  A background diagnostic task
+    /// checks this counter after a quiet period and only publishes
+    /// results when the counter hasn't moved, meaning the user
+    /// stopped typing.
+    pub(crate) diag_version: Arc<AtomicU64>,
+    /// Notification handle used to wake the diagnostic worker task.
+    ///
+    /// [`schedule_diagnostics`](Self::schedule_diagnostics) calls
+    /// `notify_one()` after bumping `diag_version`; the worker awaits
+    /// `notified()` in its main loop.
+    pub(crate) diag_notify: Arc<tokio::sync::Notify>,
+    /// The file URI that needs a diagnostic pass, set by
+    /// [`schedule_diagnostics`](Self::schedule_diagnostics) and consumed
+    /// by the diagnostic worker.  Only the most recent URI is kept;
+    /// earlier requests are superseded.
+    ///
+    /// Wrapped in `Arc` so the diagnostic worker task (spawned during
+    /// `initialized`) shares the same slot as the main `Backend`.
+    pub(crate) diag_pending_uri: Arc<Mutex<Option<String>>>,
 }
 
 impl Backend {
@@ -273,6 +295,9 @@ impl Backend {
             stub_constant_index: stubs::build_stub_constant_index(),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
             php_version: Mutex::new(types::PhpVersion::default()),
+            diag_version: Arc::new(AtomicU64::new(0)),
+            diag_notify: Arc::new(tokio::sync::Notify::new()),
+            diag_pending_uri: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -375,6 +400,58 @@ impl Backend {
             .lock()
             .map(|guard| *guard)
             .unwrap_or_default()
+    }
+
+    /// Create a shallow clone of this `Backend` that shares every
+    /// `Arc`-wrapped field with the original.
+    ///
+    /// Non-`Arc` fields (`php_version`, `vendor_uri_prefix`,
+    /// `vendor_dir_name`) are snapshotted at call time.  The stub
+    /// indices (`stub_index`, `stub_function_index`,
+    /// `stub_constant_index`) are cloned (they are static `&str`
+    /// maps, so this is cheap).
+    ///
+    /// Used by `initialized()` to build a `Backend` value that can be
+    /// moved into the `tokio::spawn`-ed diagnostic worker task while
+    /// still observing every mutation the "real" `Backend` makes to
+    /// the shared `Arc<Mutex<…>>` maps.
+    pub(crate) fn clone_for_diagnostic_worker(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            open_files: Arc::clone(&self.open_files),
+            ast_map: Arc::clone(&self.ast_map),
+            symbol_maps: Arc::clone(&self.symbol_maps),
+            client: self.client.clone(),
+            workspace_root: Arc::clone(&self.workspace_root),
+            psr4_mappings: Arc::clone(&self.psr4_mappings),
+            use_map: Arc::clone(&self.use_map),
+            namespace_map: Arc::clone(&self.namespace_map),
+            global_functions: Arc::clone(&self.global_functions),
+            global_defines: Arc::clone(&self.global_defines),
+            class_index: Arc::clone(&self.class_index),
+            classmap: Arc::clone(&self.classmap),
+            stub_index: self.stub_index.clone(),
+            resolved_class_cache: Arc::clone(&self.resolved_class_cache),
+            stub_function_index: self.stub_function_index.clone(),
+            stub_constant_index: self.stub_constant_index.clone(),
+            php_version: Mutex::new(self.php_version()),
+            vendor_uri_prefix: Mutex::new(
+                self.vendor_uri_prefix
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default(),
+            ),
+            vendor_dir_name: Mutex::new(
+                self.vendor_dir_name
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|_| "vendor".to_string()),
+            ),
+            diag_version: Arc::clone(&self.diag_version),
+            diag_notify: Arc::clone(&self.diag_notify),
+            diag_pending_uri: Arc::clone(&self.diag_pending_uri),
+        }
     }
 
     /// Set the PHP version (used by integration tests and during

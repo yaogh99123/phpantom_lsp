@@ -5152,3 +5152,869 @@ class TypedBox {
         text
     );
 }
+
+// ─── Scope method hover on Builder instances ────────────────────────────────
+
+// Minimal Laravel framework stubs for hover tests.
+// These mirror the stubs in completion_laravel.rs but are kept here to avoid
+// cross-test-file dependencies.
+
+const HOVER_LARAVEL_COMPOSER: &str = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+
+const HOVER_MODEL_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+class Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Builder<static> */
+    public static function with(mixed $relations): Builder { return new Builder(); }
+}
+";
+
+const HOVER_BUILDER_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+use Illuminate\\Database\\Concerns\\BuildsQueries;
+/**
+ * @template TModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @mixin \\Illuminate\\Database\\Query\\Builder
+ */
+class Builder {
+    /** @use BuildsQueries<TModel> */
+    use BuildsQueries;
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /** @return static */
+    public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
+    /** @return \\Illuminate\\Database\\Eloquent\\Collection<int, TModel> */
+    public function get(): Collection { return new Collection(); }
+    /** @return static */
+    public function limit(int $value): static { return $this; }
+}
+";
+
+const HOVER_QUERY_BUILDER_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Query;
+class Builder {
+    /** @return static */
+    public function whereIn(string $column, array $values): static { return $this; }
+    /** @return static */
+    public function groupBy(string ...$groups): static { return $this; }
+}
+";
+
+const HOVER_BUILDS_QUERIES_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Concerns;
+/**
+ * @template TValue
+ */
+trait BuildsQueries {
+    /** @return TValue|null */
+    public function first(): mixed { return null; }
+}
+";
+
+const HOVER_COLLECTION_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ */
+class Collection {
+    /** @return TModel|null */
+    public function first(): mixed { return null; }
+}
+";
+
+/// Build a PSR-4 workspace with the minimal Laravel framework stubs
+/// plus extra application files.
+fn make_laravel_hover_workspace(app_files: &[(&str, &str)]) -> (Backend, tempfile::TempDir) {
+    let mut files: Vec<(&str, &str)> = vec![
+        ("vendor/illuminate/Eloquent/Model.php", HOVER_MODEL_PHP),
+        ("vendor/illuminate/Eloquent/Builder.php", HOVER_BUILDER_PHP),
+        (
+            "vendor/illuminate/Eloquent/Collection.php",
+            HOVER_COLLECTION_PHP,
+        ),
+        (
+            "vendor/illuminate/Query/Builder.php",
+            HOVER_QUERY_BUILDER_PHP,
+        ),
+        (
+            "vendor/illuminate/Concerns/BuildsQueries.php",
+            HOVER_BUILDS_QUERIES_PHP,
+        ),
+    ];
+    files.extend_from_slice(app_files);
+    create_psr4_workspace(HOVER_LARAVEL_COMPOSER, &files)
+}
+
+/// Hovering on a scope method (or any Builder method) called on a variable
+/// that holds a Builder instance should show the method hover.
+///
+/// Reproduces the user's exact case:
+///   $query = BlogAuthor::where('genre', 'fiction');
+///   $query->active();          // ← hover on `active` should work
+///   $query->orderBy('name');   // ← hover on `orderBy` should work
+#[test]
+fn hover_scope_method_on_builder_variable() {
+    let brand_php = "\
+<?php
+namespace App;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function scopeActive(Builder $query): void {}
+    public function test() {
+        $query = Brand::where('genre', 'fiction');
+        $query->active();
+        $query->orderBy('name')->get();
+    }
+}
+";
+    let (backend, _dir) = make_laravel_hover_workspace(&[("src/Brand.php", brand_php)]);
+
+    let uri = format!("file://{}", _dir.path().join("src/Brand.php").display());
+    backend.update_ast(&uri, brand_php);
+
+    // Line 8:  "        $query->active();"
+    //           0         1
+    //           0123456789012345678
+    // `active` starts at col 16
+
+    // Hover on `active` — a scope method on the Builder variable
+    let hover = hover_at(&backend, &uri, brand_php, 8, 17);
+    assert!(
+        hover.is_some(),
+        "hover should be shown on scope method active() called on $query (Builder variable)"
+    );
+    let text = hover_text(hover.as_ref().unwrap());
+    assert!(
+        text.contains("active"),
+        "hover should mention active, got: {}",
+        text
+    );
+
+    // Line 9:  "        $query->orderBy('name')->get();"
+    //           0         1         2         3
+    //           01234567890123456789012345678901234567890
+    // `orderBy` starts at col 16, `get` starts at col 35
+
+    // Hover on `orderBy` — a Builder-forwarded method
+    let hover_ob = hover_at(&backend, &uri, brand_php, 9, 18);
+    assert!(
+        hover_ob.is_some(),
+        "hover should be shown on orderBy() called on $query (Builder variable)"
+    );
+
+    // Hover on `get` — chained after orderBy()
+    let hover_get = hover_at(&backend, &uri, brand_php, 9, 36);
+    assert!(
+        hover_get.is_some(),
+        "hover should be shown on get() chained after $query->orderBy()"
+    );
+}
+
+/// Hovering on scope methods after an inline Builder chain
+/// (e.g. `Brand::where('id', 1)->active()->get()`) should work.
+#[test]
+fn hover_scope_method_after_inline_builder_chain() {
+    let brand_php = "\
+<?php
+namespace App;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function scopeActive(Builder $query): void {}
+    public function scopeOfGenre(Builder $query, string $genre): void {}
+    public function test() {
+        Brand::where('active', 1)->active()->ofGenre('sci-fi')->get();
+    }
+}
+";
+    let (backend, _dir) = make_laravel_hover_workspace(&[("src/Brand.php", brand_php)]);
+
+    let uri = format!("file://{}", _dir.path().join("src/Brand.php").display());
+    backend.update_ast(&uri, brand_php);
+
+    // Line 8: "        Brand::where('active', 1)->active()->ofGenre('sci-fi')->get();"
+    //          0         1         2         3         4         5         6
+    //          0123456789012345678901234567890123456789012345678901234567890123456789
+
+    // Hover on `where` (col ~15)
+    let h_where = hover_at(&backend, &uri, brand_php, 8, 16);
+    assert!(
+        h_where.is_some(),
+        "hover should work on where() in Brand::where()"
+    );
+
+    // Hover on `active` (col ~35)
+    let h_active = hover_at(&backend, &uri, brand_php, 8, 36);
+    assert!(
+        h_active.is_some(),
+        "hover should work on scope method active() after Brand::where() chain"
+    );
+
+    // Hover on `ofGenre` (col ~46)
+    let h_genre = hover_at(&backend, &uri, brand_php, 8, 47);
+    assert!(
+        h_genre.is_some(),
+        "hover should work on scope method ofGenre() after chained scope"
+    );
+}
+
+/// Hover on scope/Builder methods in a single-file with multiple namespace
+/// blocks — simulates example.php where Eloquent stubs and user code live
+/// in the same file under separate `namespace { }` blocks.
+#[test]
+fn hover_scope_method_multi_namespace_single_file() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+namespace Illuminate\Database\Eloquent {
+   abstract class Model {
+       /** @return \Illuminate\Database\Eloquent\Builder<static> */
+       public static function query() {}
+   }
+
+   /**
+    * @template TModel of \Illuminate\Database\Eloquent\Model
+    *
+    * @mixin \Illuminate\Database\Query\Builder
+    */
+   class Builder {
+       /**
+        * @param  (\Closure(static): mixed)|string|array  $column
+        * @return $this
+        */
+       public function where($column, $operator = null, $value = null, $boolean = 'and') {}
+
+       /** @return \Illuminate\Database\Eloquent\Collection<int, TModel> */
+       public function get($columns = ['*']) { return new Collection(); }
+   }
+
+   /**
+    * @template TKey of array-key
+    * @template TModel of \Illuminate\Database\Eloquent\Model
+    */
+   class Collection {}
+}
+
+namespace Illuminate\Database\Query {
+   class Builder {
+       /** @return $this */
+       public function orderBy($column, $direction = 'asc') { return $this; }
+       /** @return $this */
+       public function limit($value) { return $this; }
+   }
+}
+
+namespace Demo {
+   use Illuminate\Database\Eloquent\Model;
+   use Illuminate\Database\Eloquent\Builder;
+
+   class BlogAuthor extends Model {
+       public function scopeActive(Builder $query): void {}
+       public function scopeOfGenre(Builder $query, string $genre): void {}
+   }
+
+   class EloquentDemo {
+       public function run(): void {
+           $author = new BlogAuthor();
+           $author->active();
+           BlogAuthor::active();
+
+           BlogAuthor::where('active', 1)->active()->ofGenre('sci-fi')->get();
+
+           $query = BlogAuthor::where('genre', 'fiction');
+           $query->active();
+           $query->orderBy('name')->get();
+       }
+   }
+}
+"#;
+
+    // Find the actual line numbers dynamically
+    let author_active_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$author->active()"))
+        .map(|(i, _)| i as u32)
+        .expect("should find $author->active() line");
+
+    let static_active_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("BlogAuthor::active()"))
+        .map(|(i, _)| i as u32)
+        .expect("should find BlogAuthor::active() line");
+
+    let inline_chain_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("BlogAuthor::where('active', 1)->active"))
+        .map(|(i, _)| i as u32)
+        .expect("should find inline chain line");
+
+    let query_active_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.trim() == "$query->active();")
+        .map(|(i, _)| i as u32)
+        .expect("should find $query->active() line");
+
+    let query_orderby_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$query->orderBy"))
+        .map(|(i, _)| i as u32)
+        .expect("should find $query->orderBy line");
+
+    // $author->active()
+    let h_instance_scope = hover_at(&backend, uri, content, author_active_line, 23);
+    assert!(
+        h_instance_scope.is_some(),
+        "hover should work on $author->active() (scope on model instance)"
+    );
+
+    // BlogAuthor::active()
+    let h_static_scope = hover_at(&backend, uri, content, static_active_line, 25);
+    assert!(
+        h_static_scope.is_some(),
+        "hover should work on BlogAuthor::active() (scope as static)"
+    );
+
+    // BlogAuthor::where('active', 1)->...
+    let h_where = hover_at(&backend, uri, content, inline_chain_line, 26);
+    assert!(
+        h_where.is_some(),
+        "hover should work on where() in BlogAuthor::where() (builder-forwarded)"
+    );
+
+    // $query->active()
+    let h_var_scope = hover_at(&backend, uri, content, query_active_line, 21);
+    assert!(
+        h_var_scope.is_some(),
+        "hover should work on $query->active() (scope on Builder variable)"
+    );
+
+    // $query->orderBy('name')->get()
+    let h_order_by = hover_at(&backend, uri, content, query_orderby_line, 22);
+    assert!(
+        h_order_by.is_some(),
+        "hover should work on $query->orderBy() (Builder method on variable)"
+    );
+}
+
+/// Test hover against the real example.php to reproduce the exact user report.
+/// The user observed that `$query->active()` and scope methods after `where()`
+/// chains did not show hover in example.php.
+#[test]
+fn hover_scope_on_builder_in_example_php() {
+    let backend = create_test_backend();
+    let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("example.php");
+    let content = std::fs::read_to_string(&example_path).expect("failed to read example.php");
+    let uri = format!("file://{}", example_path.display());
+
+    backend.update_ast(&uri, &content);
+
+    // Find the key lines dynamically so the test survives line-number shifts.
+    let lines: Vec<&str> = content.lines().collect();
+
+    // "$author->active();" inside EloquentQueryDemo::demo()
+    let author_active_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("$author->active()"))
+        .map(|(i, _)| i)
+        .expect("should find $author->active() in example.php");
+    let author_active_line = lines[author_active_idx];
+    let author_active_col = author_active_line
+        .find("active()")
+        .expect("should find active() token") as u32;
+
+    let h = hover_at(
+        &backend,
+        &uri,
+        &content,
+        author_active_idx as u32,
+        author_active_col + 1,
+    );
+    assert!(
+        h.is_some(),
+        "hover should work on $author->active() in example.php (line {})",
+        author_active_idx
+    );
+
+    // "BlogAuthor::active();" inside EloquentQueryDemo::demo()
+    let static_active_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.trim() == "BlogAuthor::active();")
+        .map(|(i, _)| i)
+        .expect("should find BlogAuthor::active() in example.php");
+    let static_active_line = lines[static_active_idx];
+    let static_active_col = static_active_line
+        .find("active()")
+        .expect("should find active() token") as u32;
+
+    let h2 = hover_at(
+        &backend,
+        &uri,
+        &content,
+        static_active_idx as u32,
+        static_active_col + 1,
+    );
+    assert!(
+        h2.is_some(),
+        "hover should work on BlogAuthor::active() in example.php (line {})",
+        static_active_idx
+    );
+
+    // "BlogAuthor::where('active', 1)->active()->ofGenre('sci-fi')->get();"
+    let chain_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("BlogAuthor::where('active', 1)->active()"))
+        .map(|(i, _)| i)
+        .expect("should find inline chain line in example.php");
+    let chain_line = lines[chain_idx];
+
+    // Hover on `where`
+    let where_col = chain_line.find("where(").expect("should find where( token") as u32;
+    let h_where = hover_at(&backend, &uri, &content, chain_idx as u32, where_col + 1);
+    assert!(
+        h_where.is_some(),
+        "hover should work on where() in BlogAuthor::where() in example.php (line {})",
+        chain_idx
+    );
+
+    // Hover on `active` after ->
+    // Find the second occurrence of "active" (the first is in the argument).
+    let after_arrow = chain_line
+        .find(")->active()")
+        .expect("should find )->active()")
+        + 2; // skip )-
+    let active_col = after_arrow as u32;
+    let h_active = hover_at(&backend, &uri, &content, chain_idx as u32, active_col + 1);
+    assert!(
+        h_active.is_some(),
+        "hover should work on active() after where() chain in example.php (line {})",
+        chain_idx
+    );
+
+    // Hover on `ofGenre` after ->active()->
+    let of_genre_col = chain_line
+        .find("ofGenre(")
+        .expect("should find ofGenre( token") as u32;
+    let h_genre = hover_at(&backend, &uri, &content, chain_idx as u32, of_genre_col + 1);
+    assert!(
+        h_genre.is_some(),
+        "hover should work on ofGenre() after chained scope in example.php (line {})",
+        chain_idx
+    );
+
+    // "$query->active();"
+    let query_active_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.trim() == "$query->active();")
+        .map(|(i, _)| i)
+        .expect("should find $query->active() in example.php");
+    let query_active_line = lines[query_active_idx];
+    let query_active_col = query_active_line
+        .find("active()")
+        .expect("should find active() token") as u32;
+
+    let h_qactive = hover_at(
+        &backend,
+        &uri,
+        &content,
+        query_active_idx as u32,
+        query_active_col + 1,
+    );
+    assert!(
+        h_qactive.is_some(),
+        "hover should work on $query->active() in example.php (line {})",
+        query_active_idx
+    );
+
+    // "$query->orderBy('name')->get();"
+    let query_orderby_idx = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("$query->orderBy('name')->get()"))
+        .map(|(i, _)| i)
+        .expect("should find $query->orderBy line in example.php");
+    let query_orderby_line = lines[query_orderby_idx];
+    let orderby_col = query_orderby_line
+        .find("orderBy(")
+        .expect("should find orderBy( token") as u32;
+
+    let h_orderby = hover_at(
+        &backend,
+        &uri,
+        &content,
+        query_orderby_idx as u32,
+        orderby_col + 1,
+    );
+    assert!(
+        h_orderby.is_some(),
+        "hover should work on $query->orderBy() in example.php (line {})",
+        query_orderby_idx
+    );
+}
+
+/// Test that hovering on multiple Builder-related symbols in example.php
+/// without re-parsing between requests still works.  In the real editor,
+/// `update_ast` is called once on file open, and then multiple hover
+/// requests reuse the same parsed state (and resolved-class cache).
+/// This catches caching bugs where the first hover caches a Builder
+/// without scope methods, poisoning subsequent lookups.
+#[test]
+fn hover_scope_on_builder_in_example_php_no_reparse() {
+    let backend = create_test_backend();
+    let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("example.php");
+    let content = std::fs::read_to_string(&example_path).expect("failed to read example.php");
+    let uri = format!("file://{}", example_path.display());
+
+    // Parse ONCE — do NOT call update_ast again between hovers.
+    backend.update_ast(&uri, &content);
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Helper: find line index + column of a token on a line matching a pattern.
+    let find = |pattern: &str, token: &str| -> (u32, u32) {
+        let idx = lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains(pattern))
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| panic!("should find {:?} in example.php", pattern));
+        let col = lines[idx]
+            .find(token)
+            .unwrap_or_else(|| panic!("should find {:?} on line {}", token, idx));
+        (idx as u32, col as u32 + 1)
+    };
+
+    // 1. First hover on $author->active() — scope on model instance
+    let (line, col) = find("$author->active()", "active()");
+    let h1 = backend.handle_hover(
+        &uri,
+        &content,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    assert!(
+        h1.is_some(),
+        "hover should work on $author->active() (line {})",
+        line
+    );
+
+    // 2. Hover on BlogAuthor::active() — scope as static
+    let (line, col) = find("BlogAuthor::active();", "active();");
+    let h2 = backend.handle_hover(
+        &uri,
+        &content,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    assert!(
+        h2.is_some(),
+        "hover should work on BlogAuthor::active() (line {})",
+        line
+    );
+
+    // 3. Hover on where() in the inline chain — builder-forwarded method
+    let (line, _) = find(
+        "BlogAuthor::where('active', 1)->active()->ofGenre",
+        "where(",
+    );
+    let where_col = lines[line as usize].find("where(").unwrap() as u32 + 1;
+    let h3 = backend.handle_hover(
+        &uri,
+        &content,
+        Position {
+            line,
+            character: where_col,
+        },
+    );
+    assert!(
+        h3.is_some(),
+        "hover should work on BlogAuthor::where() (line {})",
+        line
+    );
+
+    // 4. Hover on active() after where() — scope on Builder instance
+    //    This is the user's exact complaint.
+    let chain_line = line;
+    let active_pos = lines[chain_line as usize]
+        .find(")->active()")
+        .expect("should find )->active()") as u32
+        + 2; // skip )>
+    let h4 = backend.handle_hover(
+        &uri,
+        &content,
+        Position {
+            line: chain_line,
+            character: active_pos + 1,
+        },
+    );
+    assert!(
+        h4.is_some(),
+        "hover should work on active() after where() chain (line {}, col {})",
+        chain_line,
+        active_pos + 1
+    );
+
+    // 5. Hover on ofGenre() after active() — second scope in chain
+    let of_genre_col = lines[chain_line as usize]
+        .find("ofGenre(")
+        .expect("should find ofGenre(") as u32
+        + 1;
+    let h5 = backend.handle_hover(
+        &uri,
+        &content,
+        Position {
+            line: chain_line,
+            character: of_genre_col,
+        },
+    );
+    assert!(
+        h5.is_some(),
+        "hover should work on ofGenre() in chain (line {}, col {})",
+        chain_line,
+        of_genre_col
+    );
+
+    // 6. Hover on $query->active() — scope on Builder variable
+    let (line, col) = find("$query->active();", "active();");
+    let h6 = backend.handle_hover(
+        &uri,
+        &content,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    assert!(
+        h6.is_some(),
+        "hover should work on $query->active() (line {})",
+        line
+    );
+
+    // 7. Hover on $query->orderBy() — Builder method on variable
+    let (line, col) = find("$query->orderBy('name')->get()", "orderBy(");
+    let h7 = backend.handle_hover(
+        &uri,
+        &content,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    assert!(
+        h7.is_some(),
+        "hover should work on $query->orderBy() (line {})",
+        line
+    );
+}
+
+/// Reproduces the Builder cache-poisoning scenario.
+///
+/// When `resolve_class_fully_cached` is called with a plain Builder
+/// (without model-specific scope methods), the cached entry for
+/// `Illuminate\Database\Eloquent\Builder` has no scopes.  If a
+/// subsequent hover resolves a Builder<Model> with injected scopes
+/// but then re-resolves via the cache, it gets the stale entry and
+/// the scope method is not found.
+///
+/// This test forces a cache entry for plain Builder first (by hovering
+/// on a Builder method via a different model that has no scopes), then
+/// hovers on a scope method on a second model's Builder chain.
+#[test]
+fn hover_scope_survives_builder_cache_poisoning() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+namespace Illuminate\Database\Eloquent {
+    abstract class Model {
+        /** @return \Illuminate\Database\Eloquent\Builder<static> */
+        public static function query() {}
+    }
+
+    /**
+     * @template TModel of \Illuminate\Database\Eloquent\Model
+     * @mixin \Illuminate\Database\Query\Builder
+     */
+    class Builder {
+        /** @return $this */
+        public function where($column, $operator = null, $value = null) {}
+        /** @return \Illuminate\Database\Eloquent\Collection<int, TModel> */
+        public function get($columns = ['*']) { return new Collection(); }
+        /** @return static */
+        public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
+    }
+
+    /** @template TKey @template TModel */
+    class Collection {}
+}
+
+namespace Illuminate\Database\Query {
+    class Builder {
+        /** @return $this */
+        public function limit(int $value) { return $this; }
+    }
+}
+
+namespace App {
+    use Illuminate\Database\Eloquent\Model;
+    use Illuminate\Database\Eloquent\Builder;
+
+    // Model with NO scope methods — hovering on its Builder chain
+    // populates the cache with a plain Builder entry.
+    class PlainModel extends Model {}
+
+    // Model WITH scope methods.
+    class ScopedModel extends Model {
+        public function scopeFeatured(Builder $query): void {}
+        public function scopeRecent(Builder $query): void {}
+    }
+
+    class Demo {
+        public function run(): void {
+            // Step 1: hover on get() here populates the Builder cache
+            // with a plain Builder (no scope methods from PlainModel).
+            PlainModel::where('id', 1)->get();
+
+            // Step 2: hover on featured() here must still work even
+            // though the Builder cache was seeded without scopes.
+            ScopedModel::where('active', 1)->featured()->recent()->get();
+
+            // Also test $variable path.
+            $q = ScopedModel::where('status', 'draft');
+            $q->featured();
+        }
+    }
+}
+"#;
+
+    // Parse ONCE — do NOT re-parse between hovers.
+    backend.update_ast(uri, content);
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Helper to find a line and column.
+    let find = |pattern: &str, token: &str| -> (u32, u32) {
+        let idx = lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains(pattern))
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| panic!("should find {:?}", pattern));
+        let col = lines[idx]
+            .find(token)
+            .unwrap_or_else(|| panic!("should find token {:?} on line {:?}", token, lines[idx]))
+            as u32;
+        (idx as u32, col + 1)
+    };
+
+    // ── Step 1: Hover on `get()` after PlainModel::where() ──────────
+    // This forces `resolve_class_fully_cached` to cache the Builder
+    // FQN with PlainModel's (empty) scope set.
+    let (line, col) = find("PlainModel::where('id', 1)->get()", "get()");
+    let h_get = backend.handle_hover(
+        uri,
+        content,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    assert!(
+        h_get.is_some(),
+        "hover should work on get() after PlainModel::where() (line {})",
+        line
+    );
+
+    // ── Step 2: Hover on `featured()` after ScopedModel::where() ────
+    // The Builder cache now has an entry WITHOUT ScopedModel's scopes.
+    // Before the fix, this would return None because the cached Builder
+    // was missing the `featured` scope method.
+    let (line, col) = find("ScopedModel::where('active', 1)->featured()", "featured()");
+    let h_featured = backend.handle_hover(
+        uri,
+        content,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    assert!(
+        h_featured.is_some(),
+        "hover should work on featured() after ScopedModel::where() even when Builder cache was seeded by PlainModel (line {})",
+        line
+    );
+    let text = hover_text(h_featured.as_ref().unwrap());
+    assert!(
+        text.contains("featured"),
+        "hover text should mention featured, got: {}",
+        text
+    );
+
+    // ── Step 3: Hover on `recent()` chained after featured() ────────
+    let chain_line = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("->featured()->recent()"))
+        .map(|(i, _)| i)
+        .expect("should find chain line");
+    let recent_col = lines[chain_line]
+        .find("recent()")
+        .expect("should find recent()") as u32
+        + 1;
+    let h_recent = backend.handle_hover(
+        uri,
+        content,
+        Position {
+            line: chain_line as u32,
+            character: recent_col,
+        },
+    );
+    assert!(
+        h_recent.is_some(),
+        "hover should work on recent() chained after featured() (line {})",
+        chain_line
+    );
+
+    // ── Step 4: Hover on $q->featured() via variable ────────────────
+    let (line, col) = find("$q->featured();", "featured();");
+    let h_var = backend.handle_hover(
+        uri,
+        content,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    assert!(
+        h_var.is_some(),
+        "hover should work on $q->featured() (Builder variable, line {})",
+        line
+    );
+}

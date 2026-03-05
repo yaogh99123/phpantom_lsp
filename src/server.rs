@@ -196,6 +196,18 @@ impl LanguageServer for Backend {
             self.log(MessageType::INFO, "PHPantom initialized!".to_string())
                 .await;
         }
+
+        // Spawn the background diagnostic worker.  We build a shallow
+        // clone of `self` that shares every `Arc`-wrapped field (maps,
+        // caches, the diagnostic notify/pending slot) so the worker
+        // sees all mutations the real Backend makes.  Non-Arc fields
+        // (php_version, vendor_uri_prefix, vendor_dir_name) are
+        // snapshotted — they are only written during init (above) and
+        // never change afterwards.
+        let worker_backend = self.clone_for_diagnostic_worker();
+        tokio::spawn(async move {
+            worker_backend.diagnostic_worker().await;
+        });
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -236,8 +248,10 @@ impl LanguageServer for Backend {
             // Re-parse and update AST map, use map, and namespace map
             self.update_ast(&uri, text);
 
-            // Re-publish diagnostics after re-parse
-            self.publish_diagnostics_for_file(&uri, text).await;
+            // Schedule diagnostics in a background task with debouncing.
+            // This returns immediately so that completion, hover, and
+            // signature help are never blocked by diagnostic computation.
+            self.schedule_diagnostics(uri);
         }
     }
 

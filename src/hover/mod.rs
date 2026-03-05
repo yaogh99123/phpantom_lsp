@@ -183,7 +183,50 @@ pub(crate) use formatting::{
     extract_docblock_description, extract_var_description, types_equivalent,
 };
 
+/// Result of searching for a member on a [`ClassInfo`] for hover purposes.
+///
+/// Returned by [`Backend::find_member_for_hover`] so the caller can
+/// dispatch to the correct `hover_for_*` method without repeating the
+/// lookup logic.
+enum HoverMemberHit {
+    Method(Box<MethodInfo>),
+    Property(PropertyInfo),
+    Constant(ConstantInfo),
+}
+
 impl Backend {
+    /// Search `class` for a member matching `member_name`.
+    ///
+    /// When `is_method_call` is true, only methods are considered.
+    /// Otherwise properties and constants are tried first, with a
+    /// final fallback to methods (handles method references without
+    /// call parentheses).
+    fn find_member_for_hover(
+        class: &ClassInfo,
+        member_name: &str,
+        is_method_call: bool,
+    ) -> Option<HoverMemberHit> {
+        if is_method_call {
+            class
+                .methods
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(member_name))
+                .map(|m| HoverMemberHit::Method(Box::new(m.clone())))
+        } else {
+            if let Some(prop) = class.properties.iter().find(|p| p.name == member_name) {
+                return Some(HoverMemberHit::Property(prop.clone()));
+            }
+            if let Some(constant) = class.constants.iter().find(|c| c.name == member_name) {
+                return Some(HoverMemberHit::Constant(constant.clone()));
+            }
+            class
+                .methods
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(member_name))
+                .map(|m| HoverMemberHit::Method(Box::new(m.clone())))
+        }
+    }
+
     /// Handle a `textDocument/hover` request.
     ///
     /// Returns `Some(Hover)` when the symbol under the cursor can be
@@ -292,40 +335,46 @@ impl Backend {
                 );
 
                 for target_class in &candidates {
-                    let merged = crate::virtual_members::resolve_class_fully_cached(
-                        target_class,
-                        &class_loader,
-                        &self.resolved_class_cache,
-                    );
+                    // `resolve_target_classes` already returns fully-resolved
+                    // classes (via `type_hint_to_classes` which calls
+                    // `resolve_class_fully` and injects model-specific scope
+                    // methods).  Check the candidate directly first so that
+                    // model-specific members (e.g. Eloquent scope methods
+                    // injected onto Builder<Model>) are found even when the
+                    // FQN-keyed resolved_class_cache holds a stale or
+                    // differently-scoped entry for the same base class.
+                    //
+                    // Fall back to `resolve_class_fully_cached` only when
+                    // the member is not on the candidate — this covers
+                    // cases where the candidate was produced by a path that
+                    // skips full resolution (e.g. bare class name lookup).
+                    let find_result =
+                        Self::find_member_for_hover(target_class, member_name, *is_method_call);
 
-                    if *is_method_call {
-                        if let Some(method) = merged
-                            .methods
-                            .iter()
-                            .find(|m| m.name.eq_ignore_ascii_case(member_name))
-                        {
-                            return Some(self.hover_for_method(method, &merged, &class_loader));
-                        }
+                    let (member_result, owner) = if find_result.is_some() {
+                        (find_result, target_class.clone())
                     } else {
-                        // Try property first, then constant
-                        if let Some(prop) =
-                            merged.properties.iter().find(|p| p.name == *member_name)
-                        {
-                            return Some(self.hover_for_property(prop, &merged, &class_loader));
+                        let merged = crate::virtual_members::resolve_class_fully_cached(
+                            target_class,
+                            &class_loader,
+                            &self.resolved_class_cache,
+                        );
+                        let result =
+                            Self::find_member_for_hover(&merged, member_name, *is_method_call);
+                        (result, merged)
+                    };
+
+                    match member_result {
+                        Some(HoverMemberHit::Method(ref method)) => {
+                            return Some(self.hover_for_method(method, &owner, &class_loader));
                         }
-                        if let Some(constant) =
-                            merged.constants.iter().find(|c| c.name == *member_name)
-                        {
-                            return Some(self.hover_for_constant(constant, &merged, &class_loader));
+                        Some(HoverMemberHit::Property(prop)) => {
+                            return Some(self.hover_for_property(&prop, &owner, &class_loader));
                         }
-                        // Could also be a method reference without call parens
-                        if let Some(method) = merged
-                            .methods
-                            .iter()
-                            .find(|m| m.name.eq_ignore_ascii_case(member_name))
-                        {
-                            return Some(self.hover_for_method(method, &merged, &class_loader));
+                        Some(HoverMemberHit::Constant(constant)) => {
+                            return Some(self.hover_for_constant(&constant, &owner, &class_loader));
                         }
+                        None => {}
                     }
                 }
                 None
