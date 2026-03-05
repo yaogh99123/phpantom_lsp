@@ -31,6 +31,11 @@
 //!   `SymbolMap` with no additional parsing.  Variables are scoped to their
 //!   enclosing function/closure; class names, members, functions, and constants
 //!   are file-global.
+//! - `code_actions` — Code actions (`textDocument/codeAction`). Provides:
+//!   - `code_actions::import_class` — Import class quick-fix (add a `use`
+//!     statement for unresolved class names)
+//!   - `code_actions::remove_unused_import` — Remove unused import quick-fix
+//!     (delete individual or all unused `use` statements)
 //! - [`diagnostics`] — Diagnostics publishing (`textDocument/publishDiagnostics`).
 //!   Collects and publishes diagnostics on `didOpen` / `didChange`, clears on
 //!   `didClose`.  Currently implemented providers:
@@ -56,6 +61,7 @@ use tower_lsp::Client;
 
 // ─── Module declarations ────────────────────────────────────────────────────
 
+mod code_actions;
 pub mod completion;
 pub mod composer;
 mod definition;

@@ -66,6 +66,18 @@ impl LanguageServer for Backend {
                 implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![
+                            CodeActionKind::QUICKFIX,
+                            CodeActionKind::new("source.organizeImports"),
+                        ]),
+                        work_done_progress_options: WorkDoneProgressOptions {
+                            work_done_progress: None,
+                        },
+                        resolve_provider: None,
+                    },
+                )),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -351,6 +363,26 @@ impl LanguageServer for Backend {
 
             if let Some(locations) = result {
                 return Ok(locations);
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri.to_string();
+
+        let content = self.get_file_content(&uri);
+
+        if let Some(content) = content {
+            let actions = crate::util::catch_panic_unwind_safe("code_action", &uri, None, || {
+                self.handle_code_action(&uri, &content, &params)
+            });
+
+            if let Some(actions) = actions
+                && !actions.is_empty()
+            {
+                return Ok(Some(actions));
             }
         }
 

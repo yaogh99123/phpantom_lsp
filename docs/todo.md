@@ -39,10 +39,6 @@ cheapest diagnostics for maximum visual impact.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 10 | Import class (code action) | Medium | Code Actions | [actions.md §5](todo/actions.md#5-import-class) |
-| 11 | Remove unused imports (code action) | Low | Code Actions | [actions.md §6](todo/actions.md#6-remove-unused-imports) |
-| 12 | Unused `use` dimming | Low | Diagnostics | [diagnostics.md §4](todo/diagnostics.md#4-unused-use-dimming) |
-| 13 | `@deprecated` usage diagnostics | Low | Diagnostics | [diagnostics.md §1](todo/diagnostics.md#1-deprecated-usage-diagnostics) |
 | 14 | Implement missing abstract/interface methods (code action) | Medium | Code Actions | [actions.md §1](todo/actions.md#1-implement-missing-abstractinterface-methods) |
 
 **Why this order:** Items 10-11 are the bread-and-butter code actions

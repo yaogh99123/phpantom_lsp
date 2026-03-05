@@ -10,46 +10,6 @@ within the same impact tier.
 
 ---
 
-## 1. `@deprecated` usage diagnostics
-**Impact: Medium · Effort: Low**
-
-Report a diagnostic whenever the user references a class, method,
-property, or function that is marked `@deprecated`. Most of the
-detection is already in place — `is_deprecated` fields exist on
-`ClassInfo`, `MethodInfo`, `PropertyInfo`, `FunctionInfo`, and
-completion already strikes through deprecated items. This just
-surfaces the same signal as a proper LSP diagnostic.
-
-### Behaviour
-
-- **Severity:** `Hint` with `DiagnosticTag::Deprecated`. This renders
-  as a subtle strikethrough in most editors — visible but not noisy.
-- **Range:** the span of the symbol reference (class name, method
-  call, property access), not the declaration.
-- **Message:** e.g. `'OldHelper::legacyMethod' is deprecated` — and
-  if the `@deprecated` tag contains a description (e.g.
-  `@deprecated Use NewHelper instead`), append it:
-  `'OldHelper::legacyMethod' is deprecated: Use NewHelper instead`.
-- **Publish timing:** alongside other diagnostics on
-  `textDocument/didOpen` and `textDocument/didChange`.
-
-### Implementation plan
-
-1. During the symbol map walk (or a lightweight post-resolution pass),
-   check every class reference, member access, and function call
-   against the resolved `is_deprecated` flag.
-2. For member accesses, this requires resolving the subject type and
-   looking up the member in the fully-resolved class — the same
-   path completion already takes.
-3. Collect `Diagnostic` entries and include them in the
-   `publishDiagnostics` notification.
-
-This is a good first diagnostic to ship because it has **zero false
-positives** — if the annotation says `@deprecated`, the warning is
-always correct regardless of project quality.
-
----
-
 ## 2. Resolution-failure diagnostics
 **Impact: Medium · Effort: Medium**
 
@@ -158,44 +118,6 @@ choose to configure PHPantom as their primary PHP language server
 rather than running a separate linter extension alongside it. Generic
 PHPMD/PHPStan extensions can show errors but can't offer contextual
 suppression code actions because they don't understand PHP scope.
-
----
-
-## 4. Unused `use` dimming
-**Impact: Low-Medium · Effort: Low**
-
-Dim `use` declarations that are not referenced anywhere in the file.
-This is essentially free given the `use_map` and `SymbolMap` data we
-already maintain — the only new work is the diff and the diagnostic
-publish.
-
-### Behaviour
-
-- After `update_ast`, compare the file's `use_map` entries against all
-  class/function/constant references in the `SymbolMap`.
-- Any `use` alias that has zero references in the file gets a diagnostic
-  with `severity: Hint` and `tags: [DiagnosticTag::Unnecessary]`.
-  Editors render this as dimmed text — no error, no warning, just visual
-  feedback.
-- Publish alongside other diagnostics via `textDocument/publishDiagnostics`.
-
-### What we do NOT do
-
-- We do not offer a code action to remove them. That's php-cs-fixer's
-  job and it does it well. We just provide the visual signal.
-- We do not sort or reorganise imports.
-
-### Edge cases
-
-- `use Foo\{Bar, Baz}` group imports — each alias is checked
-  individually; the group itself is only dimmed if *all* aliases are
-  unused.
-- `use function` and `use const` — same logic, check against function
-  call and constant reference spans respectively.
-- Trait `use` inside class bodies — these are not namespace imports and
-  should not be checked.
-
-**Prerequisites:** Diagnostics publishing infrastructure (from §1/§2).
 
 ---
 

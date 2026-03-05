@@ -26,7 +26,7 @@ use Demo\UserProfile as Profile;
 // ═══════════════════════════════════════════════════════════════════════════
 
 
-// ── Auto-Import ─────────────────────────────────────────────────────────────
+// ── Auto-Import (completion) ────────────────────────────────────────────────
 // Try: type `new DateT` and accept `DateTime`. The `use DateTime;` statement
 // is inserted between `use Exception;` and `use Stringable;` above to
 // maintain alphabetical order.
@@ -1763,6 +1763,42 @@ class HoverOriginsDemo extends Model implements Renderable
 
     // Overrides the abstract toArray() from Model
     public function toArray(): array { return []; }
+}
+
+
+
+// ── Code Action: Import Class ───────────────────────────────────────────────
+// Place cursor on `MutateArrayInsertSpec` and press Ctrl+. (or Cmd+. on Mac)
+// to see "Import `Couchbase\MutateArrayInsertSpec`" in the quick-fix menu.
+// Accepting inserts a `use Couchbase\MutateArrayInsertSpec;` at the top.
+
+class ImportClassDemo
+{
+    public function demo(): void
+    {
+        // Ctrl+. on `MutateArrayInsertSpec` → offers to import
+        $spec = new MutateArrayInsertSpec('path', ['value']);
+
+        // Ctrl+. on `Cluster` → offers to import Couchbase\Cluster
+        Cluster::connect('couchbase://localhost');
+    }
+}
+
+
+// ── Code Action: Remove Unused Import ───────────────────────────────────────
+// The `use ReflectionClass;` below is unused — it appears dimmed in the editor.
+// Place cursor on it and press Ctrl+. → "Remove unused import 'ReflectionClass'"
+
+use ReflectionClass;
+
+class RemoveUnusedImportDemo
+{
+    public function demo(): void
+    {
+        // ReflectionClass is deliberately NOT used here so its import stays dimmed.
+        // Ctrl+. on the dimmed `use ReflectionClass;` above → remove it.
+        $x = 42;
+    }
 }
 
 
