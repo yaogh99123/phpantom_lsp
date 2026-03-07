@@ -188,12 +188,6 @@ eventually but don't move the needle.
 | 72 | Switch → match conversion | Medium | Code Actions | [actions.md §4](todo/actions.md#4-switch--match-conversion) |
 | 73 | Incremental text sync | Medium | LSP Features | [lsp-features.md §17](todo/lsp-features.md#17-incremental-text-sync) |
 
-### Bug fixes
-
-| # | Item | Effort | Domain | Doc Link |
-|---|---|---|---|---|
-| 74 | Short-name collisions in `find_implementors` | Low | Bug Fixes | [bugs.md §1](todo/bugs.md#1-short-name-collisions-in-find_implementors) |
-| 75 | Evict transiently-loaded files from ast_map after GTI and Find References | Low | LSP Features | [bugs.md §13](todo/bugs.md#13-evict-transiently-loaded-files-from-ast_map-after-gti-and-find-references) |
 
 ---
 
@@ -216,7 +210,6 @@ separately by their own impact÷effort scoring.
 | L10 | `SoftDeletes` trait methods on Builder | ★ | ★ | [§10](todo/laravel.md#10-softdeletes-trait-methods-on-builder) |
 | L11 | `View::withX()` / `RedirectResponse::withX()` dynamic methods | ★ | ★★ | [§11](todo/laravel.md#11-viewwithx-and-redirectresponsewithx-dynamic-methods) |
 | L12 | `$appends` array | ★ | ★ | [§12](todo/laravel.md#12-appends-array) |
-| L13 | Relationship classification matches short name only | ★ | ★★ | [§13](todo/laravel.md#13-relationship-classification-matches-short-name-only) |
 
 ---
 

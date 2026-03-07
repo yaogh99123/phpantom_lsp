@@ -775,6 +775,15 @@ impl Backend {
     /// `composer.json` `config.vendor-dir`, defaulting to `vendor`) is
     /// skipped during the filesystem walk.
     fn ensure_workspace_indexed(&self) {
+        // Snapshot ast_map keys before scanning so we can evict
+        // transiently-loaded entries afterwards (see §13 in bugs.md).
+        let pre_scan_uris: HashSet<String> = self
+            .ast_map
+            .lock()
+            .ok()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+
         // Collect URIs that already have symbol maps.
         let existing_uris: HashSet<String> = self
             .symbol_maps
@@ -860,6 +869,13 @@ impl Backend {
                 }
             }
         }
+
+        // ── Evict transient ast_map entries ─────────────────────────────
+        // The scan above may have added files to ast_map, use_map, and
+        // namespace_map that are not open in the editor.  Symbol maps are
+        // preserved (they are the whole point of this scan), but the other
+        // maps can be evicted to save memory.
+        self.evict_transient_ast_entries(&pre_scan_uris);
     }
 }
 

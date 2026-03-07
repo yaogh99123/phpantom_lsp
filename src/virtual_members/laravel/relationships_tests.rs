@@ -90,6 +90,41 @@ fn classify_non_relationship() {
 }
 
 #[test]
+fn classify_custom_fqn_has_many_is_not_relationship() {
+    // A user class whose short name collides with an Eloquent relationship
+    // should NOT be classified as a relationship.
+    assert_eq!(classify_relationship("App\\Relations\\HasMany<Post>"), None);
+    assert_eq!(
+        classify_relationship("\\App\\Relations\\HasMany<Post>"),
+        None
+    );
+}
+
+#[test]
+fn classify_custom_fqn_belongs_to_is_not_relationship() {
+    assert_eq!(
+        classify_relationship("MyApp\\Custom\\BelongsTo<User>"),
+        None
+    );
+}
+
+#[test]
+fn classify_eloquent_fqn_without_leading_backslash() {
+    assert_eq!(
+        classify_relationship("Illuminate\\Database\\Eloquent\\Relations\\HasOne<Profile, $this>"),
+        Some(RelationshipKind::Singular)
+    );
+}
+
+#[test]
+fn classify_eloquent_fqn_morph_to() {
+    assert_eq!(
+        classify_relationship("\\Illuminate\\Database\\Eloquent\\Relations\\MorphTo"),
+        Some(RelationshipKind::MorphTo)
+    );
+}
+
+#[test]
 fn classify_bare_name_without_generics() {
     assert_eq!(
         classify_relationship("HasMany"),
@@ -224,7 +259,7 @@ fn infer_has_many_from_body() {
     let body = "{ return $this->hasMany(Post::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasMany<Post>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post>".to_string())
     );
 }
 
@@ -233,7 +268,7 @@ fn infer_has_one_from_body() {
     let body = "{ return $this->hasOne(Profile::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasOne<Profile>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasOne<Profile>".to_string())
     );
 }
 
@@ -242,7 +277,7 @@ fn infer_belongs_to_from_body() {
     let body = "{ return $this->belongsTo(User::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("BelongsTo<User>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\BelongsTo<User>".to_string())
     );
 }
 
@@ -251,7 +286,7 @@ fn infer_belongs_to_many_from_body() {
     let body = "{ return $this->belongsToMany(Role::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("BelongsToMany<Role>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\BelongsToMany<Role>".to_string())
     );
 }
 
@@ -260,7 +295,7 @@ fn infer_morph_one_from_body() {
     let body = "{ return $this->morphOne(Image::class, 'imageable'); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("MorphOne<Image>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\MorphOne<Image>".to_string())
     );
 }
 
@@ -269,7 +304,7 @@ fn infer_morph_many_from_body() {
     let body = "{ return $this->morphMany(Comment::class, 'commentable'); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("MorphMany<Comment>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\MorphMany<Comment>".to_string())
     );
 }
 
@@ -279,7 +314,7 @@ fn infer_morph_to_from_body() {
     let body = "{ return $this->morphTo(); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("MorphTo".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\MorphTo".to_string())
     );
 }
 
@@ -288,7 +323,7 @@ fn infer_morph_to_many_from_body() {
     let body = "{ return $this->morphToMany(Tag::class, 'taggable'); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("MorphToMany<Tag>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\MorphToMany<Tag>".to_string())
     );
 }
 
@@ -297,7 +332,7 @@ fn infer_has_many_through_from_body() {
     let body = "{ return $this->hasManyThrough(Post::class, Country::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasManyThrough<Post>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasManyThrough<Post>".to_string())
     );
 }
 
@@ -306,7 +341,7 @@ fn infer_has_one_through_from_body() {
     let body = "{ return $this->hasOneThrough(Owner::class, Car::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasOneThrough<Owner>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasOneThrough<Owner>".to_string())
     );
 }
 
@@ -315,7 +350,7 @@ fn infer_relationship_fqn_class_argument() {
     let body = r"{ return $this->hasMany(\App\Models\Post::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasMany<Post>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post>".to_string())
     );
 }
 
@@ -324,7 +359,7 @@ fn infer_relationship_with_extra_arguments() {
     let body = "{ return $this->hasMany(Post::class, 'user_id', 'id'); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasMany<Post>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post>".to_string())
     );
 }
 
@@ -335,7 +370,7 @@ fn infer_relationship_with_whitespace() {
     }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasMany<Post>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post>".to_string())
     );
 }
 
@@ -357,8 +392,8 @@ fn infer_relationship_without_class_argument() {
     let body = "{ return $this->hasMany('App\\Models\\Post'); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasMany".to_string()),
-        "Without ::class argument, returns bare relationship name"
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany".to_string()),
+        "Without ::class argument, returns bare FQN relationship name"
     );
 }
 
@@ -368,7 +403,7 @@ fn infer_morph_to_with_arguments() {
     let body = "{ return $this->morphTo('commentable', 'commentable_type', 'commentable_id'); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("MorphTo".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\MorphTo".to_string())
     );
 }
 
@@ -389,7 +424,7 @@ fn infer_relationship_same_line_chain() {
     let body = "{ return $this->hasMany(Post::class)->latest(); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("HasMany<Post>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post>".to_string())
     );
 }
 

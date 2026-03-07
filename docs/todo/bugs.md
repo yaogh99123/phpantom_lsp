@@ -26,60 +26,32 @@ fallback is only used when FQN information is absent. `seen_fqns` in
 ---
 
 ## 2. GTD fires on parameter variable names and class declaration names
-**Impact: Medium · Effort: Low**
+**Impact: Medium · Effort: Low (fixed)**
 
-Go-to-definition fires on parameter variable names (`$supplier`, `$country`)
-and class declaration names (`class Foo`), navigating to the same location —
-the cursor is already at the definition. This is noisy and unexpected:
-clicking a parameter name or a class declaration name should either do
-nothing or offer a different action (e.g. find references).
+**Status:** Fixed. Three layers suppress self-referential jumps:
 
-### Current behaviour
+1. `resolve_from_symbol` returns `None` for `ClassDeclaration` and
+   `MemberDeclaration` symbol kinds (the cursor is at the definition).
+2. `lookup_var_def_kind_at` detects when the cursor is on a variable
+   at its definition site (parameter, assignment LHS, foreach binding,
+   catch binding) and returns `None` before `find_var_definition` runs.
+3. A self-reference guard in `resolve_definition` suppresses jumps
+   when the resolved location points back to the cursor position.
 
-- **Parameter names:** Ctrl+Click on `$supplier` in a method signature
-  jumps to… `$supplier` in the same method signature. The `VarDefSite`
-  with `kind: Parameter` is correctly recorded, and `find_var_definition`
-  returns it — so the "definition" is the cursor's own position.
-
-- **Class declarations:** Ctrl+Click on `Foo` in `class Foo {` jumps to
-  the same `Foo` token. The `SymbolMap` records a `ClassDeclaration`
-  span, and `resolve_definition` resolves it to the same file and offset.
-
-### Fix
-
-In the definition handler, after resolving the definition location, check
-whether the target location is the same as (or within a few bytes of) the
-cursor position. If so, return `None` — there is no useful jump to make.
-
-Alternatively, suppress at the `SymbolKind` level:
-- For `Variable` spans where `var_def_kind_at` returns `Some(Parameter)`,
-  skip definition.
-- For `ClassDeclaration` spans, skip definition.
-
-### Tests to update
-
-Several existing definition tests assert that parameter names and class
-declarations produce a definition result pointing to themselves. These should
-expect `None` instead.
+Tested with `test_goto_definition_parameter_at_definition_returns_none`
+and related tests in `definition_variables.rs`.
 
 ---
 
 ## 3. Relationship classification matches short name only
-**Impact: Low · Effort: Low**
+**Impact: Low · Effort: Low (fixed)**
 
-`classify_relationship` in `virtual_members/laravel.rs` strips the
-return type down to its short name (via `short_name`) and matches
-against a hardcoded list (`HasMany`, `BelongsTo`, etc.). This means
-any class whose short name collides with a Laravel relationship class
-(e.g. a custom `App\Relations\HasMany` that does not extend
-Eloquent's) would be incorrectly classified as a relationship.
-
-The fix would be to resolve the return type to its FQN (using the
-class loader or use-map) and verify it lives under
-`Illuminate\Database\Eloquent\Relations\` (or extends a class that
-does) before classifying. The short-name-only path could remain as a
-fast-path fallback when the FQN is already in the
-`Illuminate\Database\Eloquent\Relations` namespace.
+**Status:** Fixed. `classify_relationship` now checks whether a
+namespace-qualified return type lives under
+`Illuminate\Database\Eloquent\Relations\` before classifying.
+Unqualified short names (the common case for body-inferred types and
+use-imported docblock annotations) still match by short name only.
+A custom `App\Relations\HasMany` is no longer misclassified.
 
 ---
 
@@ -139,23 +111,26 @@ error message.
 ---
 
 ## 13. Evict transiently-loaded files from ast_map after GTI and Find References
+**Impact: Low · Effort: Low (fixed)**
+
+**Status:** Fixed. `find_implementors` snapshots `ast_map` keys before
+scanning and calls `evict_transient_entries` afterwards, removing any
+`ast_map`, `symbol_maps`, `use_map`, and `namespace_map` entries that
+were added during the scan and are not in `open_files`.
+`ensure_workspace_indexed` does the same via
+`evict_transient_ast_entries`, which preserves `symbol_maps` (since
+those are the purpose of the indexing scan) but evicts the other maps.
+
+---
+
+## 14. Signature help fires on function definition sites
 **Impact: Low · Effort: Low**
 
-Go-to-implementation (Phases 3 and 5) and Find References
-(`ensure_workspace_indexed`) parse files from disk and cache them in
-`ast_map`. Most of these are false positives that passed the cheap
-string pre-filter but don't actually contain matching symbols. Even the
-true matches are rarely needed afterwards (the user will open the one
-they care about through the editor, which triggers a fresh `did_open`).
+Signature help triggers when the cursor is inside the parameter list of
+a function *definition* (e.g. `function unionDemo(string|int $value, ?User $maybe)`).
+Method definitions already suppress this, but standalone function
+definitions do not receive the same treatment.
 
-Keeping these files in the ast_map wastes memory and pollutes subsequent
-Phase 1 scans with classes from files that aren't part of the user's
-working set.
-
-**Fix:** After `find_implementors` returns, remove any `ast_map` entries
-whose URI was not already present before the scan started. Same for
-`ensure_workspace_indexed`. Collect the set of existing URIs before the
-scan, then evict the difference afterwards. Files that are in
-`open_files` must never be evicted.
-
-**Discovered via:** fixture conversion (call_expression/static_factory_return_self).
+The fix should mirror the method-definition suppression: detect that the
+cursor is inside a function declaration's parameter list and return
+`None` before attempting signature help resolution.

@@ -438,23 +438,3 @@ accessors, so in most cases the accessor method itself already produces
 the virtual property. Parsing `$appends` would only help when the
 accessor is defined in an unloaded parent class.
 
-#### 13. Relationship classification matches short name only
-
-| | |
-|---|---|
-| **Impact** | ★ — Nearly all codebases use Laravel's built-in relationship classes, so false positives are rare in practice. |
-| **Effort** | ★★ — Need to resolve the return type's FQN before matching, which may require a class loader call. |
-
-`classify_relationship` in `virtual_members/laravel.rs` strips the
-return type down to its short name (via `short_name`) and matches
-against a hardcoded list (`HasMany`, `BelongsTo`, etc.). This means
-any class whose short name collides with a Laravel relationship class
-(e.g. a custom `App\Relations\HasMany` that does not extend
-Eloquent's) would be incorrectly classified as a relationship.
-
-The fix would be to resolve the return type to its FQN (using the
-class loader or use-map) and verify it lives under
-`Illuminate\Database\Eloquent\Relations\` (or extends a class that
-does) before classifying. The short-name-only path could remain as a
-fast-path fallback when the FQN is already in the
-`Illuminate\Database\Eloquent\Relations` namespace.

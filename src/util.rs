@@ -761,6 +761,94 @@ impl Backend {
         }
     }
 
+    /// Evict `ast_map` (and associated map) entries that were added
+    /// during a transient scan (go-to-implementation, find references).
+    ///
+    /// `pre_scan_uris` is the set of URIs that were already in `ast_map`
+    /// before the scan started.  Any URI that is now in `ast_map` but was
+    /// not in `pre_scan_uris` — and is not currently open in the editor —
+    /// is removed from `ast_map`, `symbol_maps`, `use_map`, and
+    /// `namespace_map`.  This prevents memory bloat from files that were
+    /// parsed only to check whether they contain a matching symbol.
+    ///
+    /// Use [`evict_transient_ast_entries`](Self::evict_transient_ast_entries)
+    /// instead when `symbol_maps` should be preserved (e.g. after
+    /// `ensure_workspace_indexed`, where the symbol maps are the whole
+    /// point of the scan).
+    pub(crate) fn evict_transient_entries(
+        &self,
+        pre_scan_uris: &std::collections::HashSet<String>,
+    ) {
+        self.evict_transient_inner(pre_scan_uris, true);
+    }
+
+    /// Like [`evict_transient_entries`](Self::evict_transient_entries)
+    /// but preserves `symbol_maps`.
+    ///
+    /// `ensure_workspace_indexed` builds symbol maps so that find
+    /// references can scan them.  The `ast_map`, `use_map`, and
+    /// `namespace_map` entries for those files are no longer needed
+    /// after indexing and can be evicted to save memory.
+    pub(crate) fn evict_transient_ast_entries(
+        &self,
+        pre_scan_uris: &std::collections::HashSet<String>,
+    ) {
+        self.evict_transient_inner(pre_scan_uris, false);
+    }
+
+    /// Shared implementation for transient entry eviction.
+    ///
+    /// When `evict_symbol_maps` is true, `symbol_maps` entries are
+    /// removed alongside `ast_map`, `use_map`, and `namespace_map`.
+    fn evict_transient_inner(
+        &self,
+        pre_scan_uris: &std::collections::HashSet<String>,
+        evict_symbol_maps: bool,
+    ) {
+        // Collect URIs that were added during the scan.
+        let new_uris: Vec<String> = self
+            .ast_map
+            .lock()
+            .ok()
+            .map(|m| {
+                m.keys()
+                    .filter(|uri| !pre_scan_uris.contains(*uri))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if new_uris.is_empty() {
+            return;
+        }
+
+        // Never evict files that are currently open in the editor.
+        let open: std::collections::HashSet<String> = self
+            .open_files
+            .lock()
+            .ok()
+            .map(|f| f.keys().cloned().collect())
+            .unwrap_or_default();
+
+        for uri in &new_uris {
+            if open.contains(uri) {
+                continue;
+            }
+            if let Ok(mut map) = self.ast_map.lock() {
+                map.remove(uri);
+            }
+            if evict_symbol_maps && let Ok(mut map) = self.symbol_maps.lock() {
+                map.remove(uri);
+            }
+            if let Ok(mut map) = self.use_map.lock() {
+                map.remove(uri);
+            }
+            if let Ok(mut map) = self.namespace_map.lock() {
+                map.remove(uri);
+            }
+        }
+    }
+
     pub(crate) async fn log(&self, typ: MessageType, message: String) {
         if let Some(client) = &self.client {
             client.log_message(typ, message).await;
