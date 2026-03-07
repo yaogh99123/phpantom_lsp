@@ -1,6 +1,5 @@
 // test: constructor param combined with extends infers template type
 // feature: completion
-// ignore: needs todo.md §2 (function-level @template constructor inference)
 // Adapted from phpactor generics/constructor-param-and-extend.test
 // expect: bMethod(
 ---

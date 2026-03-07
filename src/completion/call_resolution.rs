@@ -792,7 +792,10 @@ impl Backend {
     /// - `$this` / `self` / `static` → current class name
     /// - `$this->prop` → property type
     /// - `$var` → variable type via assignment scanning
-    fn resolve_arg_text_to_type(arg_text: &str, ctx: &ResolutionCtx<'_>) -> Option<String> {
+    pub(crate) fn resolve_arg_text_to_type(
+        arg_text: &str,
+        ctx: &ResolutionCtx<'_>,
+    ) -> Option<String> {
         let trimmed = arg_text.trim();
 
         // ClassName::class → ClassName

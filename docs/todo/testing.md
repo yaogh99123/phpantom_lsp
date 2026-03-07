@@ -1,11 +1,11 @@
 # PHPantom — Ignored Fixture Tasks
 
-There are **228 fixture tests** in `tests/fixtures/`. Of these, **195
-pass** and **33 are ignored** because they exercise features or bug
+There are **228 fixture tests** in `tests/fixtures/`. Of these, **207
+pass** and **21 are ignored** because they exercise features or bug
 fixes that are not yet implemented. Each ignored fixture has a
 `// ignore:` comment explaining what is missing.
 
-This document groups the 33 ignored fixtures by the underlying work
+This document groups the 21 ignored fixtures by the underlying work
 needed to un-ignore them. Tasks are ordered by the number of fixtures
 they unblock (descending), then by estimated effort. Once a task is
 complete, remove the `// ignore:` line from each fixture, verify the
@@ -20,42 +20,6 @@ cargo clippy --tests -- -D warnings
 cargo fmt --check
 php -l example.php
 ```
-
----
-
-## 2. Function-level `@template` generic resolution (9 fixtures)
-
-**Ref:** [type-inference.md §2](type-inference.md#2-function-level-template-generic-resolution)
-**Impact: High · Effort: Medium**
-
-`FunctionInfo` lacks `template_params` and `template_bindings` fields,
-so standalone functions and constructors with `@template` cannot infer
-generic types from call-site arguments. This blocks Laravel helpers
-(`collect()`, `tap()`, `value()`) and constructor-based inference.
-
-**Fixtures:**
-
-- [ ] `generics/constructor_params.fixture` — `new Foo($bar)` infers `T` from constructor arg
-- [ ] `generics/constructor_array_arg.fixture` — constructor with array argument infers `T`
-- [ ] `generics/constructor_generic_arg.fixture` — constructor with generic-typed argument
-- [ ] `generics/constructor_param_and_extend.fixture` — constructor inference combined with `@extends`
-- [ ] `generics/method_returns_templated_generic.fixture` — method returning `Collection<T>` where `T` is inferred from constructor
-- [ ] `generics/covariant_template.fixture` — `@template-covariant` modifier on function-level template
-- [ ] `generics/class_string_generic_union.fixture` — `class-string<T>` with variadic params
-- [ ] `generics/class_string_variadic_union.fixture` — `class-string<T>` with variadic union scenario
-- [ ] `generics/class_string_nested_return.fixture` — `class-string<T>` with nested generic return type
-
-**Implementation notes:**
-
-1. Add `template_params: Vec<String>` and
-   `template_bindings: Vec<(String, String)>` to `FunctionInfo` in
-   `types.rs`, mirroring `MethodInfo`.
-2. Populate them in `parser/functions.rs` using `extract_template_params`
-   and `extract_template_param_bindings`.
-3. At call sites in `variable/rhs_resolution.rs`, after loading
-   `FunctionInfo`, check for `template_params`. Infer concrete types
-   from arguments, build a substitution map, and apply it to the return
-   type before resolving.
 
 ---
 
@@ -85,32 +49,6 @@ plain variable names. When emitting narrowing from `instanceof` checks,
 detect whether the left side is a property access and store the full
 path. During variable resolution, when encountering `$this->prop`,
 check the narrowing state for a matching member access path.
-
----
-
-## 4. `@phpstan-assert` on static method calls (3 fixtures)
-
-**Ref:** [type-inference.md §18](type-inference.md#18-phpstan-assert-on-static-method-calls)
-**Impact: Medium · Effort: Medium**
-
-Type guards declared with `@phpstan-assert`, `@phpstan-assert-if-true`,
-and `@phpstan-assert-if-false` only work on standalone function calls
-today. Static method calls like `Assert::instanceOf($value, Foo::class)`
-do not trigger narrowing.
-
-**Fixtures:**
-
-- [ ] `narrowing/phpstan_assert_static.fixture` — `Assert::isInstanceOf($x, Foo::class)` narrows `$x`
-- [ ] `narrowing/phpstan_assert_if_true.fixture` — `@phpstan-assert-if-true` on static method
-- [ ] `narrowing/phpstan_assert_if_false.fixture` — `@phpstan-assert-if-false` on static method
-
-**Implementation notes:**
-
-In the narrowing pass, when processing call expressions, check whether
-the callee is a static method call (`Foo::bar()`). If so, resolve the
-class and method, extract `@phpstan-assert*` tags from the method's
-docblock, and apply the same narrowing logic used for standalone
-functions.
 
 ---
 
@@ -347,8 +285,5 @@ Biggest unlocks (Medium effort, many fixtures):
 
 | Task | Fixtures |
 |---|---|
-| §1 `@implements` generic resolution | 7 |
-| §2 Function-level `@template` | 9 |
 | §3 Property-level narrowing | 5 |
-| §4 `@phpstan-assert` on static methods | 3 |
 | §5 Attribute context support | 3 |

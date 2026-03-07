@@ -228,6 +228,34 @@ class AssertNarrowingDemo
 }
 
 
+// ── Static Method Assert Narrowing ─────────────────────────────────────────
+
+class StaticAssertNarrowingDemo
+{
+    public function demo(): void
+    {
+        // @phpstan-assert on static method — unconditional narrowing
+        $unknown = getUnknownValue();
+        StaticAssert::assertRock($unknown);
+        $unknown->crush();                        // narrowed to Rock
+
+        // @phpstan-assert-if-true on static method — narrows in then-branch
+        $sample = pickRockOrBanana();
+        if (StaticAssert::isRock($sample)) {
+            $sample->crush();                     // narrowed to Rock
+        }
+
+        // @phpstan-assert-if-false on static method — narrows in else-branch
+        $maybe = pickRockOrBanana();
+        if (StaticAssert::isNotRock($maybe)) {
+            $maybe->peel();                       // narrowed to Banana
+        } else {
+            $maybe->crush();                      // narrowed to Rock
+        }
+    }
+}
+
+
 // ── Guard Clause Narrowing (Early Return / Throw) ──────────────────────────
 
 class GuardClauseDemo
@@ -363,6 +391,16 @@ class MethodTemplateDemo
         $mapped->first();                         // → Pen (T resolved from argument)
 
         $mapper->wrap(new Product())->first()->getPrice(); // new expression arg → Product
+
+        // Variadic class-string<T> → union return type
+        $locator2 = new ServiceLocator();
+        $union = $locator2->getAny(Pen::class, Marker::class);
+        $union->write();                                  // A|B from variadic class-string<T>
+        $union->highlight();
+
+        // Nested generic return: @return Box<T> with class-string<T> param
+        $boxed = $locator->wrap(Pen::class);
+        $boxed->unwrap()->write();                        // Box<T>::unwrap() → Pen
     }
 }
 
@@ -2819,6 +2857,26 @@ class ServiceLocator
     {
         return new \stdClass();
     }
+
+    /**
+     * @template T
+     * @param class-string<T> ...$ids
+     * @return T
+     */
+    public function getAny(string ...$ids): object
+    {
+        return new \stdClass();
+    }
+
+    /**
+     * @template T
+     * @param class-string<T> $id
+     * @return Box<T>
+     */
+    public function wrap(string $id): Box
+    {
+        return new Box();
+    }
 }
 
 class Factory
@@ -3093,6 +3151,29 @@ function isRock(mixed $value): bool
 function isNotRock(mixed $value): bool
 {
     return !$value instanceof Rock;
+}
+
+class StaticAssert
+{
+    /** @phpstan-assert Rock $value */
+    public static function assertRock(mixed $value): void
+    {
+        if (!$value instanceof Rock) {
+            throw new \InvalidArgumentException('Expected Rock');
+        }
+    }
+
+    /** @phpstan-assert-if-true Rock $value */
+    public static function isRock(mixed $value): bool
+    {
+        return $value instanceof Rock;
+    }
+
+    /** @phpstan-assert-if-false Rock $value */
+    public static function isNotRock(mixed $value): bool
+    {
+        return !$value instanceof Rock;
+    }
 }
 
 // ─── Multi-line @return & Broken Docblock Recovery ──────────────────────────

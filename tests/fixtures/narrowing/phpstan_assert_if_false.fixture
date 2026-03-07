@@ -1,7 +1,6 @@
 // test: @phpstan-assert-if-false narrows type in else branch
 // feature: completion
 // Adapted from phpactor narrowing patterns with @phpstan-assert-if-false
-// ignore: @phpstan-assert-if-false on static method calls not yet supported
 // expect: send(
 ---
 <?php

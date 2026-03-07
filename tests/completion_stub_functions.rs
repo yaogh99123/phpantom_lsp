@@ -355,6 +355,8 @@ async fn test_user_function_takes_precedence_over_stub() {
         conditional_return: None,
         type_assertions: vec![],
         deprecation_message: None,
+        template_params: vec![],
+        template_bindings: vec![],
     };
 
     if let Ok(mut fmap) = backend.global_functions().lock() {

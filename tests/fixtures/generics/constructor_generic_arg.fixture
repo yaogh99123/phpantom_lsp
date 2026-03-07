@@ -1,8 +1,7 @@
 // test: constructor with generic argument infers template type
 // feature: completion
-// ignore: needs todo.md §2 (function-level @template constructor inference)
 // Adapted from phpactor generics/constructor-generic-arg.test
-// expect: a(
+// expect: strMethod(
 ---
 <?php
 

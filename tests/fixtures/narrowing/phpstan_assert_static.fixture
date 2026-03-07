@@ -1,6 +1,5 @@
 // test: @phpstan-assert on static method narrows variable type
 // feature: completion
-// ignore: @phpstan-assert on static method calls not yet supported (only standalone function calls work)
 // Adapted from phpactor narrowing/narrow.test
 // expect: fooMethod(
 ---

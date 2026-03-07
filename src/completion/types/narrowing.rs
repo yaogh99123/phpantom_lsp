@@ -22,10 +22,41 @@ use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
 use crate::docblock;
-use crate::types::{AssertionKind, ClassInfo};
+use crate::types::{AssertionKind, ClassInfo, ParameterInfo, TypeAssertion};
 
 use super::conditional::extract_class_string_from_expr;
 use crate::completion::resolver::VarResolutionCtx;
+
+/// Convert an AST expression to a subject key string for narrowing comparison.
+///
+/// Handles:
+/// - `$var` → `"$var"`
+/// - `$this->prop` → `"$this->prop"`
+/// - `$this?->prop` → `"$this->prop"` (null-safe normalised)
+///
+/// Returns `None` for expressions that are not supported as narrowing subjects.
+pub(in crate::completion) fn expr_to_subject_key(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::Variable(Variable::Direct(dv)) => Some(dv.name.to_string()),
+        Expression::Access(Access::Property(pa)) => {
+            let obj = expr_to_subject_key(pa.object)?;
+            if let ClassLikeMemberSelector::Identifier(ident) = &pa.property {
+                Some(format!("{}->{}", obj, ident.value))
+            } else {
+                None
+            }
+        }
+        Expression::Access(Access::NullSafeProperty(pa)) => {
+            let obj = expr_to_subject_key(pa.object)?;
+            if let ClassLikeMemberSelector::Identifier(ident) = &pa.property {
+                Some(format!("{}->{}", obj, ident.value))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
 
 /// Check if `condition` is `$var instanceof ClassName` (possibly
 /// parenthesised or negated) where the variable matches `ctx.var_name`.
@@ -209,11 +240,8 @@ pub(in crate::completion) fn try_extract_instanceof<'b>(
     match expr {
         Expression::Parenthesized(inner) => try_extract_instanceof(inner.expression, var_name),
         Expression::Binary(bin) if bin.operator.is_instanceof() => {
-            // LHS must be our variable
-            let lhs_name = match bin.lhs {
-                Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
-                _ => return None,
-            };
+            // LHS must be our variable or property access
+            let lhs_name = expr_to_subject_key(bin.lhs)?;
             if lhs_name != var_name {
                 return None;
             }
@@ -408,8 +436,89 @@ fn is_var_class_constant(expr: &Expression<'_>, var_name: &str) -> bool {
     false
 }
 
+/// Resolved assertion metadata extracted from a function call or static
+/// method call expression.
+///
+/// Produced by [`extract_call_assertions`] so that callers can apply
+/// narrowing logic uniformly regardless of whether the call is
+/// `myFunc($x)` or `Assert::check($x)`.
+struct CallAssertionInfo<'a> {
+    /// The `@phpstan-assert` / `@psalm-assert` annotations on the callee.
+    assertions: &'a [TypeAssertion],
+    /// The callee's parameter list (used to map assertion `$param` names
+    /// to positional argument indices).
+    parameters: &'a [ParameterInfo],
+    /// The call-site argument list.
+    argument_list: &'a ArgumentList<'a>,
+}
+
+/// Try to extract assertion metadata from a call expression.
+///
+/// Handles two call forms:
+///   - `Call::Function(func_call)` — standalone function call, resolved
+///     through `ctx.function_loader`.
+///   - `Call::StaticMethod(static_call)` — static method call like
+///     `Assert::instanceOf(…)`, resolved through `ctx.class_loader`.
+///
+/// Returns `None` when the call is not one of these forms, or when the
+/// callee cannot be resolved.
+fn extract_call_assertions<'a>(
+    call: &'a Call<'a>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<CallAssertionInfo<'a>> {
+    match call {
+        Call::Function(func_call) => {
+            let func_name = match func_call.function {
+                Expression::Identifier(ident) => ident.value().to_string(),
+                _ => return None,
+            };
+            let func_info = ctx.function_loader?(&func_name)?;
+            if func_info.type_assertions.is_empty() {
+                return None;
+            }
+            // SAFETY: We leak the FunctionInfo to get a stable reference.
+            // This is acceptable because narrowing runs once per completion
+            // request and the allocation is small.
+            let func_info = Box::leak(Box::new(func_info));
+            Some(CallAssertionInfo {
+                assertions: &func_info.type_assertions,
+                parameters: &func_info.parameters,
+                argument_list: &func_call.argument_list,
+            })
+        }
+        Call::StaticMethod(static_call) => {
+            let class_name = match static_call.class {
+                Expression::Identifier(ident) => ident.value().to_string(),
+                Expression::Self_(_) | Expression::Static(_) => ctx.current_class.name.clone(),
+                _ => return None,
+            };
+            let method_name = match &static_call.method {
+                ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                _ => return None,
+            };
+            let class_info = (ctx.class_loader)(&class_name)?;
+            let method = class_info
+                .methods
+                .into_iter()
+                .find(|m| m.name == method_name && m.is_static)?;
+            if method.type_assertions.is_empty() {
+                return None;
+            }
+            // Leak MethodInfo to get a stable reference for the duration
+            // of this narrowing pass.
+            let method = Box::leak(Box::new(method));
+            Some(CallAssertionInfo {
+                assertions: &method.type_assertions,
+                parameters: &method.parameters,
+                argument_list: &static_call.argument_list,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Apply narrowing from `@phpstan-assert` / `@psalm-assert` annotations
-/// on a function called as a standalone expression statement.
+/// on a function or static method called as a standalone expression statement.
 ///
 /// Only `AssertionKind::Always` assertions are applied here — the
 /// `IfTrue` / `IfFalse` variants are handled by
@@ -423,34 +532,26 @@ pub(in crate::completion) fn try_apply_custom_assert_narrowing(
         Expression::Parenthesized(inner) => inner.expression,
         other => other,
     };
-    if let Expression::Call(Call::Function(func_call)) = expr {
-        let func_name = match func_call.function {
-            Expression::Identifier(ident) => ident.value().to_string(),
-            _ => return,
-        };
-        let func_info = match ctx.function_loader {
-            Some(fl) => match fl(&func_name) {
-                Some(fi) => fi,
-                None => return,
-            },
-            None => return,
-        };
-        for assertion in &func_info.type_assertions {
-            if assertion.kind != AssertionKind::Always {
-                continue;
-            }
-            // Find the parameter index for this assertion
-            if let Some(arg_var) = find_assertion_arg_variable(
-                &func_call.argument_list,
-                &assertion.param_name,
-                &func_info.parameters,
-            ) && arg_var == ctx.var_name
-            {
-                if assertion.negated {
-                    apply_instanceof_exclusion(&assertion.asserted_type, ctx, results);
-                } else {
-                    apply_instanceof_inclusion(&assertion.asserted_type, ctx, results);
-                }
+    let call = match expr {
+        Expression::Call(c) => c,
+        _ => return,
+    };
+    let info = match extract_call_assertions(call, ctx) {
+        Some(info) => info,
+        None => return,
+    };
+    for assertion in info.assertions {
+        if assertion.kind != AssertionKind::Always {
+            continue;
+        }
+        if let Some(arg_var) =
+            find_assertion_arg_variable(info.argument_list, &assertion.param_name, info.parameters)
+            && arg_var == ctx.var_name
+        {
+            if assertion.negated {
+                apply_instanceof_exclusion(&assertion.asserted_type, ctx, results);
+            } else {
+                apply_instanceof_inclusion(&assertion.asserted_type, ctx, results);
             }
         }
     }
@@ -477,19 +578,12 @@ pub(in crate::completion) fn try_apply_assert_condition_narrowing(
     // Unwrap parentheses and detect negation (`!func($var)`)
     let (func_call_expr, condition_negated) = unwrap_condition_negation(condition);
 
-    let func_call = match func_call_expr {
-        Expression::Call(Call::Function(fc)) => fc,
+    let call = match func_call_expr {
+        Expression::Call(c) => c,
         _ => return,
     };
-    let func_name = match func_call.function {
-        Expression::Identifier(ident) => ident.value().to_string(),
-        _ => return,
-    };
-    let func_info = match ctx.function_loader {
-        Some(fl) => match fl(&func_name) {
-            Some(fi) => fi,
-            None => return,
-        },
+    let info = match extract_call_assertions(call, ctx) {
+        Some(info) => info,
         None => return,
     };
 
@@ -501,7 +595,7 @@ pub(in crate::completion) fn try_apply_assert_condition_narrowing(
     // - else-body (inverted=true),  negated       → function returned true
     let function_returned_true = !(inverted ^ condition_negated);
 
-    for assertion in &func_info.type_assertions {
+    for assertion in info.assertions {
         // Determine if this assertion's condition is satisfied in this
         // branch.  IfTrue assertions apply positively when the function
         // returned true; IfFalse assertions apply positively when the
@@ -513,11 +607,9 @@ pub(in crate::completion) fn try_apply_assert_condition_narrowing(
             AssertionKind::Always => continue, // handled elsewhere
         };
 
-        if let Some(arg_var) = find_assertion_arg_variable(
-            &func_call.argument_list,
-            &assertion.param_name,
-            &func_info.parameters,
-        ) && arg_var == ctx.var_name
+        if let Some(arg_var) =
+            find_assertion_arg_variable(info.argument_list, &assertion.param_name, info.parameters)
+            && arg_var == ctx.var_name
         {
             // XOR the assertion's own negation with whether we're in the
             // opposite branch: positive + non-negated → include,
@@ -1002,29 +1094,19 @@ pub(in crate::completion) fn apply_guard_clause_narrowing(
     }
 
     // ── @phpstan-assert-if-true / @phpstan-assert-if-false ──
-    // When a function with assert-if-true/false is the condition and
-    // the then-body exits, the code after runs when the function
-    // returned the opposite boolean — apply the inverse narrowing.
+    // When a function or static method with assert-if-true/false is the
+    // condition and the then-body exits, the code after runs when the
+    // callee returned the opposite boolean — apply the inverse narrowing.
     let (func_call_expr, condition_negated) = unwrap_condition_negation(if_stmt.condition);
 
-    if let Expression::Call(Call::Function(func_call)) = func_call_expr {
-        let func_name = match func_call.function {
-            Expression::Identifier(ident) => ident.value().to_string(),
-            _ => return,
-        };
-        let func_info = match ctx.function_loader {
-            Some(fl) => match fl(&func_name) {
-                Some(fi) => fi,
-                None => return,
-            },
-            None => return,
-        };
-
+    if let Expression::Call(call) = func_call_expr
+        && let Some(info) = extract_call_assertions(call, ctx)
+    {
         // The then-body exits, so we're in the "else" conceptually.
         // inverted=true, same logic as try_apply_assert_condition_narrowing
         let function_returned_true = condition_negated;
 
-        for assertion in &func_info.type_assertions {
+        for assertion in info.assertions {
             let applies_positively = match assertion.kind {
                 AssertionKind::IfTrue => function_returned_true,
                 AssertionKind::IfFalse => !function_returned_true,
@@ -1032,9 +1114,9 @@ pub(in crate::completion) fn apply_guard_clause_narrowing(
             };
 
             if let Some(arg_var) = find_assertion_arg_variable(
-                &func_call.argument_list,
+                info.argument_list,
                 &assertion.param_name,
-                &func_info.parameters,
+                info.parameters,
             ) && arg_var == ctx.var_name
             {
                 let should_exclude = assertion.negated ^ !applies_positively;

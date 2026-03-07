@@ -93,6 +93,10 @@ pub(crate) fn resolve_conditional_with_text_args(
             // Find which parameter index corresponds to $param_name
             let target = format!("${}", param_name);
             let param_idx = params.iter().position(|p| p.name == target).unwrap_or(0);
+            let is_variadic = params
+                .get(param_idx)
+                .map(|p| p.is_variadic)
+                .unwrap_or(false);
 
             // Split the textual arguments by comma (at depth 0) and pick
             // the one at `param_idx`.
@@ -101,6 +105,38 @@ pub(crate) fn resolve_conditional_with_text_args(
 
             match condition {
                 ParamCondition::ClassString => {
+                    // For variadic class-string parameters, collect class
+                    // names from ALL arguments at and after param_idx and
+                    // form a union type (e.g. `A|B` from `A::class, B::class`).
+                    if is_variadic {
+                        let mut class_names: Vec<String> = Vec::new();
+                        for arg in args.iter().skip(param_idx) {
+                            let trimmed = arg.trim();
+                            if let Some(class_name) = extract_class_name_from_text(trimmed) {
+                                if !class_names.contains(&class_name) {
+                                    class_names.push(class_name);
+                                }
+                            } else if trimmed.starts_with('$')
+                                && let Some(resolver) = var_resolver
+                            {
+                                for name in resolver(trimmed) {
+                                    if !class_names.contains(&name) {
+                                        class_names.push(name);
+                                    }
+                                }
+                            }
+                        }
+                        if !class_names.is_empty() {
+                            return Some(class_names.join("|"));
+                        }
+                        return resolve_conditional_with_text_args(
+                            else_type,
+                            params,
+                            text_args,
+                            var_resolver,
+                        );
+                    }
+
                     // Check if the argument text matches `X::class`
                     if let Some(arg) = arg_text
                         && let Some(class_name) = extract_class_name_from_text(arg)

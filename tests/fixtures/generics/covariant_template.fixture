@@ -1,8 +1,7 @@
 // test: covariant template parameter resolves type in hover
 // feature: hover
 // Adapted from phpactor generics/method_generic_covariant.test
-// ignore: needs todo.md §2 (function-level @template argument inference, covariant modifier)
-// expect_hover: $dataSource => DataSourceExecutor
+// expect: DataSourceExecutor
 ---
 <?php
 
@@ -24,6 +23,7 @@ class Foo
     public function __construct(
         private DataSourceExecutor $dataSource
     ) {
-        $dataSource<>
+        $src = $this->dataSource;
+        $s<>rc;
     }
 }

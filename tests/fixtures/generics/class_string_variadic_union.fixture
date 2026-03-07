@@ -1,8 +1,8 @@
 // test: class-string variadic parameter resolves union return type
 // feature: completion
 // Adapted from phpactor generics/method_generic_class-string-union_return.test
-// ignore: needs todo.md §2 (function-level @template argument inference with variadic params)
 // expect: aMethod(
+// expect: bMethod(
 ---
 <?php
 

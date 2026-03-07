@@ -1,7 +1,6 @@
 // test: class-string generic with union return resolves from variadic class-string args
 // feature: completion
 // Adapted from phpactor generics/class-string-generic-union.test
-// ignore: needs function-level @template argument inference with variadic params (todo.md §2)
 // expect: doA(
 // expect: doB(
 ---

@@ -2401,6 +2401,8 @@ async fn test_use_import_excludes_constants_and_functions() {
                     conditional_return: None,
                     type_assertions: vec![],
                     deprecation_message: None,
+                    template_params: vec![],
+                    template_bindings: vec![],
                 },
             ),
         );
@@ -2526,6 +2528,8 @@ async fn test_use_function_shows_only_functions() {
                     conditional_return: None,
                     type_assertions: vec![],
                     deprecation_message: None,
+                    template_params: vec![],
+                    template_bindings: vec![],
                 },
             ),
         );

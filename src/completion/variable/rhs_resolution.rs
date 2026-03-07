@@ -132,14 +132,235 @@ fn resolve_rhs_instantiation(
         _ => None,
     };
     if let Some(name) = class_name {
-        return crate::completion::type_resolution::type_hint_to_classes(
+        let classes = crate::completion::type_resolution::type_hint_to_classes(
             name,
             &ctx.current_class.name,
             ctx.all_classes,
             ctx.class_loader,
         );
+
+        // ── Constructor template inference ──────────────────────
+        // When the class has `@template` params and the constructor
+        // has `@param` bindings for them, infer concrete types from
+        // the constructor arguments and apply the substitution to
+        // the class so that methods returning `T` resolve correctly.
+        if classes.len() == 1 && !classes[0].template_params.is_empty() {
+            let cls = &classes[0];
+            if let Some(ctor) = cls.methods.iter().find(|m| m.name == "__construct")
+                && !ctor.template_bindings.is_empty()
+                && let Some(ref arg_list) = inst.argument_list
+            {
+                let text_args =
+                    super::raw_type_inference::extract_argument_text(arg_list, ctx.content);
+                if !text_args.is_empty() {
+                    let rctx = ctx.as_resolution_ctx();
+                    let subs = build_constructor_template_subs(cls, ctor, &text_args, &rctx, ctx);
+                    if !subs.is_empty() {
+                        let type_args: Vec<&str> = cls
+                            .template_params
+                            .iter()
+                            .map(|p| subs.get(p).map(|s| s.as_str()).unwrap_or(p.as_str()))
+                            .collect();
+                        let resolved =
+                            crate::virtual_members::resolve_class_fully(cls, ctx.class_loader);
+                        let substituted =
+                            crate::inheritance::apply_generic_args(&resolved, &type_args);
+                        return vec![substituted];
+                    }
+                }
+            }
+        }
+
+        return classes;
     }
     vec![]
+}
+
+/// Build a template substitution map from constructor arguments.
+///
+/// Uses the constructor's `template_bindings` (from `@param T $name`
+/// annotations) to match template parameters to their concrete types
+/// inferred from the call-site arguments.  Handles:
+///   - Direct type: `@param T $bar` + `new Foo(new Baz())` → `T = Baz`
+///   - Array type: `@param T[] $items` + `new Foo([new X()])` → `T = X`
+///   - Generic wrapper: `@param Wrapper<T> $w` + `new Foo(new Wrapper(new X()))` → `T = X`
+///     (by resolving the wrapper's constructor template params recursively)
+fn build_constructor_template_subs(
+    _class: &ClassInfo,
+    ctor: &crate::types::MethodInfo,
+    text_args: &str,
+    rctx: &crate::completion::resolver::ResolutionCtx<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> HashMap<String, String> {
+    let args = crate::completion::conditional_resolution::split_text_args(text_args);
+    let mut subs = HashMap::new();
+
+    for (tpl_name, param_name) in &ctor.template_bindings {
+        // Find the parameter index for this binding.
+        let param_idx = match ctor.parameters.iter().position(|p| p.name == *param_name) {
+            Some(idx) => idx,
+            None => continue,
+        };
+
+        // Get the corresponding argument text.
+        let arg_text = match args.get(param_idx) {
+            Some(text) => text.trim(),
+            None => continue,
+        };
+
+        // Determine the binding mode by inspecting the parameter's
+        // docblock type hint.  The type hint tells us how the template
+        // param is embedded in the `@param` annotation.
+        let param_hint = ctor
+            .parameters
+            .get(param_idx)
+            .and_then(|p| p.type_hint.as_deref());
+        let binding_mode = classify_template_binding(tpl_name, param_hint);
+
+        match binding_mode {
+            TemplateBindingMode::Direct => {
+                // `@param T $bar` — the argument resolves directly to T.
+                if let Some(type_name) = Backend::resolve_arg_text_to_type(arg_text, rctx) {
+                    subs.insert(tpl_name.clone(), type_name);
+                }
+            }
+            TemplateBindingMode::ArrayElement => {
+                // `@param T[] $items` — resolve individual array elements.
+                if arg_text.starts_with('[') && arg_text.ends_with(']') {
+                    let inner = arg_text[1..arg_text.len() - 1].trim();
+                    if !inner.is_empty() {
+                        let first_elem =
+                            crate::completion::conditional_resolution::split_text_args(inner);
+                        if let Some(elem) = first_elem.first()
+                            && let Some(type_name) =
+                                Backend::resolve_arg_text_to_type(elem.trim(), rctx)
+                        {
+                            subs.insert(tpl_name.clone(), type_name);
+                        }
+                    }
+                } else if let Some(type_name) = Backend::resolve_arg_text_to_type(arg_text, rctx) {
+                    // Fallback: treat as direct if not an array literal.
+                    subs.insert(tpl_name.clone(), type_name);
+                }
+            }
+            TemplateBindingMode::GenericWrapper(wrapper_name, tpl_position) => {
+                // `@param Wrapper<T> $a` — resolve the wrapper's constructor
+                // template params to find the concrete type for T.
+                if let Some(concrete) = resolve_generic_wrapper_template(
+                    &wrapper_name,
+                    tpl_position,
+                    arg_text,
+                    rctx,
+                    ctx,
+                ) {
+                    subs.insert(tpl_name.clone(), concrete);
+                }
+            }
+        }
+    }
+
+    subs
+}
+
+/// How a template parameter is referenced in a `@param` type annotation.
+enum TemplateBindingMode {
+    /// `@param T $bar` — the whole type is the template param.
+    Direct,
+    /// `@param T[] $items` — the template param is the array element type.
+    ArrayElement,
+    /// `@param Wrapper<..., T, ...> $a` — the template param is a generic
+    /// argument of the wrapper class at the given position.
+    GenericWrapper(String, usize),
+}
+
+/// Classify how a template parameter name appears in a `@param` type hint.
+fn classify_template_binding(tpl_name: &str, param_hint: Option<&str>) -> TemplateBindingMode {
+    let hint = match param_hint {
+        Some(h) => h,
+        // No type hint — assume direct binding.
+        None => return TemplateBindingMode::Direct,
+    };
+
+    // Strip nullable prefix.
+    let hint = hint.strip_prefix('?').unwrap_or(hint);
+
+    // Check for `T[]` pattern.
+    if let Some(base) = hint.strip_suffix("[]")
+        && base == tpl_name
+    {
+        return TemplateBindingMode::ArrayElement;
+    }
+
+    // Check for direct `T` or `T|null`.
+    let core_parts: Vec<&str> = hint
+        .split('|')
+        .map(str::trim)
+        .filter(|p| *p != "null")
+        .collect();
+    if core_parts.len() == 1 && core_parts[0] == tpl_name {
+        return TemplateBindingMode::Direct;
+    }
+
+    // Check for `Wrapper<..., T, ...>` pattern.
+    if let Some(open) = hint.find('<')
+        && let Some(close) = hint.rfind('>')
+    {
+        let wrapper_name = crate::docblock::types::clean_type(&hint[..open]);
+        let generic_part = &hint[open + 1..close];
+        let hint_args: Vec<&str> = generic_part.split(',').map(|s| s.trim()).collect();
+        for (i, arg) in hint_args.iter().enumerate() {
+            if *arg == tpl_name {
+                return TemplateBindingMode::GenericWrapper(wrapper_name, i);
+            }
+        }
+    }
+
+    // Fallback to direct.
+    TemplateBindingMode::Direct
+}
+
+/// Resolve a template param that appears inside a generic wrapper type.
+///
+/// For `@param Wrapper<T> $a` with argument `new Wrapper(new X())`,
+/// recursively resolve the wrapper's constructor template params to
+/// find the concrete type for the template param at `tpl_position`.
+fn resolve_generic_wrapper_template(
+    wrapper_name: &str,
+    tpl_position: usize,
+    arg_text: &str,
+    rctx: &crate::completion::resolver::ResolutionCtx<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<String> {
+    // Load the wrapper class.
+    let wrapper_cls = (ctx.class_loader)(wrapper_name).or_else(|| {
+        ctx.all_classes
+            .iter()
+            .find(|c| crate::util::short_name(&c.name) == crate::util::short_name(wrapper_name))
+            .cloned()
+    })?;
+
+    // Find the wrapper's constructor and its template bindings.
+    let wrapper_ctor = wrapper_cls
+        .methods
+        .iter()
+        .find(|m| m.name == "__construct")?;
+    if wrapper_ctor.template_bindings.is_empty() {
+        return None;
+    }
+
+    // Extract the constructor arguments from the argument text.
+    // e.g. from `new Foobar(new X())` extract `new X()`.
+    let paren_start = arg_text.find('(')?;
+    let paren_end = arg_text.rfind(')')?;
+    let inner_args = arg_text[paren_start + 1..paren_end].trim();
+
+    let wrapper_subs =
+        build_constructor_template_subs(&wrapper_cls, wrapper_ctor, inner_args, rctx, ctx);
+
+    // Find the wrapper's template param at the given position and
+    // look it up in the substitution map.
+    let wrapper_tpl = wrapper_cls.template_params.get(tpl_position)?;
+    wrapper_subs.get(wrapper_tpl).cloned()
 }
 
 /// Resolve `$arr[0]` / `$arr[$key]` by extracting the generic element
@@ -191,6 +412,41 @@ fn resolve_rhs_array_access<'b>(
         }
     }
     vec![]
+}
+
+/// Build a template substitution map for a function-level `@template` call.
+///
+/// Uses the function's `template_bindings` to match template parameters to
+/// their concrete types inferred from the call-site arguments.
+fn build_function_template_subs(
+    func_info: &crate::types::FunctionInfo,
+    text_args: &str,
+    rctx: &crate::completion::resolver::ResolutionCtx<'_>,
+) -> HashMap<String, String> {
+    let args = crate::completion::conditional_resolution::split_text_args(text_args);
+    let mut subs = HashMap::new();
+
+    for (tpl_name, param_name) in &func_info.template_bindings {
+        let param_idx = match func_info
+            .parameters
+            .iter()
+            .position(|p| p.name == *param_name)
+        {
+            Some(idx) => idx,
+            None => continue,
+        };
+
+        let arg_text = match args.get(param_idx) {
+            Some(text) => text.trim(),
+            None => continue,
+        };
+
+        if let Some(type_name) = Backend::resolve_arg_text_to_type(arg_text, rctx) {
+            subs.insert(tpl_name.clone(), type_name);
+        }
+    }
+
+    subs
 }
 
 /// Resolve function, method, and static method calls to their return
@@ -272,6 +528,37 @@ fn resolve_rhs_function_call<'b>(
                 }
             }
         }
+
+        // ── Function-level @template substitution ────────────
+        // When the function has template params and bindings,
+        // infer concrete types from the arguments and apply
+        // substitution to the return type before resolving.
+        if !func_info.template_params.is_empty()
+            && !func_info.template_bindings.is_empty()
+            && func_info.return_type.is_some()
+        {
+            let text_args =
+                super::raw_type_inference::extract_argument_text(&func_call.argument_list, content);
+            if !text_args.is_empty() {
+                let rctx = ctx.as_resolution_ctx();
+                let subs = build_function_template_subs(&func_info, &text_args, &rctx);
+                if !subs.is_empty()
+                    && let Some(ref ret) = func_info.return_type
+                {
+                    let substituted = crate::inheritance::apply_substitution(ret, &subs);
+                    let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                        &substituted,
+                        current_class_name,
+                        all_classes,
+                        class_loader,
+                    );
+                    if !resolved.is_empty() {
+                        return resolved;
+                    }
+                }
+            }
+        }
+
         if let Some(ref ret) = func_info.return_type {
             return crate::completion::type_resolution::type_hint_to_classes(
                 ret,

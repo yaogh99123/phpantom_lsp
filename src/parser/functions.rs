@@ -64,6 +64,8 @@ impl Backend {
                         description,
                         return_description,
                         link,
+                        func_template_params,
+                        func_template_bindings,
                     ) = if let Some(ctx) = doc_ctx {
                         let docblock_text =
                             docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, func);
@@ -78,6 +80,22 @@ impl Backend {
                         let conditional =
                             docblock_text.and_then(docblock::extract_conditional_return_type);
 
+                        // Extract function-level @template params and their
+                        // @param bindings for generic type substitution at
+                        // call sites.
+                        let tpl_params: Vec<String> = docblock_text
+                            .map(docblock::extract_template_params)
+                            .unwrap_or_default();
+                        let tpl_bindings = if !tpl_params.is_empty() {
+                            docblock_text
+                                .map(|doc| {
+                                    docblock::extract_template_param_bindings(doc, &tpl_params)
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+
                         // If no explicit conditional return type was found,
                         // try to synthesize one from function-level @template
                         // annotations.  For example:
@@ -88,7 +106,6 @@ impl Backend {
                         // call-site argument (e.g. resolve(User::class) → User).
                         let conditional = conditional.or_else(|| {
                             let doc = docblock_text?;
-                            let tpl_params = docblock::extract_template_params(doc);
                             docblock::synthesize_template_conditional(
                                 doc,
                                 &tpl_params,
@@ -127,6 +144,8 @@ impl Backend {
                             desc,
                             ret_desc,
                             link_url,
+                            tpl_params,
+                            tpl_bindings,
                         )
                     } else {
                         // No docblock context available — attribute argument
@@ -141,6 +160,8 @@ impl Backend {
                             None,
                             None,
                             None,
+                            Vec::new(),
+                            Vec::new(),
                         )
                     };
 
@@ -180,6 +201,8 @@ impl Backend {
                         conditional_return,
                         type_assertions,
                         deprecation_message,
+                        template_params: func_template_params,
+                        template_bindings: func_template_bindings,
                     });
                 }
                 Statement::Namespace(namespace) => {

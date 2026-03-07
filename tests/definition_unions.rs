@@ -172,6 +172,8 @@ async fn test_goto_definition_union_return_type_standalone_function() {
                     conditional_return: None,
                     type_assertions: vec![],
                     deprecation_message: None,
+                    template_params: vec![],
+                    template_bindings: vec![],
                 },
             ),
         );

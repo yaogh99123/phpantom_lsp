@@ -159,8 +159,10 @@ pub fn extract_template_param_bindings(
             let (type_token, remainder) = split_type_token(rest);
 
             // The next token should be the parameter name (e.g. `$model`).
+            // It may have a variadic prefix: `...$items`.
             let param_name = match remainder.split_whitespace().next() {
                 Some(name) if name.starts_with('$') => name,
+                Some(name) if name.starts_with("...$") => &name[3..],
                 _ => continue,
             };
 
@@ -171,7 +173,31 @@ pub fn extract_template_param_bindings(
                 .split('|')
                 .map(str::trim)
                 .filter(|part| *part != "null")
-                .find(|part| template_params.iter().any(|t| t == part));
+                .find_map(|part| {
+                    // Direct match: `T`
+                    if let Some(t) = template_params.iter().find(|t| t.as_str() == part) {
+                        return Some(t.as_str());
+                    }
+                    // Array suffix: `T[]`
+                    if let Some(base) = part.strip_suffix("[]")
+                        && let Some(t) = template_params.iter().find(|t| t.as_str() == base)
+                    {
+                        return Some(t.as_str());
+                    }
+                    // Generic wrapper: `Wrapper<T>`, `Wrapper<T, U>`
+                    if let Some(open) = part.find('<')
+                        && let Some(close) = part.rfind('>')
+                    {
+                        let inner = &part[open + 1..close];
+                        for arg in inner.split(',') {
+                            let arg = arg.trim();
+                            if let Some(t) = template_params.iter().find(|t| t.as_str() == arg) {
+                                return Some(t.as_str());
+                            }
+                        }
+                    }
+                    None
+                });
 
             if let Some(tpl_name) = matched_template {
                 results.push((tpl_name.to_string(), param_name.to_string()));
@@ -522,10 +548,12 @@ fn find_class_string_param_name(docblock: &str, template_name: &str) -> Option<S
                 let (_, after) = split_type_token(rest);
                 search = after;
             }
-            if let Some(var_name) = search.split_whitespace().next()
-                && let Some(name) = var_name.strip_prefix('$')
-            {
-                return Some(name.to_string());
+            if let Some(var_name) = search.split_whitespace().next() {
+                // Handle both `$param` and variadic `...$param`.
+                let var_name = var_name.strip_prefix("...").unwrap_or(var_name);
+                if let Some(name) = var_name.strip_prefix('$') {
+                    return Some(name.to_string());
+                }
             }
         }
     }

@@ -1,6 +1,5 @@
 // test: constructor array argument infers template type
 // feature: completion
-// ignore: needs todo.md §2 (function-level @template constructor inference)
 // Adapted from phpactor generics/constructor-array_arg.test
 // expect: aMethod(
 ---

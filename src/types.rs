@@ -374,6 +374,13 @@ pub struct MethodInfo {
     /// Set to `true` by [`MethodInfo::virtual_method`] and by providers;
     /// set to `false` by the parser for real declared methods.
     pub is_virtual: bool,
+    /// Type assertions declared via `@phpstan-assert` / `@psalm-assert` tags
+    /// in the method's docblock.
+    ///
+    /// Works identically to [`FunctionInfo::type_assertions`] but for class
+    /// methods.  Used by the narrowing engine to apply type guards from
+    /// static method calls like `Assert::instanceOf($value, Foo::class)`.
+    pub type_assertions: Vec<TypeAssertion>,
 }
 
 impl MethodInfo {
@@ -442,6 +449,7 @@ impl MethodInfo {
             has_scope_attribute: false,
             is_abstract: false,
             is_virtual: true,
+            type_assertions: Vec::new(),
         }
     }
 }
@@ -746,6 +754,24 @@ pub struct FunctionInfo {
     /// `None` means not deprecated. `Some("")` means deprecated without a
     /// message. `Some("Use newHelper() instead")` includes the explanation.
     pub deprecation_message: Option<String>,
+    /// Template parameter names declared via `@template` tags in the
+    /// function-level docblock.
+    ///
+    /// For example, a function with `@template T of Model` would have
+    /// `template_params: vec!["T".into()]`.
+    ///
+    /// These mirror the `MethodInfo::template_params` field and are used
+    /// for generic type substitution at call sites.
+    pub template_params: Vec<String>,
+    /// Mappings from function-level template parameter names to the
+    /// function parameter names (with `$` prefix) that directly bind
+    /// them via `@param` annotations.
+    ///
+    /// For example, `@template T` + `@param T $model` produces
+    /// `[("T", "$model")]`.  At call sites the resolver uses these
+    /// bindings to infer concrete types for each template parameter
+    /// from the actual argument expressions.
+    pub template_bindings: Vec<(String, String)>,
 }
 
 // ─── PHPStan Type Assertions ────────────────────────────────────────────────

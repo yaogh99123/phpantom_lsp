@@ -1,7 +1,6 @@
 // test: @phpstan-assert-if-true narrows type inside if branch
 // feature: completion
 // Adapted from phpactor narrowing patterns with @phpstan-assert-if-true
-// ignore: @phpstan-assert-if-true on static method calls not yet supported
 // expect: getName(
 ---
 <?php

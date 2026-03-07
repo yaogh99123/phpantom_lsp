@@ -674,6 +674,8 @@ impl Backend {
                         })
                         .unwrap_or_default();
 
+                    let doc_info = extract_class_docblock(class, doc_ctx);
+
                     let (
                         methods,
                         properties,
@@ -682,9 +684,11 @@ impl Backend {
                         trait_precedences,
                         trait_aliases,
                         inline_use_generics,
-                    ) = Self::extract_class_like_members(class.members.iter(), doc_ctx);
-
-                    let doc_info = extract_class_docblock(class, doc_ctx);
+                    ) = Self::extract_class_like_members(
+                        class.members.iter(),
+                        doc_ctx,
+                        &doc_info.template_params,
+                    );
 
                     let mut use_generics = doc_info.use_generics;
                     use_generics.extend(inline_use_generics);
@@ -773,6 +777,8 @@ impl Backend {
 
                     let parent_class = all_parents.first().cloned();
 
+                    let doc_info = extract_class_docblock(iface, doc_ctx);
+
                     let (
                         methods,
                         properties,
@@ -781,9 +787,11 @@ impl Backend {
                         trait_precedences,
                         trait_aliases,
                         inline_use_generics,
-                    ) = Self::extract_class_like_members(iface.members.iter(), doc_ctx);
-
-                    let doc_info = extract_class_docblock(iface, doc_ctx);
+                    ) = Self::extract_class_like_members(
+                        iface.members.iter(),
+                        doc_ctx,
+                        &doc_info.template_params,
+                    );
 
                     let keyword_offset = iface.interface.span.start.offset;
                     let start_offset = iface.left_brace.start.offset;
@@ -834,6 +842,8 @@ impl Backend {
                 Statement::Trait(trait_def) => {
                     let trait_name = trait_def.name.value.to_string();
 
+                    let doc_info = extract_class_docblock(trait_def, doc_ctx);
+
                     let (
                         methods,
                         properties,
@@ -842,9 +852,11 @@ impl Backend {
                         trait_precedences,
                         trait_aliases,
                         inline_use_generics,
-                    ) = Self::extract_class_like_members(trait_def.members.iter(), doc_ctx);
-
-                    let doc_info = extract_class_docblock(trait_def, doc_ctx);
+                    ) = Self::extract_class_like_members(
+                        trait_def.members.iter(),
+                        doc_ctx,
+                        &doc_info.template_params,
+                    );
 
                     let keyword_offset = trait_def.r#trait.span.start.offset;
                     let start_offset = trait_def.left_brace.start.offset;
@@ -900,7 +912,7 @@ impl Backend {
                     let enum_name = enum_def.name.value.to_string();
 
                     let (methods, properties, constants, mut used_traits, _, _, _) =
-                        Self::extract_class_like_members(enum_def.members.iter(), doc_ctx);
+                        Self::extract_class_like_members(enum_def.members.iter(), doc_ctx, &[]);
 
                     // Enums implicitly implement UnitEnum or BackedEnum.
                     // We add the interface as a fully-qualified name (leading
@@ -1020,7 +1032,7 @@ impl Backend {
             .unwrap_or_default();
 
         let (methods, properties, constants, used_traits, trait_precedences, trait_aliases, _) =
-            Self::extract_class_like_members(anon.members.iter(), doc_ctx);
+            Self::extract_class_like_members(anon.members.iter(), doc_ctx, &[]);
 
         let start_offset = anon.left_brace.start.offset;
         let end_offset = anon.right_brace.end.offset;
@@ -1470,6 +1482,7 @@ impl Backend {
     pub(crate) fn extract_class_like_members<'a>(
         members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
         doc_ctx: Option<&DocblockCtx<'a>>,
+        class_template_params: &[String],
     ) -> ExtractedMembers {
         let mut methods = Vec::new();
         let mut properties = Vec::new();
@@ -1556,6 +1569,38 @@ impl Backend {
                                 .unwrap_or_default()
                         } else {
                             Vec::new()
+                        };
+
+                        // For constructors, also check for bindings between
+                        // the *class-level* template params and the
+                        // constructor's `@param` annotations.  This handles
+                        // the common pattern:
+                        //   /** @template T */
+                        //   class Foo {
+                        //       /** @param T $bar */
+                        //       public function __construct($bar) {}
+                        //   }
+                        // where `T` is declared on the class but bound via
+                        // the constructor's `@param T $bar`.
+                        let (tpl_params, tpl_bindings) = if name == "__construct"
+                            && tpl_bindings.is_empty()
+                            && !class_template_params.is_empty()
+                        {
+                            let class_bindings = docblock_text
+                                .map(|doc| {
+                                    docblock::extract_template_param_bindings(
+                                        doc,
+                                        class_template_params,
+                                    )
+                                })
+                                .unwrap_or_default();
+                            if !class_bindings.is_empty() {
+                                (class_template_params.to_vec(), class_bindings)
+                            } else {
+                                (tpl_params, tpl_bindings)
+                            }
+                        } else {
+                            (tpl_params, tpl_bindings)
                         };
 
                         // If no explicit conditional return type was found,
@@ -1713,6 +1758,14 @@ impl Backend {
                         }
                     }
 
+                    // Extract `@phpstan-assert` / `@psalm-assert` type
+                    // assertion tags from the method's docblock so that
+                    // the narrowing engine can apply type guards from
+                    // static method calls like `Assert::instanceOf($v, Foo::class)`.
+                    let type_assertions = method_docblock_text
+                        .map(docblock::extract_type_assertions)
+                        .unwrap_or_default();
+
                     methods.push(MethodInfo {
                         name,
                         name_offset,
@@ -1732,6 +1785,7 @@ impl Backend {
                         has_scope_attribute: has_scope_attr,
                         is_abstract: method.is_abstract(),
                         is_virtual: false,
+                        type_assertions,
                     });
                 }
                 ClassLikeMember::Property(property) => {

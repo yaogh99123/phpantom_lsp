@@ -1,7 +1,6 @@
 // test: class-string generic with nested return type resolves T wrapped in generic
 // feature: completion
 // Adapted from phpactor generics/class-string-generic-nested-return.test
-// ignore: needs function-level @template argument inference (todo.md §2)
 // expect: doSomething(
 ---
 <?php

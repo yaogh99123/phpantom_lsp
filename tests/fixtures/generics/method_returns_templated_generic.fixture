@@ -1,10 +1,13 @@
 // test: method returns templated generic Collection<T> via constructor inference
 // feature: completion
 // Adapted from phpactor generics/method_returns_templated_generic.test
-// ignore: needs todo.md §2 (function-level @template constructor argument inference)
-// expect: getTimestamp(
+// expect: doWork(
 ---
 <?php
+
+class MyEntity {
+    public function doWork(): void {}
+}
 
 /** @template T */
 interface Collection {
@@ -24,5 +27,5 @@ class Test
     public function foobar(): Collection {}
 }
 
-$foo = new Test(new DateTime());
+$foo = new Test(new MyEntity());
 $foo->foobar()->get()-><>

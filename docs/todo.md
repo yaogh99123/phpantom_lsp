@@ -82,7 +82,6 @@ deepens that lead and rounds out the remaining feature surface.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 25 | Function-level `@template` generic resolution | Medium | Type Inference | [type-inference.md §2](todo/type-inference.md#2-function-level-template-generic-resolution) |
 | 26 | Inherited docblock type propagation | Medium | Type Inference | [type-inference.md §4](todo/type-inference.md#4-inherited-docblock-type-propagation) |
 | 27 | `BackedEnum::from()` / `::tryFrom()` return type refinement | Low | Completion | [completion.md §1](todo/completion.md#1-backedenumfrom--tryfrom-return-type-refinement) |
 | 28 | Pipe operator (PHP 8.5) type resolution | Low | Type Inference | [type-inference.md §1](todo/type-inference.md#1-pipe-operator-php-85) |
