@@ -2225,3 +2225,148 @@ fn no_replace_action_when_no_replacement_template() {
         "Should NOT offer a Replace action when there is no replacement template"
     );
 }
+
+#[test]
+fn trait_use_inside_class_body_not_flagged_as_unused() {
+    let backend = create_test_backend();
+    let uri = "file:///test_trait_use.php";
+    let text = r#"<?php
+namespace App\Domain\UpdateFromSheet\Jobs;
+
+use Illuminate\Foundation\Queue\Queueable;
+
+final class UpdateProductPricesFromSheetJob
+{
+    use Queueable;
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        unnecessary.is_empty(),
+        "Import used by trait `use` inside class body should not be flagged as unused, got: {:?}",
+        unnecessary
+    );
+}
+
+#[test]
+fn trait_use_with_multiple_traits_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_multi_trait_use.php";
+    let text = r#"<?php
+namespace App;
+
+use Foo\TraitA;
+use Foo\TraitB;
+use Foo\UnusedClass;
+
+class Consumer {
+    use TraitA, TraitB;
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        !unnecessary.iter().any(|d| d.message.contains("TraitA")),
+        "TraitA used in class body trait-use should not be flagged, got: {:?}",
+        unnecessary
+    );
+    assert!(
+        !unnecessary.iter().any(|d| d.message.contains("TraitB")),
+        "TraitB used in class body trait-use should not be flagged, got: {:?}",
+        unnecessary
+    );
+    assert!(
+        unnecessary
+            .iter()
+            .any(|d| d.message.contains("UnusedClass")),
+        "UnusedClass should still be flagged as unused, got: {:?}",
+        unnecessary
+    );
+}
+
+#[test]
+fn trait_use_in_braced_namespace_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_braced_ns_trait.php";
+    let text = r#"<?php
+namespace App\Jobs {
+    use Illuminate\Foundation\Queue\Queueable;
+
+    final class MyJob {
+        use Queueable;
+    }
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        unnecessary.is_empty(),
+        "Import used by trait `use` inside braced namespace should not be flagged, got: {:?}",
+        unnecessary
+    );
+}
+
+#[test]
+fn class_in_var_docblock_on_promoted_property_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_var_promoted.php";
+    let text = r#"<?php
+namespace App\Features\Mobilepay;
+
+use Luxplus\Core\Database\Model\Subscriptions\Subscription;
+
+final class SubscriptionInfo
+{
+    public function __construct(
+        /** @var list<Subscription> */
+        public array $luxplusSubscriptions,
+    ) {}
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        unnecessary.is_empty(),
+        "Import used in @var docblock on promoted constructor property should not be flagged as unused, got: {:?}",
+        unnecessary
+    );
+}
+
+#[test]
+fn class_in_param_docblock_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_param_docblock.php";
+    let text = r#"<?php
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    /**
+     * @param list<Order> $orders
+     */
+    public function processOrders(array $orders): void
+    {
+    }
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        unnecessary.is_empty(),
+        "Import used in @param docblock should not be flagged as unused, got: {:?}",
+        unnecessary
+    );
+}

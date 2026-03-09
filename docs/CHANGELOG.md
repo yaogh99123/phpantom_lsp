@@ -68,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **First-open performance.** Diagnostics on `did_open` now run asynchronously instead of blocking the LSP response.
 - **Variadic `@param` template bindings.** `@param class-string<T> ...$items` now correctly binds the template parameter.
 - **Laravel relationship classification.** Relationship return types fully-qualified to a non-Eloquent namespace are no longer misclassified as Eloquent relationships.
+- **Trait `use` no longer triggers false-positive unused import.** When a class uses a trait via `use TraitName;` inside the class body, the corresponding namespace import is no longer flagged as unused.
+- **PHPDoc types on constructor-promoted properties now recognised.** Classes referenced in `/** @var list<Foo> */` annotations on promoted constructor parameters are no longer flagged as unused imports, and hover/go-to-definition works on those type references.
+- **PHPDoc type tags no longer skipped by unused-import safety net.** Docblock lines containing type-bearing tags (`@var`, `@param`, `@return`, `@throws`, `@template`, etc.) are now checked for class references instead of being blanket-skipped as comments.
 - **`@phpstan-type` aliases in foreach.** Type aliases now resolve correctly when iterated in a `foreach` loop, destructured with `list()`/`[]`, or used as a foreach key type.
 - **Mixed `->` then `::` accessor chains.** Expressions like `$obj->prop::$staticProp` now resolve through the full chain.
 - **Inline `(new Foo)->method()` chaining.** Parenthesized `new` expressions used as the root of a method chain now resolve for completion.
@@ -86,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Double-negated `instanceof` narrowing.** `if (!!$x instanceof Foo)` now correctly narrows `$x` to `Foo`.
 - **Accessor on new line with whitespace.** Completion now works when `->` is on a new line with extra whitespace before the cursor.
 - **Partial static property completion.** Typing `$obj::$f` now returns static property completions.
+- **Hover respects `instanceof` and `assert` narrowing.** Hovering a variable after `assert($var instanceof Foo)` now shows the narrowed type instead of the original assignment type. Inline `/** @var Type */` annotations on assignments are also respected by the hover type-string path. Previously these narrowing patterns only affected completion, not hover.
+- **`instanceof` narrowing with same-named classes in different namespaces.** When two classes share the same short name (e.g. `Contracts\Provider` and `Concrete\Provider`), `instanceof` narrowing no longer incorrectly treats them as subtypes of each other.
+- **Self-referential array key assignments no longer crash the LSP.** Patterns like `$numbers['price'] = $numbers['price']->add(...)` caused infinite recursion in the raw-type inference path, producing a stack overflow that killed the server process. The resolver now reduces the cursor offset before evaluating the right-hand side, matching the protection already present for simple variable assignments.
+- **Cross-file `@property` and `@method` type resolution.** When a class declares `@property Carbon $created` using a short class name imported via `use`, accessing that property from a different file now resolves the type correctly. Previously the short name was resolved against the consuming file's imports instead of the declaring file's imports, causing completion and hover to fail.
+- **Editing a `@property` docblock now invalidates hover in other files.** Changing a class-level `@property` (or `@method`) type was not reflected when hovering on a child class that inherits the virtual member. The resolved-class cache now transitively evicts dependent classes (children, trait users, implementors, mixin consumers) when an ancestor's signature changes.
 
 ## [0.4.0] - 2026-03-01
 

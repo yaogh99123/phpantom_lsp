@@ -6183,3 +6183,775 @@ class Repo {
     // This must not stack-overflow.
     backend.handle_hover(uri, content, position);
 }
+
+/// When a variable is narrowed via `/** @var Provider */` or
+/// `assert($var instanceof Provider)` where `Provider` is imported
+/// via a `use` statement from another file, hover should resolve
+/// the type through the use-map to the concrete class, not to a
+/// different class that happens to share the same short name.
+#[test]
+fn hover_variable_narrowed_by_var_and_instanceof_with_use_import() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "Contracts\\": "contracts/",
+                    "Concrete\\": "concrete/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "contracts/Provider.php",
+                concat!(
+                    "<?php\n",
+                    "namespace Contracts;\n",
+                    "interface Provider {\n",
+                    "    public function redirect(): string;\n",
+                    "}\n",
+                ),
+            ),
+            (
+                "concrete/Provider.php",
+                concat!(
+                    "<?php\n",
+                    "namespace Concrete;\n",
+                    "class Provider implements \\Contracts\\Provider {\n",
+                    "    public function redirect(): string { return ''; }\n",
+                    "    public function stateless(): static { return $this; }\n",
+                    "}\n",
+                ),
+            ),
+        ],
+    );
+
+    // --- @var narrowing ---
+    let var_uri = "file:///test_var.php";
+    let var_content = concat!(
+        "<?php\n",
+        "use Concrete\\Provider;\n",
+        "class VarTest {\n",
+        "    public function run(): void {\n",
+        "        /** @var Provider $provider */\n",
+        "        $provider = $this->getProvider();\n",
+        "        $provider;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Parse the cross-file classes so they're in the classmap.
+    let contracts_uri = format!(
+        "file://{}",
+        _dir.path().join("contracts/Provider.php").display()
+    );
+    let contracts_content =
+        std::fs::read_to_string(_dir.path().join("contracts/Provider.php")).unwrap();
+    backend.update_ast(&contracts_uri, &contracts_content);
+
+    let concrete_uri = format!(
+        "file://{}",
+        _dir.path().join("concrete/Provider.php").display()
+    );
+    let concrete_content =
+        std::fs::read_to_string(_dir.path().join("concrete/Provider.php")).unwrap();
+    backend.update_ast(&concrete_uri, &concrete_content);
+
+    // Hover on `$provider` at line 6 (the bare `$provider;` usage)
+    let hover = hover_at(&backend, var_uri, var_content, 6, 9);
+    assert!(
+        hover.is_some(),
+        "hover should resolve @var-narrowed variable"
+    );
+    let text = hover_text(hover.as_ref().unwrap());
+    assert!(
+        text.contains("namespace Concrete"),
+        "@var Provider should resolve to Concrete\\Provider via use-map, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("namespace Contracts"),
+        "@var Provider should NOT resolve to Contracts\\Provider, got: {}",
+        text
+    );
+
+    // --- instanceof narrowing ---
+    let instanceof_uri = "file:///test_instanceof.php";
+    let instanceof_content = concat!(
+        "<?php\n",
+        "use Concrete\\Provider;\n",
+        "class InstanceofTest {\n",
+        "    /** @return \\Contracts\\Provider */\n",
+        "    public function getProvider() {}\n",
+        "    public function run(): void {\n",
+        "        $provider = $this->getProvider();\n",
+        "        assert($provider instanceof Provider);\n",
+        "        $provider;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Hover on `$provider` at line 8 (after the assert)
+    let hover2 = hover_at(&backend, instanceof_uri, instanceof_content, 8, 9);
+    assert!(
+        hover2.is_some(),
+        "hover should resolve instanceof-narrowed variable"
+    );
+    let text2 = hover_text(hover2.as_ref().unwrap());
+    assert!(
+        text2.contains("namespace Concrete"),
+        "instanceof Provider should resolve to Concrete\\Provider via use-map, got: {}",
+        text2
+    );
+    assert!(
+        !text2.contains("namespace Contracts"),
+        "instanceof Provider should NOT resolve to Contracts\\Provider, got: {}",
+        text2
+    );
+}
+
+/// Cross-file variant where the hover target is reached through a method
+/// return type chain: `$this->getJob()->class_name`.  The method returns
+/// `ScheduledJob`, whose `@property` docblock is edited in another file.
+/// This exercises the `PropertyChain` → `CallExpr` → `type_hint_to_classes`
+/// path in `resolve_target_classes`, which may cache the resolved class
+/// differently from a bare variable.
+#[test]
+fn hover_cross_file_property_docblock_cache_invalidation_via_method_chain() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": { "App\\": "src/" }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/ScheduledJob.php",
+                r#"<?php
+namespace App\Models;
+/** @property class-string<Job> $class_name */
+class ScheduledJob {
+}
+"#,
+            ),
+            (
+                "src/Service.php",
+                r#"<?php
+namespace App;
+use App\Models\ScheduledJob;
+class Service {
+    public function getJob(): ScheduledJob {
+        return new ScheduledJob();
+    }
+    public function run(): void {
+        $this->getJob()->class_name;
+    }
+}
+"#,
+            ),
+        ],
+    );
+
+    // Parse the ScheduledJob file
+    let sj_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ScheduledJob.php").display()
+    );
+    let sj_content_v1 =
+        std::fs::read_to_string(_dir.path().join("src/Models/ScheduledJob.php")).unwrap();
+    backend.update_ast(&sj_uri, &sj_content_v1);
+
+    let service_uri = format!("file://{}", _dir.path().join("src/Service.php").display());
+    let service_content = std::fs::read_to_string(_dir.path().join("src/Service.php")).unwrap();
+
+    // ── Step 1: hover should show the original type ─────────────────
+    // Line 8: `$this->getJob()->class_name;` — hover on `class_name`
+    let hover1 = hover_at(&backend, &service_uri, &service_content, 8, 28)
+        .expect("expected hover on class_name via method chain (v1)");
+    let text1 = hover_text(&hover1);
+    assert!(
+        text1.contains("class-string"),
+        "v1 hover should show class-string type via method chain, got: {}",
+        text1
+    );
+
+    // ── Step 2: change the @property type in ScheduledJob ───────────
+    let sj_content_v2 = r#"<?php
+namespace App\Models;
+/** @property string $class_name */
+class ScheduledJob {
+}
+"#;
+    backend.update_ast(&sj_uri, sj_content_v2);
+
+    // ── Step 3: hover again without re-parsing Service ──────────────
+    let hover2 = backend
+        .handle_hover(
+            &service_uri,
+            &service_content,
+            Position {
+                line: 8,
+                character: 28,
+            },
+        )
+        .expect("expected hover on class_name via method chain (v2)");
+    let text2 = hover_text(&hover2);
+    assert!(
+        !text2.contains("class-string"),
+        "v2 hover should NOT show old class-string type via method chain, got: {}",
+        text2
+    );
+    assert!(
+        text2.contains("string"),
+        "v2 hover should show updated string type via method chain, got: {}",
+        text2
+    );
+}
+
+/// Cross-file variant where the property is accessed on a variable
+/// whose type comes from a `@var` annotation rather than a parameter
+/// type hint.  This exercises the docblock-based variable resolution
+/// path which may interact with caching differently.
+#[test]
+fn hover_cross_file_property_docblock_cache_invalidation_via_var_annotation() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": { "App\\": "src/" }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/ScheduledJob.php",
+                r#"<?php
+namespace App\Models;
+/** @property class-string<Job> $class_name */
+class ScheduledJob {
+}
+"#,
+            ),
+            (
+                "src/Service.php",
+                r#"<?php
+namespace App;
+use App\Models\ScheduledJob;
+class Service {
+    public function run(): void {
+        /** @var ScheduledJob $job */
+        $job = $this->fetchJob();
+        $job->class_name;
+    }
+}
+"#,
+            ),
+        ],
+    );
+
+    let sj_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ScheduledJob.php").display()
+    );
+    let sj_content_v1 =
+        std::fs::read_to_string(_dir.path().join("src/Models/ScheduledJob.php")).unwrap();
+    backend.update_ast(&sj_uri, &sj_content_v1);
+
+    let service_uri = format!("file://{}", _dir.path().join("src/Service.php").display());
+    let service_content = std::fs::read_to_string(_dir.path().join("src/Service.php")).unwrap();
+
+    // ── Step 1: hover should show the original type ─────────────────
+    // Line 7: `$job->class_name;`
+    let hover1 = hover_at(&backend, &service_uri, &service_content, 7, 15)
+        .expect("expected hover on class_name via @var (v1)");
+    let text1 = hover_text(&hover1);
+    assert!(
+        text1.contains("class-string"),
+        "v1 hover should show class-string type via @var, got: {}",
+        text1
+    );
+
+    // ── Step 2: change the @property type ───────────────────────────
+    let sj_content_v2 = r#"<?php
+namespace App\Models;
+/** @property string $class_name */
+class ScheduledJob {
+}
+"#;
+    backend.update_ast(&sj_uri, sj_content_v2);
+
+    // ── Step 3: hover again without re-parsing Service ──────────────
+    let hover2 = backend
+        .handle_hover(
+            &service_uri,
+            &service_content,
+            Position {
+                line: 7,
+                character: 15,
+            },
+        )
+        .expect("expected hover on class_name via @var (v2)");
+    let text2 = hover_text(&hover2);
+    assert!(
+        !text2.contains("class-string"),
+        "v2 hover should NOT show old class-string type via @var, got: {}",
+        text2
+    );
+    assert!(
+        text2.contains("string"),
+        "v2 hover should show updated string type via @var, got: {}",
+        text2
+    );
+}
+
+/// Variant where the first hover populates the resolved_class_cache,
+/// then a second hover (before any edit) confirms the cached result,
+/// and only then is the docblock edited and a third hover checks
+/// invalidation.  This ensures the cache is actually warmed before
+/// the edit, making the eviction path the one exercised.
+#[test]
+fn hover_cross_file_property_docblock_cache_warm_then_invalidate() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": { "App\\": "src/" }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/ScheduledJob.php",
+                r#"<?php
+namespace App\Models;
+/** @property class-string<Job> $class_name */
+class ScheduledJob {
+}
+"#,
+            ),
+            (
+                "src/Service.php",
+                r#"<?php
+namespace App;
+use App\Models\ScheduledJob;
+class Service {
+    public function run(ScheduledJob $job): void {
+        $job->class_name;
+    }
+}
+"#,
+            ),
+        ],
+    );
+
+    let sj_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ScheduledJob.php").display()
+    );
+    let sj_content_v1 =
+        std::fs::read_to_string(_dir.path().join("src/Models/ScheduledJob.php")).unwrap();
+    backend.update_ast(&sj_uri, &sj_content_v1);
+
+    let service_uri = format!("file://{}", _dir.path().join("src/Service.php").display());
+    let service_content = std::fs::read_to_string(_dir.path().join("src/Service.php")).unwrap();
+
+    // ── Hover 1: populate the resolved_class_cache ──────────────────
+    let hover1 = hover_at(&backend, &service_uri, &service_content, 5, 15)
+        .expect("expected hover on class_name (warm-up)");
+    let text1 = hover_text(&hover1);
+    assert!(
+        text1.contains("class-string"),
+        "warm-up hover should show class-string, got: {}",
+        text1
+    );
+
+    // ── Hover 2: confirm cached result (no re-parse of either file) ─
+    let hover2 = backend
+        .handle_hover(
+            &service_uri,
+            &service_content,
+            Position {
+                line: 5,
+                character: 15,
+            },
+        )
+        .expect("expected hover on class_name (cached)");
+    let text2 = hover_text(&hover2);
+    assert!(
+        text2.contains("class-string"),
+        "cached hover should still show class-string, got: {}",
+        text2
+    );
+
+    // ── Edit: change the @property type ─────────────────────────────
+    let sj_content_v2 = r#"<?php
+namespace App\Models;
+/** @property string $class_name */
+class ScheduledJob {
+}
+"#;
+    backend.update_ast(&sj_uri, sj_content_v2);
+
+    // ── Hover 3: should see the new type (cache evicted) ────────────
+    let hover3 = backend
+        .handle_hover(
+            &service_uri,
+            &service_content,
+            Position {
+                line: 5,
+                character: 15,
+            },
+        )
+        .expect("expected hover on class_name (after invalidation)");
+    let text3 = hover_text(&hover3);
+    assert!(
+        !text3.contains("class-string"),
+        "post-invalidation hover should NOT show old class-string, got: {}",
+        text3
+    );
+    assert!(
+        text3.contains("string"),
+        "post-invalidation hover should show updated string type, got: {}",
+        text3
+    );
+}
+
+/// Cross-file variant where ScheduledJob is first loaded implicitly via
+/// PSR-4 resolution (triggered by hovering in the consumer file) rather
+/// than being explicitly parsed via `update_ast`.  Then the user opens
+/// the file (`did_open` → `update_ast`) and edits the `@property`
+/// docblock.  The hover in the consumer file should reflect the new type.
+///
+/// This exercises the transition from a `parse_and_cache_file` entry
+/// (Phase 2 of `find_or_load_class`) to an `update_ast_inner` entry
+/// (from `did_open`/`did_change`).
+#[test]
+fn hover_cross_file_property_docblock_cache_invalidation_psr4_then_edit() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": { "App\\": "src/" }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/ScheduledJob.php",
+                r#"<?php
+namespace App\Models;
+/** @property class-string<Job> $class_name */
+class ScheduledJob {
+}
+"#,
+            ),
+            (
+                "src/Service.php",
+                r#"<?php
+namespace App;
+use App\Models\ScheduledJob;
+class Service {
+    public function run(ScheduledJob $job): void {
+        $job->class_name;
+    }
+}
+"#,
+            ),
+        ],
+    );
+
+    // Only parse the Service file.  Do NOT parse ScheduledJob explicitly.
+    // It will be loaded on-demand via PSR-4 when hovering in Service.
+    let service_uri = format!("file://{}", _dir.path().join("src/Service.php").display());
+    let service_content = std::fs::read_to_string(_dir.path().join("src/Service.php")).unwrap();
+
+    // ── Hover 1: triggers PSR-4 lazy load of ScheduledJob ───────────
+    let hover1 = hover_at(&backend, &service_uri, &service_content, 5, 15)
+        .expect("expected hover on class_name (PSR-4 lazy load)");
+    let text1 = hover_text(&hover1);
+    assert!(
+        text1.contains("class-string"),
+        "PSR-4 lazy-loaded hover should show class-string, got: {}",
+        text1
+    );
+
+    // ── Simulate did_open + did_change on ScheduledJob ──────────────
+    // The user opens ScheduledJob.php and edits the @property docblock.
+    let sj_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ScheduledJob.php").display()
+    );
+    let sj_content_v2 = r#"<?php
+namespace App\Models;
+/** @property string $class_name */
+class ScheduledJob {
+}
+"#;
+    backend.update_ast(&sj_uri, sj_content_v2);
+
+    // ── Hover 2: should see the new type ────────────────────────────
+    let hover2 = backend
+        .handle_hover(
+            &service_uri,
+            &service_content,
+            Position {
+                line: 5,
+                character: 15,
+            },
+        )
+        .expect("expected hover on class_name (after PSR-4 → edit)");
+    let text2 = hover_text(&hover2);
+    assert!(
+        !text2.contains("class-string"),
+        "after editing PSR-4-loaded class, hover should NOT show old class-string, got: {}",
+        text2
+    );
+    assert!(
+        text2.contains("string"),
+        "after editing PSR-4-loaded class, hover should show updated string, got: {}",
+        text2
+    );
+}
+
+/// When `ChildJob extends ScheduledJob` and the user edits the `@property`
+/// docblock on `ScheduledJob`, hovering on `$child->class_name` (where
+/// `$child` is a `ChildJob`) must reflect the new type.
+///
+/// The `resolved_class_cache` evicts the changed class (`ScheduledJob`)
+/// but **not** its dependents (`ChildJob`).  If `ChildJob` was previously
+/// resolved and cached, the stale cache entry still contains the old
+/// `@property` type inherited from `ScheduledJob`.  The fix must ensure
+/// that dependent classes are also invalidated (or that their cache entries
+/// are not served when an ancestor has changed).
+#[test]
+fn hover_cross_file_property_docblock_cache_invalidation_dependent_class() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": { "App\\": "src/" }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/ScheduledJob.php",
+                r#"<?php
+namespace App\Models;
+/** @property class-string<Job> $class_name */
+class ScheduledJob {
+}
+"#,
+            ),
+            (
+                "src/Models/ChildJob.php",
+                r#"<?php
+namespace App\Models;
+class ChildJob extends ScheduledJob {
+}
+"#,
+            ),
+            (
+                "src/Service.php",
+                r#"<?php
+namespace App;
+use App\Models\ChildJob;
+class Service {
+    public function run(ChildJob $child): void {
+        $child->class_name;
+    }
+}
+"#,
+            ),
+        ],
+    );
+
+    // Parse ScheduledJob and ChildJob
+    let sj_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ScheduledJob.php").display()
+    );
+    let sj_content_v1 =
+        std::fs::read_to_string(_dir.path().join("src/Models/ScheduledJob.php")).unwrap();
+    backend.update_ast(&sj_uri, &sj_content_v1);
+
+    let child_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ChildJob.php").display()
+    );
+    let child_content =
+        std::fs::read_to_string(_dir.path().join("src/Models/ChildJob.php")).unwrap();
+    backend.update_ast(&child_uri, &child_content);
+
+    let service_uri = format!("file://{}", _dir.path().join("src/Service.php").display());
+    let service_content = std::fs::read_to_string(_dir.path().join("src/Service.php")).unwrap();
+
+    // ── Hover 1: warm the cache for ChildJob (inherits @property) ───
+    // Line 5: `$child->class_name;`
+    let hover1 = hover_at(&backend, &service_uri, &service_content, 5, 17)
+        .expect("expected hover on class_name via ChildJob (v1)");
+    let text1 = hover_text(&hover1);
+    assert!(
+        text1.contains("class-string"),
+        "v1 hover on ChildJob should show inherited class-string, got: {}",
+        text1
+    );
+
+    // ── Edit: change the @property type on ScheduledJob ─────────────
+    let sj_content_v2 = r#"<?php
+namespace App\Models;
+/** @property string $class_name */
+class ScheduledJob {
+}
+"#;
+    backend.update_ast(&sj_uri, sj_content_v2);
+
+    // ── Hover 2: ChildJob's cache should be invalidated too ─────────
+    // Do NOT re-parse ChildJob or Service — only ScheduledJob changed.
+    let hover2 = backend
+        .handle_hover(
+            &service_uri,
+            &service_content,
+            Position {
+                line: 5,
+                character: 17,
+            },
+        )
+        .expect("expected hover on class_name via ChildJob (v2)");
+    let text2 = hover_text(&hover2);
+    assert!(
+        !text2.contains("class-string"),
+        "v2 hover on ChildJob should NOT show old class-string after parent docblock edit, got: {}",
+        text2
+    );
+    assert!(
+        text2.contains("string"),
+        "v2 hover on ChildJob should show updated string type from parent, got: {}",
+        text2
+    );
+}
+
+/// Same as the dependent-class test above, but with the full Laravel
+/// Model parent chain: `ChildJob extends ScheduledJob extends Model`.
+/// This exercises the `LaravelModelProvider` + `PHPDocProvider` interaction
+/// on dependent classes.
+#[test]
+fn hover_cross_file_property_docblock_cache_invalidation_dependent_class_with_model() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/",
+                    "Illuminate\\Database\\Eloquent\\": "vendor/laravel/framework/src/Illuminate/Database/Eloquent/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "vendor/laravel/framework/src/Illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+abstract class Model {
+}
+"#,
+            ),
+            (
+                "src/Models/ScheduledJob.php",
+                r#"<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Model;
+/** @property class-string<\App\Models\Job> $class_name */
+final class ScheduledJob extends Model {
+}
+"#,
+            ),
+            (
+                "src/Models/ChildJob.php",
+                r#"<?php
+namespace App\Models;
+class ChildJob extends ScheduledJob {
+}
+"#,
+            ),
+            (
+                "src/Service.php",
+                r#"<?php
+namespace App;
+use App\Models\ChildJob;
+class Service {
+    public function run(ChildJob $child): void {
+        $child->class_name;
+    }
+}
+"#,
+            ),
+        ],
+    );
+
+    // Parse all definition files
+    let model_uri = format!(
+        "file://{}",
+        _dir.path()
+            .join("vendor/laravel/framework/src/Illuminate/Database/Eloquent/Model.php")
+            .display()
+    );
+    let model_content = std::fs::read_to_string(
+        _dir.path()
+            .join("vendor/laravel/framework/src/Illuminate/Database/Eloquent/Model.php"),
+    )
+    .unwrap();
+    backend.update_ast(&model_uri, &model_content);
+
+    let sj_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ScheduledJob.php").display()
+    );
+    let sj_content_v1 =
+        std::fs::read_to_string(_dir.path().join("src/Models/ScheduledJob.php")).unwrap();
+    backend.update_ast(&sj_uri, &sj_content_v1);
+
+    let child_uri = format!(
+        "file://{}",
+        _dir.path().join("src/Models/ChildJob.php").display()
+    );
+    let child_content =
+        std::fs::read_to_string(_dir.path().join("src/Models/ChildJob.php")).unwrap();
+    backend.update_ast(&child_uri, &child_content);
+
+    let service_uri = format!("file://{}", _dir.path().join("src/Service.php").display());
+    let service_content = std::fs::read_to_string(_dir.path().join("src/Service.php")).unwrap();
+
+    // ── Hover 1: warm the cache ─────────────────────────────────────
+    let hover1 = hover_at(&backend, &service_uri, &service_content, 5, 17)
+        .expect("expected hover on class_name via ChildJob+Model (v1)");
+    let text1 = hover_text(&hover1);
+    assert!(
+        text1.contains("class-string"),
+        "v1 hover on ChildJob+Model should show inherited class-string, got: {}",
+        text1
+    );
+
+    // ── Edit ScheduledJob ───────────────────────────────────────────
+    let sj_content_v2 = r#"<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Model;
+/** @property string $class_name */
+final class ScheduledJob extends Model {
+}
+"#;
+    backend.update_ast(&sj_uri, sj_content_v2);
+
+    // ── Hover 2: should see new type through ChildJob ───────────────
+    let hover2 = backend
+        .handle_hover(
+            &service_uri,
+            &service_content,
+            Position {
+                line: 5,
+                character: 17,
+            },
+        )
+        .expect("expected hover on class_name via ChildJob+Model (v2)");
+    let text2 = hover_text(&hover2);
+    assert!(
+        !text2.contains("class-string"),
+        "v2 hover on ChildJob+Model should NOT show old class-string, got: {}",
+        text2
+    );
+    assert!(
+        text2.contains("string"),
+        "v2 hover on ChildJob+Model should show updated string, got: {}",
+        text2
+    );
+}

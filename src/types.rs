@@ -1174,6 +1174,18 @@ pub struct ClassInfo {
 // ─── ClassInfo helpers ──────────────────────────────────────────────────────
 
 impl ClassInfo {
+    /// Return the fully-qualified name of this class.
+    ///
+    /// Combines `file_namespace` and `name` into a single FQN string
+    /// (e.g. `"App\\Models\\User"`).  When no namespace is set, returns
+    /// the short name as-is.
+    pub fn fqn(&self) -> String {
+        match &self.file_namespace {
+            Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, self.name),
+            _ => self.name.clone(),
+        }
+    }
+
     /// Compare two `ClassInfo` values by signature-relevant fields only.
     ///
     /// Returns `true` when the two classes have identical signatures,

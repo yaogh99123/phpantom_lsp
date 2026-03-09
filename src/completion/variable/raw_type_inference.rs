@@ -9,6 +9,8 @@
 ///   - Array literals with element type inference
 ///   - Known array functions (array_filter, array_map, array_pop, etc.)
 ///   - Generator yield reverse-inference
+///   - `assert($var instanceof ClassName)` narrowing
+///   - Inline `/** @var Type */` docblock overrides on assignments
 ///
 /// The primary entry point is [`resolve_variable_assignment_raw_type`],
 /// which re-parses the file and returns a PHPStan-style type string
@@ -404,13 +406,135 @@ fn accumulate_assignment_raw_types<'b>(
                 }
             }
             Statement::Expression(expr_stmt) => {
+                // Check for inline `/** @var Type */` override before
+                // the assignment.  This mirrors the logic in
+                // `walk_statements_for_assignments` so that the raw
+                // type path also respects @var overrides.
+                if try_inline_var_override_raw(
+                    expr_stmt.expression,
+                    stmt.span().start.offset as usize,
+                    ctx,
+                    &mut acc,
+                ) {
+                    continue;
+                }
+
                 check_expression_for_raw_type(expr_stmt.expression, ctx, &mut acc);
+
+                // Check for `assert($var instanceof ClassName)` after
+                // the assignment.  When found, override the base type
+                // with the instanceof class name so that hover shows
+                // the narrowed type.
+                check_assert_instanceof_for_raw_type(expr_stmt.expression, ctx, &mut acc);
             }
             _ => {}
         }
     }
 
     acc
+}
+
+/// Check for `assert($var instanceof ClassName)` and override the
+/// accumulator's base type with the class name when found.
+///
+/// This enables the raw type path (used by hover) to respect
+/// instanceof narrowing via assert statements.
+fn check_assert_instanceof_for_raw_type<'b>(
+    expr: &'b Expression<'b>,
+    ctx: &VarResolutionCtx<'_>,
+    acc: &mut AssignmentAccumulator,
+) {
+    // Unwrap parenthesised wrapper on the whole expression.
+    let expr = match expr {
+        Expression::Parenthesized(inner) => inner.expression,
+        other => other,
+    };
+
+    if let Expression::Call(Call::Function(func_call)) = expr
+        && let Expression::Identifier(ident) = func_call.function
+        && ident.value() == "assert"
+        && let Some(first_arg) = func_call.argument_list.arguments.iter().next()
+    {
+        let arg_expr = match first_arg {
+            Argument::Positional(pos) => pos.value,
+            Argument::Named(named) => named.value,
+        };
+
+        // Extract `$var instanceof ClassName` from the argument.
+        if let Some(cls_name) = try_extract_instanceof_class(arg_expr, ctx.var_name) {
+            acc.set_base(cls_name);
+        }
+    }
+}
+
+/// Try to extract the class name from `$var instanceof ClassName`,
+/// handling parenthesisation.  Returns `None` when the expression
+/// is not an instanceof check for the given variable.
+fn try_extract_instanceof_class<'b>(expr: &'b Expression<'b>, var_name: &str) -> Option<String> {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            try_extract_instanceof_class(inner.expression, var_name)
+        }
+        Expression::Binary(bin) if bin.operator.is_instanceof() => {
+            // LHS must be our variable.
+            let lhs_name = match bin.lhs {
+                Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+                _ => return None,
+            };
+            if lhs_name != var_name {
+                return None;
+            }
+            // RHS is the class name.
+            match bin.rhs {
+                Expression::Identifier(ident) => Some(ident.value().to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Try to resolve a variable's type from an inline `/** @var Type */`
+/// docblock that immediately precedes an assignment statement.
+///
+/// Returns `true` when the override was applied (and the caller should
+/// skip normal assignment resolution for this statement).
+fn try_inline_var_override_raw<'b>(
+    expr: &'b Expression<'b>,
+    stmt_start: usize,
+    ctx: &VarResolutionCtx<'_>,
+    acc: &mut AssignmentAccumulator,
+) -> bool {
+    // Must be an assignment to our target variable.
+    let assignment = match expr {
+        Expression::Assignment(a) if a.operator.is_assign() => a,
+        _ => return false,
+    };
+    let lhs_name = match assignment.lhs {
+        Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+        _ => return false,
+    };
+    if lhs_name != ctx.var_name {
+        return false;
+    }
+
+    // Look for a `/** @var Type [$var] */` docblock right before this
+    // statement.
+    let (var_type, var_name_opt) = match docblock::find_inline_var_docblock(ctx.content, stmt_start)
+    {
+        Some(pair) => pair,
+        None => return false,
+    };
+
+    // If the annotation includes a variable name, it must match.
+    if let Some(ref vn) = var_name_opt
+        && vn != ctx.var_name
+    {
+        return false;
+    }
+
+    acc.set_base(var_type);
+    true
 }
 
 /// Check a single expression for base, incremental key, or push
@@ -425,10 +549,22 @@ fn check_expression_for_raw_type<'b>(
         _ => return,
     };
 
+    // Use the assignment's own start offset as cursor_offset so that
+    // any recursive variable resolution only considers assignments
+    // *before* this one.  Without this, a self-referential assignment
+    // like `$numbers['sub_price'] = $numbers['sub_price']->add(…)`
+    // would infinitely recurse: resolving the RHS `$numbers['sub_price']`
+    // triggers resolution of `$numbers`, which re-discovers the same
+    // assignment, resolves its RHS again, and so on until a stack
+    // overflow crashes the process.
+    //
+    // This mirrors the protection in `check_expression_for_assignment`.
+    let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
+
     match assignment.lhs {
         // ── Base assignment: `$var = expr;` ──
         Expression::Variable(Variable::Direct(dv)) if dv.name == ctx.var_name => {
-            if let Some(raw) = resolve_rhs_raw_type(assignment.rhs, ctx) {
+            if let Some(raw) = resolve_rhs_raw_type(assignment.rhs, &rhs_ctx) {
                 acc.set_base(raw);
             }
         }
@@ -440,7 +576,7 @@ fn check_expression_for_raw_type<'b>(
                 let key = extract_array_key_text(array_access.index);
                 // Skip numeric-only keys — they are not string-keyed shape entries.
                 if key != "mixed" && !key.chars().all(|c| c.is_ascii_digit()) {
-                    let value_type = infer_expression_type_string(assignment.rhs, ctx);
+                    let value_type = infer_expression_type_string(assignment.rhs, &rhs_ctx);
                     acc.add_incremental_key(key, value_type);
                 }
             }
@@ -450,7 +586,7 @@ fn check_expression_for_raw_type<'b>(
             if let Expression::Variable(Variable::Direct(dv)) = array_append.array
                 && dv.name == ctx.var_name
             {
-                let value_type = infer_expression_type_string(assignment.rhs, ctx);
+                let value_type = infer_expression_type_string(assignment.rhs, &rhs_ctx);
                 acc.add_push_type(value_type);
             }
         }

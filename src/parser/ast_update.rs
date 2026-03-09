@@ -360,9 +360,9 @@ impl Backend {
         // FQNs present in both sets are evicted only when their signature
         // differs.
         //
-        // Dependents (classes that extend/use a changed class) may briefly
-        // hold stale data, but they self-correct on the next edit because
-        // re-resolution calls class_loader which returns the fresh class.
+        // `evict_fqn` transitively evicts dependents (classes that
+        // extend/use/implement/mixin the changed class) so that
+        // cached child classes don't serve stale inherited members.
         {
             let mut cache = self.resolved_class_cache.lock();
             // Collect new FQNs from the classes we just parsed.
@@ -602,7 +602,127 @@ impl Backend {
                     }
                 }
             }
+
+            // Resolve type names inside `@property` / `@property-read` /
+            // `@property-write` and `@method` tags in the raw class
+            // docblock.  These tags are parsed lazily by the
+            // `PHPDocProvider`, but their type strings use short names
+            // relative to the declaring file's imports.  Without
+            // resolving them here, cross-file consumers whose own
+            // use-map does not import the same names would fail to
+            // resolve the types.
+            if let Some(ref docblock) = class.class_docblock {
+                let resolved_docblock =
+                    Self::resolve_docblock_tag_types(docblock, use_map, namespace, &skip_names);
+                if resolved_docblock != *docblock {
+                    class.class_docblock = Some(resolved_docblock);
+                }
+            }
         }
+    }
+
+    /// Resolve type names in `@property`, `@property-read`, `@property-write`,
+    /// and `@method` tags inside a raw class-level docblock.
+    ///
+    /// These tags are parsed lazily by the `PHPDocProvider`, but their type
+    /// strings use short names relative to the declaring file's imports.
+    /// This method rewrites those type portions to fully-qualified names
+    /// so that cross-file consumers can resolve them without access to the
+    /// declaring file's use-map.
+    fn resolve_docblock_tag_types(
+        docblock: &str,
+        use_map: &HashMap<String, String>,
+        namespace: &Option<String>,
+        skip_names: &[String],
+    ) -> String {
+        let mut result = String::with_capacity(docblock.len());
+
+        for line in docblock.split('\n') {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+
+            let trimmed = line.trim().trim_start_matches('*').trim();
+
+            // ── @property[-read|-write] Type $name ──────────────────
+            let prop_rest = trimmed
+                .strip_prefix("@property-read")
+                .or_else(|| trimmed.strip_prefix("@property-write"))
+                .or_else(|| trimmed.strip_prefix("@property"));
+
+            if let Some(rest) = prop_rest {
+                let rest_trimmed = rest.trim_start();
+                // Must have content after the tag
+                if !rest_trimmed.is_empty() && !rest_trimmed.starts_with('$') {
+                    // Extract the type token (everything before `$name`).
+                    // The type may contain generics like `Collection<int, Model>`
+                    // so we use `split_type_token` for correct parsing.
+                    let (type_token, _remainder) =
+                        crate::docblock::types::split_type_token(rest_trimmed);
+                    let resolved_type =
+                        Self::resolve_type_string(type_token, use_map, namespace, skip_names);
+                    if resolved_type != type_token
+                        && let Some(type_start) = line.find(type_token)
+                    {
+                        let type_end = type_start + type_token.len();
+                        result.push_str(&line[..type_start]);
+                        result.push_str(&resolved_type);
+                        result.push_str(&line[type_end..]);
+                        continue;
+                    }
+                }
+            }
+
+            // ── @method [static] ReturnType methodName(…) ───────────
+            if let Some(rest) = trimmed.strip_prefix("@method") {
+                let rest_trimmed = rest.trim_start();
+                if !rest_trimmed.is_empty() {
+                    // Skip optional `static` keyword
+                    let after_static = if let Some(after) = rest_trimmed.strip_prefix("static") {
+                        if after.is_empty()
+                            || after.starts_with(char::is_whitespace)
+                            || after.starts_with('(')
+                        {
+                            after.trim_start()
+                        } else {
+                            rest_trimmed
+                        }
+                    } else {
+                        rest_trimmed
+                    };
+
+                    // Find the opening paren — the return type is between
+                    // the tag (after optional `static`) and the last
+                    // whitespace-delimited token before `(`.
+                    if let Some(paren_pos) = after_static.find('(') {
+                        let before_paren = after_static[..paren_pos].trim();
+                        // Split into optional return type + method name.
+                        if let Some(last_space) = before_paren.rfind(|c: char| c.is_whitespace()) {
+                            let ret_type = before_paren[..last_space].trim();
+                            if !ret_type.is_empty() {
+                                let resolved_ret = Self::resolve_type_string(
+                                    ret_type, use_map, namespace, skip_names,
+                                );
+                                if resolved_ret != ret_type
+                                    && let Some(type_start) = line.find(ret_type)
+                                {
+                                    let type_end = type_start + ret_type.len();
+                                    result.push_str(&line[..type_start]);
+                                    result.push_str(&resolved_ret);
+                                    result.push_str(&line[type_end..]);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // No tag matched or no rewriting needed — keep line as-is.
+            result.push_str(line);
+        }
+
+        result
     }
 
     /// Resolve type arguments in a generics list (e.g. `@extends`, `@implements`,

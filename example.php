@@ -4556,7 +4556,7 @@ namespace Illuminate\Database\Concerns {
          * @param  callable(\Illuminate\Support\Collection<int, TValue>, int): mixed  $callback
          * @return bool
          */
-        public function chunk(int $count, callable $callback): bool { return true; }
+        public function chunk($count, callable $callback) { return true; }
     }
 }
 
@@ -4590,8 +4590,9 @@ namespace Illuminate\Support {
     /**
      * @template TKey of array-key
      * @template TValue
+     * @implements \IteratorAggregate<TKey, TValue>
      */
-    class Collection {
+    class Collection implements \IteratorAggregate {
         /** @return int */
         public function count(): int { return 0; }
         /** @return TValue|null */
@@ -4603,6 +4604,7 @@ namespace Illuminate\Support {
          * @return static
          */
         public function each(callable $callback): static { return $this; }
+        public function getIterator(): \ArrayIterator { return new \ArrayIterator([]); }
     }
 }
 

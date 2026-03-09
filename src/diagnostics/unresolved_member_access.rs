@@ -619,4 +619,160 @@ $mystery->doStuff();
             diags
         );
     }
+
+    // ── Virtual @property chaining ──────────────────────────────────────
+
+    #[test]
+    fn no_diagnostic_for_phpdoc_property_chain_on_parameter() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Carbon {
+    public function format(string $fmt): string { return ''; }
+    public function diffForHumans(): string { return ''; }
+}
+
+/**
+ * @property Carbon $created
+ */
+class Supplyvaluelog {
+}
+
+class Controller {
+    public function index(Supplyvaluelog $supplyValueLog): void {
+        $supplyValueLog->created->format('Ymd');
+    }
+}
+"#;
+        let diags = collect_enabled(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "No diagnostics expected for @property chain on typed parameter, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_phpdoc_property_chain_with_parent_class() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Carbon {
+    public function format(string $fmt): string { return ''; }
+}
+
+class Model {
+    public static function find(int $id): static { return new static(); }
+}
+
+/**
+ * @property Carbon $created
+ */
+final class Supplyvaluelog extends Model {
+}
+
+class Controller {
+    public function index(Supplyvaluelog $supplyValueLog): void {
+        $supplyValueLog->created->format('Ymd');
+    }
+}
+"#;
+        let diags = collect_enabled(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "No diagnostics expected for @property chain when class extends parent, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_this_phpdoc_property_chain() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Carbon {
+    public function format(string $fmt): string { return ''; }
+}
+
+/**
+ * @property Carbon $created
+ */
+class Supplyvaluelog {
+    public function demo(): void {
+        $this->created->format('Ymd');
+    }
+}
+"#;
+        let diags = collect_enabled(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "No diagnostics expected for $this->@property chain, got: {:?}",
+            diags
+        );
+    }
+
+    /// When a `@property` tag uses an unqualified (short) class name like
+    /// `Carbon` instead of the FQN `\Carbon\Carbon`, and the class lives
+    /// in a different namespace, the type should still resolve if it is
+    /// imported via `use` in the model file.  This reproduces the
+    /// real-world pattern where Laravel models declare:
+    ///
+    /// ```php
+    /// use Carbon\Carbon;
+    /// /** @property Carbon $created */
+    /// final class Supplyvaluelog extends Model {}
+    /// ```
+    #[test]
+    fn no_diagnostic_for_phpdoc_property_unqualified_type_name() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        // The @property uses the short name "Carbon" while the class
+        // is actually "Carbon\Carbon" — same file for simplicity but
+        // the namespace mismatch is what matters.
+        let content = r#"<?php
+namespace Carbon {
+    class Carbon {
+        public function format(string $fmt): string { return ''; }
+        public function diffForHumans(): string { return ''; }
+    }
+}
+
+namespace App\Models {
+    use Carbon\Carbon;
+
+    class Model {
+        public static function find(int $id): static { return new static(); }
+    }
+
+    /**
+     * @property Carbon $created
+     * @property string $name
+     */
+    final class Supplyvaluelog extends Model {
+    }
+}
+
+namespace App\Http\Controllers {
+    use App\Models\Supplyvaluelog;
+
+    class Controller {
+        public function index(Supplyvaluelog $supplyValueLog): void {
+            $supplyValueLog->created->format('Ymd');
+        }
+    }
+}
+"#;
+        let diags = collect_enabled(&backend, uri, content);
+        // Filter to only diagnostics mentioning `$supplyValueLog->created`
+        // so that we target the specific failure path.
+        let prop_chain_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("$supplyValueLog->created"))
+            .collect();
+        assert!(
+            prop_chain_diags.is_empty(),
+            "No diagnostics expected for @property chain with unqualified type name, got: {:?}",
+            prop_chain_diags
+        );
+    }
 }

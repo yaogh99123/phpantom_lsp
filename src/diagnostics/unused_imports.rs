@@ -186,19 +186,63 @@ impl Backend {
 /// A byte range `[start, end)` representing a line in the source.
 type ByteRange = (usize, usize);
 
-/// Compute the byte ranges of all top-level `use` statement lines.
+/// Compute the byte ranges of all namespace-level `use` import lines.
 ///
 /// Returns a sorted list of `(line_start, line_end)` byte offset pairs.
-/// Only matches lines whose trimmed content starts with `use ` and contains
-/// a `;` — this excludes trait `use` statements inside class bodies because
-/// those are indented and always occur after a `{`.
+/// Only matches `use` lines at brace depth 0 (or depth 1 when inside a
+/// `namespace Foo { … }` block).  Trait `use` statements inside class
+/// bodies are at depth >= 1 (or >= 2 under a braced namespace) and are
+/// excluded.
 fn compute_use_line_ranges(content: &str) -> Vec<ByteRange> {
     let mut ranges = Vec::new();
     let mut offset: usize = 0;
+    // Track brace depth so we can distinguish namespace-level `use`
+    // imports (depth 0, or depth 1 inside `namespace Foo { … }`) from
+    // trait `use` statements inside class/trait/enum bodies (depth >= 1
+    // or >= 2 under a braced namespace).
+    let mut brace_depth: usize = 0;
+    let mut namespace_brace_depth: Option<usize> = None;
 
     for line in content.split('\n') {
+        // Update brace depth for braces on this line (crude but
+        // sufficient — we only need an approximate depth to tell
+        // top-level from class-body).  We skip braces inside strings
+        // and comments only to the extent that single-line `//` and
+        // `#` comments are trimmed, which covers the vast majority of
+        // real-world PHP.
+        let code = line.split("//").next().unwrap_or(line);
+        let code = code.split('#').next().unwrap_or(code);
+
         let trimmed = line.trim_start();
-        if trimmed.starts_with("use ") && trimmed.contains(';') {
+
+        // Detect `namespace Foo {` so we know that depth 1 is still
+        // "top-level" for use-import purposes.
+        if trimmed.starts_with("namespace ") && code.contains('{') {
+            // The opening brace on this line will bump brace_depth;
+            // record that the namespace block starts at the *current*
+            // depth (before the brace is counted).
+            namespace_brace_depth = Some(brace_depth);
+        }
+
+        for ch in code.chars() {
+            match ch {
+                '{' => brace_depth += 1,
+                '}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    // If we've closed the namespace block, clear the marker.
+                    if namespace_brace_depth == Some(brace_depth) {
+                        namespace_brace_depth = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // A `use` line is a namespace import when it is at top-level
+        // brace depth: depth 0 normally, or depth 1 when inside a
+        // braced `namespace Foo { … }` block.
+        let top_level_depth = namespace_brace_depth.map_or(0, |d| d + 1);
+        if trimmed.starts_with("use ") && trimmed.contains(';') && brace_depth == top_level_depth {
             ranges.push((offset, offset + line.len()));
         }
         offset += line.len() + 1; // +1 for '\n'
@@ -314,12 +358,21 @@ fn alias_is_referenced_in_content(
                 continue;
             }
 
-            // Skip occurrences inside single-line comments.
+            // Skip occurrences inside single-line comments and docblock
+            // prose, but allow matches on docblock lines that contain
+            // PHPDoc type tags (`@var`, `@param`, `@return`, etc.) since
+            // those are legitimate type references.
             let line_start = content[..pos].rfind('\n').map_or(0, |p| p + 1);
+            let line_end = content[pos..].find('\n').map_or(content.len(), |p| pos + p);
             let line_prefix = &content[line_start..pos];
-            if line_prefix.contains("//")
-                || line_prefix.trim_start().starts_with('*')
-                || line_prefix.trim_start().starts_with("/**")
+            let full_line = &content[line_start..line_end];
+            if line_prefix.contains("//") {
+                search_from = pos + alias_len;
+                continue;
+            }
+            if (line_prefix.trim_start().starts_with('*')
+                || line_prefix.trim_start().starts_with("/**"))
+                && !line_contains_phpdoc_type_tag(full_line)
             {
                 search_from = pos + alias_len;
                 continue;
@@ -338,6 +391,44 @@ fn alias_is_referenced_in_content(
     }
 
     false
+}
+
+/// PHPDoc tags whose values contain type references that count as real
+/// usages of imported classes.
+const PHPDOC_TYPE_TAGS: &[&str] = &[
+    "@var",
+    "@param",
+    "@return",
+    "@throws",
+    "@template",
+    "@extends",
+    "@implements",
+    "@use",
+    "@mixin",
+    "@method",
+    "@property",
+    "@property-read",
+    "@property-write",
+    "@phpstan-type",
+    "@psalm-type",
+    "@phpstan-import-type",
+    "@phpstan-param",
+    "@phpstan-return",
+    "@phpstan-var",
+    "@psalm-param",
+    "@psalm-return",
+    "@psalm-var",
+    "@phpstan-extends",
+    "@phpstan-implements",
+    "@psalm-extends",
+    "@psalm-implements",
+];
+
+/// Check whether a docblock line contains a PHPDoc tag that carries type
+/// references (e.g. `@var list<Subscription>`).
+fn line_contains_phpdoc_type_tag(line: &str) -> bool {
+    let trimmed = line.trim();
+    PHPDOC_TYPE_TAGS.iter().any(|tag| trimmed.contains(tag))
 }
 
 /// Check whether a byte is a valid PHP identifier character.

@@ -724,6 +724,13 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
         if let Some(ref hint) = param.hint {
             extract_from_hint(hint, &mut ctx.spans);
         }
+        // Docblock attached to the parameter itself (e.g. promoted
+        // constructor properties with `/** @var list<Subscription> */`).
+        if let Some((doc_text, doc_offset)) =
+            get_docblock_text_with_offset(ctx.trivias, ctx.content, param)
+        {
+            let _tpl = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
+        }
         let name = param
             .variable
             .name
@@ -922,6 +929,12 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
     for param in func.parameter_list.parameters.iter() {
         if let Some(ref hint) = param.hint {
             extract_from_hint(hint, &mut ctx.spans);
+        }
+        // Docblock attached to the parameter itself (e.g. `/** @var list<Foo> */`).
+        if let Some((doc_text, doc_offset)) =
+            get_docblock_text_with_offset(ctx.trivias, ctx.content, param)
+        {
+            let _tpl = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         }
         // Emit VarDefSite for each parameter.
         let pname = param

@@ -1566,3 +1566,414 @@ async fn test_completion_promoted_property_inline_var_union_native_type() {
         CompletionResponse::List(_) => panic!("Expected Array response"),
     }
 }
+
+// ─── @property tag type resolution through parameter variable chain ─────────
+
+/// When a method parameter is typed with a class that declares `@property`
+/// tags in its docblock, chaining through the virtual property should
+/// resolve to the declared type.
+///
+/// ```php
+/// /** @property Carbon $created */
+/// class Supplyvaluelog extends Model {}
+///
+/// function index(Supplyvaluelog $supplyValueLog) {
+///     $supplyValueLog->created->format('Ymd');
+///     //                        ^^^^^^ should complete with Carbon methods
+/// }
+/// ```
+#[tokio::test]
+async fn test_completion_phpdoc_property_type_resolves_for_chaining_on_parameter() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///phpdoc_prop_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Carbon {\n",
+        "    public function format(string $fmt): string { return ''; }\n",
+        "    public function diffForHumans(): string { return ''; }\n",
+        "}\n",
+        "/**\n",
+        " * @property Carbon $created\n",
+        " */\n",
+        "class Supplyvaluelog {\n",
+        "}\n",
+        "class Controller {\n",
+        "    public function index(Supplyvaluelog $supplyValueLog): void {\n",
+        "        $supplyValueLog->created->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `$supplyValueLog->created->` on line 12
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 34,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should resolve @property type for chaining on parameter variable"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            assert!(
+                names.iter().any(|n| n.starts_with("format(")),
+                "Should contain Carbon method 'format' via @property chain on parameter. Got: {:?}",
+                names
+            );
+            assert!(
+                names.iter().any(|n| n.starts_with("diffForHumans(")),
+                "Should contain Carbon method 'diffForHumans' via @property chain on parameter. Got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// When a class extends a parent and declares `@property` tags, chaining
+/// through the virtual property on a method parameter should resolve to the
+/// declared type.  This reproduces the reported issue where
+/// `$supplyValueLog->created->format('Ymd')` fails to resolve when the
+/// model class extends a base Model class.
+#[tokio::test]
+async fn test_completion_phpdoc_property_type_resolves_with_parent_class() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///phpdoc_prop_parent.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Carbon {\n",
+        "    public function format(string $fmt): string { return ''; }\n",
+        "    public function diffForHumans(): string { return ''; }\n",
+        "}\n",
+        "class Model {\n",
+        "    public static function find(int $id): static { return new static(); }\n",
+        "}\n",
+        "/**\n",
+        " * @property Carbon $created\n",
+        " */\n",
+        "final class Supplyvaluelog extends Model {\n",
+        "}\n",
+        "class Controller {\n",
+        "    public function index(Supplyvaluelog $supplyValueLog): void {\n",
+        "        $supplyValueLog->created->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `$supplyValueLog->created->` on line 15
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 15,
+                character: 34,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should resolve @property type for chaining when class extends parent"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            assert!(
+                names.iter().any(|n| n.starts_with("format(")),
+                "Should contain Carbon method 'format' via @property chain with parent class. Got: {:?}",
+                names
+            );
+            assert!(
+                names.iter().any(|n| n.starts_with("diffForHumans(")),
+                "Should contain Carbon method 'diffForHumans' via @property chain with parent class. Got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Cross-file variant: the class with `@property` tags lives in a separate
+/// PSR-4 file and extends a Model base class.  The `@property Carbon $created`
+/// type should still resolve when the parameter is typed with the cross-file class.
+#[tokio::test]
+async fn test_completion_phpdoc_property_type_cross_file_parameter_chain() {
+    let composer_json = r#"{
+        "autoload": {
+            "psr-4": {
+                "App\\Models\\": "src/Models/",
+                "App\\Http\\Controllers\\": "src/Http/Controllers/",
+                "Carbon\\": "src/Carbon/",
+                "Illuminate\\Database\\Eloquent\\": "src/Illuminate/"
+            }
+        }
+    }"#;
+
+    let carbon_php = "\
+<?php
+namespace Carbon;
+class Carbon {
+    public function format(string $fmt): string { return ''; }
+    public function diffForHumans(): string { return ''; }
+    public function addDays(int $n): static { return $this; }
+}
+";
+
+    let base_model_php = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+class Model {
+    public static function find(int $id): static { return new static(); }
+    public function save(): bool { return true; }
+}
+";
+
+    let model_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+/**
+ * @property \\Carbon\\Carbon $created
+ * @property string $name
+ */
+final class Supplyvaluelog extends Model {
+}
+";
+
+    let controller_php = "\
+<?php
+namespace App\\Http\\Controllers;
+use App\\Models\\Supplyvaluelog;
+class Controller {
+    public function index(Supplyvaluelog $supplyValueLog): void {
+        $supplyValueLog->created->
+    }
+}
+";
+
+    let files: Vec<(&str, &str)> = vec![
+        ("src/Carbon/Carbon.php", carbon_php),
+        ("src/Illuminate/Model.php", base_model_php),
+        ("src/Models/Supplyvaluelog.php", model_php),
+        ("src/Http/Controllers/Controller.php", controller_php),
+    ];
+
+    let (backend, _dir) = create_psr4_workspace(composer_json, &files);
+
+    let uri = Url::from_file_path(_dir.path().join("src/Http/Controllers/Controller.php")).unwrap();
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: controller_php.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `$supplyValueLog->created->` on line 5
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 5,
+                character: 34,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should resolve cross-file @property type for chaining on parameter"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            assert!(
+                names.iter().any(|n| n.starts_with("format(")),
+                "Should contain Carbon method 'format' via cross-file @property chain. Got: {:?}",
+                names
+            );
+            assert!(
+                names.iter().any(|n| n.starts_with("diffForHumans(")),
+                "Should contain Carbon method 'diffForHumans' via cross-file @property chain. Got: {:?}",
+                names
+            );
+            assert!(
+                names.iter().any(|n| n.starts_with("addDays(")),
+                "Should contain Carbon method 'addDays' via cross-file @property chain. Got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Cross-file variant where `@property` uses a SHORT class name (`Carbon`)
+/// that is imported via `use Carbon\Carbon` in the model file but NOT in the
+/// consuming controller file.  The type resolution for the property chain
+/// must use the declaring file's imports to resolve the short name.
+#[tokio::test]
+async fn test_completion_phpdoc_property_short_name_cross_file() {
+    let composer_json = r#"{
+        "autoload": {
+            "psr-4": {
+                "App\\Models\\": "src/Models/",
+                "App\\Http\\Controllers\\": "src/Http/Controllers/",
+                "Carbon\\": "src/Carbon/",
+                "Illuminate\\Database\\Eloquent\\": "src/Illuminate/"
+            }
+        }
+    }"#;
+
+    let carbon_php = "\
+<?php
+namespace Carbon;
+class Carbon {
+    public function format(string $fmt): string { return ''; }
+    public function diffForHumans(): string { return ''; }
+    public function addDays(int $n): static { return $this; }
+}
+";
+
+    let base_model_php = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+class Model {
+    public static function find(int $id): static { return new static(); }
+    public function save(): bool { return true; }
+}
+";
+
+    // The @property uses short name "Carbon" — imported via `use Carbon\Carbon`.
+    let model_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Carbon\\Carbon;
+/**
+ * @property Carbon $created
+ * @property string $name
+ */
+final class Supplyvaluelog extends Model {
+}
+";
+
+    // The controller does NOT import Carbon — it only imports Supplyvaluelog.
+    let controller_php = "\
+<?php
+namespace App\\Http\\Controllers;
+use App\\Models\\Supplyvaluelog;
+class Controller {
+    public function index(Supplyvaluelog $supplyValueLog): void {
+        $supplyValueLog->created->
+    }
+}
+";
+
+    let files: Vec<(&str, &str)> = vec![
+        ("src/Carbon/Carbon.php", carbon_php),
+        ("src/Illuminate/Model.php", base_model_php),
+        ("src/Models/Supplyvaluelog.php", model_php),
+        ("src/Http/Controllers/Controller.php", controller_php),
+    ];
+
+    let (backend, _dir) = create_psr4_workspace(composer_json, &files);
+
+    let uri = Url::from_file_path(_dir.path().join("src/Http/Controllers/Controller.php")).unwrap();
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: controller_php.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `$supplyValueLog->created->` on line 5
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 5,
+                character: 34,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should resolve cross-file @property type even when short name is used"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            assert!(
+                names.iter().any(|n| n.starts_with("format(")),
+                "Should contain Carbon method 'format' via short-name @property chain. Got: {:?}",
+                names
+            );
+            assert!(
+                names.iter().any(|n| n.starts_with("diffForHumans(")),
+                "Should contain Carbon method 'diffForHumans' via short-name @property chain. Got: {:?}",
+                names
+            );
+            assert!(
+                names.iter().any(|n| n.starts_with("addDays(")),
+                "Should contain Carbon method 'addDays' via short-name @property chain. Got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

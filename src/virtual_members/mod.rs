@@ -90,14 +90,83 @@ pub fn new_resolved_class_cache() -> ResolvedClassCache {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-/// Evict all cache entries whose FQN matches the given name.
+/// Evict all cache entries whose FQN matches the given name, then
+/// transitively evict any cached class that depends on the evicted
+/// FQN through `parent_class`, `used_traits`, `interfaces`, or
+/// `mixins`.
 ///
 /// Because the cache is keyed by `(FQN, generic_args)`, a single FQN
 /// may have multiple entries (one per distinct generic instantiation).
 /// This helper removes all of them, which is used during targeted
 /// cache invalidation when a class definition changes.
+///
+/// Transitive eviction is necessary because a cached child class
+/// (e.g. `ChildJob extends ScheduledJob`) embeds fully-merged members
+/// from its parent.  When the parent's `@property` docblock changes,
+/// the child's cache entry still holds the old inherited property and
+/// must be discarded.
 pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, ClassInfo>, fqn: &str) {
+    // Collect the set of FQNs to evict, starting with the requested one.
+    // After removing direct matches, scan remaining entries for classes
+    // whose inheritance chain references any evicted FQN and repeat
+    // until no new dependents are found (fixed-point).
+    let mut evicted: Vec<String> = vec![fqn.to_string()];
     cache.retain(|(k, _), _| k != fqn);
+
+    loop {
+        let mut newly_evicted: Vec<String> = Vec::new();
+
+        for ((cached_fqn, _), cls) in cache.iter() {
+            if depends_on_any(cls, &evicted) && !evicted.contains(cached_fqn) {
+                newly_evicted.push(cached_fqn.clone());
+            }
+        }
+
+        if newly_evicted.is_empty() {
+            break;
+        }
+
+        for dep_fqn in &newly_evicted {
+            cache.retain(|(k, _), _| k != dep_fqn);
+            evicted.push(dep_fqn.clone());
+        }
+    }
+}
+
+/// Check whether `cls` directly depends on any FQN in `fqns` through
+/// its `parent_class`, `used_traits`, `interfaces`, or `mixins`.
+///
+/// Comparisons are done against both the raw field value and the short
+/// name of the evicted FQN, because the cached `ClassInfo` may store
+/// parent/trait/interface names as short names (same-file references)
+/// or as FQNs (cross-file, post-resolution).
+fn depends_on_any(cls: &ClassInfo, fqns: &[String]) -> bool {
+    for fqn in fqns {
+        let short = crate::util::short_name(fqn);
+
+        // parent_class
+        if let Some(ref parent) = cls.parent_class
+            && (parent == fqn || parent == short)
+        {
+            return true;
+        }
+
+        // used_traits
+        if cls.used_traits.iter().any(|t| t == fqn || t == short) {
+            return true;
+        }
+
+        // interfaces
+        if cls.interfaces.iter().any(|i| i == fqn || i == short) {
+            return true;
+        }
+
+        // mixins
+        if cls.mixins.iter().any(|m| m == fqn || m == short) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Members synthesized by a provider.

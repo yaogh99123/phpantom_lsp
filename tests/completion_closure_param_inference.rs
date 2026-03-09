@@ -929,3 +929,438 @@ async fn test_explicit_bare_hint_uses_inferred_generics_for_foreach() {
         names,
     );
 }
+
+/// Simpler variant: static call chain where the closure param is the
+/// direct target (no foreach indirection). Verifies that
+/// `infer_callable_params_from_receiver` works when the receiver is a
+/// static method call result.
+#[tokio::test]
+async fn test_static_call_chain_closure_param_direct() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_static_chain_direct.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Customer {\n",
+        "    public function isActiveMember(): bool { return true; }\n",
+        "    public function getEmail(): string { return ''; }\n",
+        "}\n",
+        "/**\n",
+        " * @template TKey of array-key\n",
+        " * @template TValue\n",
+        " * @implements IteratorAggregate<TKey, TValue>\n",
+        " */\n",
+        "class Collection {\n",
+        "    /** @return TValue|null */\n",
+        "    public function first(): mixed { return null; }\n",
+        "    /** @return int */\n",
+        "    public function count(): int { return 0; }\n",
+        "}\n",
+        "/**\n",
+        " * @template TModel\n",
+        " */\n",
+        "class Builder {\n",
+        "    /**\n",
+        "     * @param callable(Collection<int, TModel>): mixed $callback\n",
+        "     * @return bool\n",
+        "     */\n",
+        "    public function each(callable $callback): bool { return true; }\n",
+        "    /** @return static */\n",
+        "    public function where(string $col, mixed $val = null): static { return $this; }\n",
+        "}\n",
+        "class Customer2 {\n",
+        "    /** @return Builder<Customer> */\n",
+        "    public static function where(string $col, mixed $val = null): Builder { return new Builder(); }\n",
+        "}\n",
+        "class Service {\n",
+        "    public function run(): void {\n",
+        "        Customer2::where('active', true)->each(function ($items) {\n",
+        "            $items->\n",
+        "        });\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Line 35: `            $items->` — $items is closure param inferred
+    // from `each(callable(Collection<int, Customer>): mixed)`.
+    let items = complete_at(&backend, &uri, src, 35, 20).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"first"),
+        "Expected 'first' from Collection on closure param inferred via static call chain, got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"count"),
+        "Expected 'count' from Collection on closure param inferred via static call chain, got: {:?}",
+        names,
+    );
+}
+
+/// Same as the previous test but the receiver is a **static** method call
+/// chain (`Model::where(…)->chunk(…)`) instead of an instance method call.
+/// This exercises `infer_callable_params_from_receiver` where the object
+/// expression is a static call that must be resolved through the call-return
+/// pipeline before the `chunk` method's callable signature can be inspected.
+///
+/// Reproduces the example.php pattern:
+///   `BlogAuthor::where('active', true)->chunk(100, function (Collection $authors) { … })`
+#[tokio::test]
+async fn test_explicit_bare_hint_via_static_call_chain_for_foreach() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_static_chain_foreach.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Customer {\n",
+        "    public function isActiveMember(): bool { return true; }\n",
+        "    public function getEmail(): string { return ''; }\n",
+        "}\n",
+        "/**\n",
+        " * @template TKey of array-key\n",
+        " * @template TValue\n",
+        " * @implements IteratorAggregate<TKey, TValue>\n",
+        " */\n",
+        "class Collection {\n",
+        "    /** @return TValue|null */\n",
+        "    public function first(): mixed { return null; }\n",
+        "    /** @return int */\n",
+        "    public function count(): int { return 0; }\n",
+        "}\n",
+        "/**\n",
+        " * @template TModel\n",
+        " */\n",
+        "class Builder {\n",
+        "    /**\n",
+        "     * @param callable(Collection<int, TModel>, int): mixed $callback\n",
+        "     * @return bool\n",
+        "     */\n",
+        "    public function chunk(int $count, callable $callback): bool { return true; }\n",
+        "    /** @return static */\n",
+        "    public function where(string $col, mixed $val = null): static { return $this; }\n",
+        "}\n",
+        "/**\n",
+        " * @extends Builder<Customer>\n",
+        " */\n",
+        "class CustomerBuilder extends Builder {\n",
+        "}\n",
+        "class Customer2 {\n",
+        "    /** @return Builder<Customer> */\n",
+        "    public static function where(string $col, mixed $val = null): Builder { return new Builder(); }\n",
+        "}\n",
+        "class Service {\n",
+        "    public function run(): void {\n",
+        "        Customer2::where('active', true)->chunk(10, function (Collection $customers): void {\n",
+        "            foreach ($customers as $customer) {\n",
+        "                $customer->\n",
+        "            }\n",
+        "        });\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Line 41: `                $customer->` inside the foreach body.
+    let items = complete_at(&backend, &uri, src, 41, 28).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"isActiveMember"),
+        "Expected isActiveMember from Customer via static call chain + foreach over Collection<int, Customer>, got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"getEmail"),
+        "Expected getEmail from Customer via static call chain + foreach over Collection<int, Customer>, got: {:?}",
+        names,
+    );
+}
+
+/// Full integration test mimicking example.php's structure: namespaced
+/// Eloquent stubs with `BuildsQueries` trait, `Model::where()` forwarded
+/// via builder virtual members, `chunk` callable param inference through
+/// foreach with an explicit bare `Collection` type hint.
+///
+/// This is the most realistic reproduction of the example.php pattern:
+///   `BlogAuthor::where('active', true)->chunk(100, function (Collection $authors) {
+///       foreach ($authors as $author) { $author->posts(); }
+///   })`
+#[tokio::test]
+async fn test_inline_stubs_chunk_closure_foreach_resolution() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/inline_stubs_chunk_foreach.php").unwrap();
+
+    // Mimics example.php: model in a Demo namespace, Illuminate stubs in
+    // separate namespace blocks in the same file.
+    let src = concat!(
+        "<?php\n",
+        "namespace Demo {\n",
+        "\n",
+        "class BlogAuthor extends \\Illuminate\\Database\\Eloquent\\Model\n",
+        "{\n",
+        "    public function posts(): mixed { return null; }\n",
+        "    public function getName(): string { return ''; }\n",
+        "    public function demo(): void\n",
+        "    {\n",
+        "        BlogAuthor::where('active', true)->chunk(100, function (\\Illuminate\\Support\\Collection $authors) {\n",
+        "            foreach ($authors as $author) {\n",
+        "                $author->\n",
+        "            }\n",
+        "        });\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "} // end namespace Demo\n",
+        "\n",
+        "namespace Illuminate\\Database\\Eloquent {\n",
+        "    abstract class Model {\n",
+        "        /** @return \\Illuminate\\Database\\Eloquent\\Builder<static> */\n",
+        "        public static function query() {}\n",
+        "    }\n",
+        "\n",
+        "    /**\n",
+        "     * @template TModel of \\Illuminate\\Database\\Eloquent\\Model\n",
+        "     * @mixin \\Illuminate\\Database\\Query\\Builder\n",
+        "     */\n",
+        "    class Builder implements \\Illuminate\\Contracts\\Database\\Eloquent\\Builder {\n",
+        "        /** @use \\Illuminate\\Database\\Concerns\\BuildsQueries<TModel> */\n",
+        "        use \\Illuminate\\Database\\Concerns\\BuildsQueries;\n",
+        "\n",
+        "        /** @return $this */\n",
+        "        public function where($column, $operator = null, $value = null) {}\n",
+        "\n",
+        "        /** @return \\Illuminate\\Database\\Eloquent\\Collection<int, TModel> */\n",
+        "        public function get($columns = ['*']) { return new Collection(); }\n",
+        "    }\n",
+        "\n",
+        "    /**\n",
+        "     * @template TKey of array-key\n",
+        "     * @template TModel of \\Illuminate\\Database\\Eloquent\\Model\n",
+        "     */\n",
+        "    class Collection {\n",
+        "        /** @return TModel|null */\n",
+        "        public function first(): mixed { return null; }\n",
+        "        public function count(): int { return 0; }\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "namespace Illuminate\\Contracts\\Database\\Eloquent {\n",
+        "    interface Builder {}\n",
+        "}\n",
+        "\n",
+        "namespace Illuminate\\Database\\Eloquent\\Relations {\n",
+        "    class HasMany {}\n",
+        "    class HasOne {}\n",
+        "    class BelongsTo {}\n",
+        "    class BelongsToMany {}\n",
+        "    class MorphOne {}\n",
+        "    class MorphMany {}\n",
+        "    class MorphTo {}\n",
+        "    class MorphToMany {}\n",
+        "    class HasManyThrough {}\n",
+        "    class HasOneThrough {}\n",
+        "}\n",
+        "\n",
+        "namespace Illuminate\\Database\\Concerns {\n",
+        "    /**\n",
+        "     * @template TValue\n",
+        "     */\n",
+        "    trait BuildsQueries {\n",
+        "        /** @return TValue|null */\n",
+        "        public function first($columns = ['*']) { return null; }\n",
+        "\n",
+        "        /**\n",
+        "         * @param  callable(\\Illuminate\\Support\\Collection<int, TValue>, int): mixed  $callback\n",
+        "         * @return bool\n",
+        "         */\n",
+        "        public function chunk(int $count, callable $callback): bool { return true; }\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "namespace Illuminate\\Database\\Query {\n",
+        "    class Builder {\n",
+        "        /** @return $this */\n",
+        "        public function orderBy($column, $direction = 'asc') { return $this; }\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "namespace Illuminate\\Support {\n",
+        "    /**\n",
+        "     * @template TKey of array-key\n",
+        "     * @template TValue\n",
+        "     * @implements \\IteratorAggregate<TKey, TValue>\n",
+        "     */\n",
+        "    class Collection {\n",
+        "        /** @return TValue|null */\n",
+        "        public function first(): mixed { return null; }\n",
+        "        /** @return int */\n",
+        "        public function count(): int { return 0; }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // BlogAuthor::where(...)  → Builder<BlogAuthor> (via builder forwarding)
+    // ->chunk(100, fn(Collection $authors) => ...)
+    //   chunk's callable signature: callable(Collection<int, TModel>, int): mixed
+    //   with TModel=BlogAuthor → callable(Collection<int, BlogAuthor>, int): mixed
+    // Explicit bare "Collection $authors" inherits inferred Collection<int, BlogAuthor>
+    // foreach ($authors as $author) → $author is BlogAuthor
+    //
+    // Line 11: `                $author->` inside the foreach body.
+    let items = complete_at(&backend, &uri, src, 11, 25).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"posts"),
+        "Expected 'posts' from BlogAuthor via chunk closure + foreach over Collection<int, BlogAuthor>, got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"getName"),
+        "Expected 'getName' from BlogAuthor via chunk closure + foreach over Collection<int, BlogAuthor>, got: {:?}",
+        names,
+    );
+}
+
+/// Exact reproduction of example.php's structure: the completion site is
+/// inside `ClosureParamInferenceDemo::demo()` (a *different* class from
+/// `BlogAuthor`), and the closure param uses a bare `Collection` hint
+/// (not fully-qualified `\Illuminate\Support\Collection`).
+///
+/// This catches two differences from `test_inline_stubs_chunk_closure_foreach_resolution`:
+///   1. `current_class` is `ClosureParamInferenceDemo`, not `BlogAuthor`
+///   2. The explicit hint is the bare name `Collection`, relying on
+///      inference to provide the FQN with generic args
+#[tokio::test]
+async fn test_example_php_exact_layout_chunk_foreach() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/example_php_layout.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",                                                            // 0
+        "namespace Demo {\n",                                                 // 1
+        "\n",                                                                 // 2
+        "class BlogAuthor extends \\Illuminate\\Database\\Eloquent\\Model\n", // 3
+        "{\n",                                                                // 4
+        "    public function posts(): mixed { return null; }\n",              // 5
+        "    public function getName(): string { return ''; }\n",             // 6
+        "}\n",                                                                // 7
+        "\n",                                                                 // 8
+        "class ClosureParamInferenceDemo\n",                                  // 9
+        "{\n",                                                                // 10
+        "    public function demo(): void\n",                                 // 11
+        "    {\n",                                                            // 12
+        "        BlogAuthor::where('active', true)->chunk(100, function (Collection $authors) {\n", // 13
+        "            foreach ($authors as $author) {\n", // 14
+        "                $author->\n",                   // 15
+        "            }\n",                               // 16
+        "        });\n",                                 // 17
+        "    }\n",                                       // 18
+        "}\n",                                           // 19
+        "\n",                                            // 20
+        "} // end namespace Demo\n",                     // 21
+        "\n",                                            // 22
+        "namespace Illuminate\\Database\\Eloquent {\n",  // 23
+        "    abstract class Model {\n",                  // 24
+        "        /** @return \\Illuminate\\Database\\Eloquent\\Builder<static> */\n", // 25
+        "        public static function query() {}\n",   // 26
+        "    }\n",                                       // 27
+        "\n",                                            // 28
+        "    /**\n",                                     // 29
+        "     * @template TModel of \\Illuminate\\Database\\Eloquent\\Model\n", // 30
+        "     * @mixin \\Illuminate\\Database\\Query\\Builder\n", // 31
+        "     */\n",                                     // 32
+        "    class Builder implements \\Illuminate\\Contracts\\Database\\Eloquent\\Builder {\n", // 33
+        "        /** @use \\Illuminate\\Database\\Concerns\\BuildsQueries<TModel> */\n", // 34
+        "        use \\Illuminate\\Database\\Concerns\\BuildsQueries;\n",                // 35
+        "\n",                                                                            // 36
+        "        /** @return $this */\n",                                                // 37
+        "        public function where($column, $operator = null, $value = null) {}\n",  // 38
+        "\n",                                                                            // 39
+        "        /** @return \\Illuminate\\Database\\Eloquent\\Collection<int, TModel> */\n", // 40
+        "        public function get($columns = ['*']) { return new Collection(); }\n",  // 41
+        "    }\n",                                                                       // 42
+        "\n",                                                                            // 43
+        "    /**\n",                                                                     // 44
+        "     * @template TKey of array-key\n",                                          // 45
+        "     * @template TModel of \\Illuminate\\Database\\Eloquent\\Model\n",          // 46
+        "     */\n",                                                                     // 47
+        "    class Collection {\n",                                                      // 48
+        "        /** @return TModel|null */\n",                                          // 49
+        "        public function first(): mixed { return null; }\n",                     // 50
+        "        public function count(): int { return 0; }\n",                          // 51
+        "    }\n",                                                                       // 52
+        "}\n",                                                                           // 53
+        "\n",                                                                            // 54
+        "namespace Illuminate\\Contracts\\Database\\Eloquent {\n",                       // 55
+        "    interface Builder {}\n",                                                    // 56
+        "}\n",                                                                           // 57
+        "\n",                                                                            // 58
+        "namespace Illuminate\\Database\\Eloquent\\Relations {\n",                       // 59
+        "    class HasMany {}\n",                                                        // 60
+        "    class HasOne {}\n",                                                         // 61
+        "    class BelongsTo {}\n",                                                      // 62
+        "    class BelongsToMany {}\n",                                                  // 63
+        "    class MorphOne {}\n",                                                       // 64
+        "    class MorphMany {}\n",                                                      // 65
+        "    class MorphTo {}\n",                                                        // 66
+        "    class MorphToMany {}\n",                                                    // 67
+        "    class HasManyThrough {}\n",                                                 // 68
+        "    class HasOneThrough {}\n",                                                  // 69
+        "}\n",                                                                           // 70
+        "\n",                                                                            // 71
+        "namespace Illuminate\\Database\\Concerns {\n",                                  // 72
+        "    /**\n",                                                                     // 73
+        "     * @template TValue\n",                                                     // 74
+        "     */\n",                                                                     // 75
+        "    trait BuildsQueries {\n",                                                   // 76
+        "        /** @return TValue|null */\n",                                          // 77
+        "        public function first($columns = ['*']) { return null; }\n",            // 78
+        "\n",                                                                            // 79
+        "        /**\n",                                                                 // 80
+        "         * @param  callable(\\Illuminate\\Support\\Collection<int, TValue>, int): mixed  $callback\n", // 81
+        "         * @return bool\n", // 82
+        "         */\n",             // 83
+        "        public function chunk(int $count, callable $callback): bool { return true; }\n", // 84
+        "    }\n",                                   // 85
+        "}\n",                                       // 86
+        "\n",                                        // 87
+        "namespace Illuminate\\Database\\Query {\n", // 88
+        "    class Builder {\n",                     // 89
+        "        /** @return $this */\n",            // 90
+        "        public function orderBy($column, $direction = 'asc') { return $this; }\n", // 91
+        "    }\n",                                   // 92
+        "}\n",                                       // 93
+        "\n",                                        // 94
+        "namespace Illuminate\\Support {\n",         // 95
+        "    /**\n",                                 // 96
+        "     * @template TKey of array-key\n",      // 97
+        "     * @template TValue\n",                 // 98
+        "     * @implements \\IteratorAggregate<TKey, TValue>\n", // 99
+        "     */\n",                                 // 100
+        "    class Collection {\n",                  // 101
+        "        /** @return TValue|null */\n",      // 102
+        "        public function first(): mixed { return null; }\n", // 103
+        "        /** @return int */\n",              // 104
+        "        public function count(): int { return 0; }\n", // 105
+        "    }\n",                                   // 106
+        "}\n",                                       // 107
+    );
+
+    // Line 15: `                $author->` inside the foreach body.
+    // BlogAuthor::where(...) → Builder<BlogAuthor>
+    // ->chunk(100, fn(Collection $authors) => ...)
+    //   chunk callable sig: callable(Collection<int, TValue>, int): mixed
+    //   TValue=BlogAuthor → Collection<int, BlogAuthor>
+    //   bare "Collection" hint inherits inferred generic args
+    // foreach ($authors as $author) → BlogAuthor
+    let items = complete_at(&backend, &uri, src, 15, 25).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"posts"),
+        "Expected 'posts' from BlogAuthor (demo in separate class, bare Collection hint), got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"getName"),
+        "Expected 'getName' from BlogAuthor (demo in separate class, bare Collection hint), got: {:?}",
+        names,
+    );
+}

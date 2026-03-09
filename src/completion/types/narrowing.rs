@@ -226,7 +226,7 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
             .filter(|r| {
                 narrowed
                     .iter()
-                    .any(|n| is_subtype_of(r, &n.name, ctx.class_loader))
+                    .any(|n| is_subtype_of(r, &n.fqn(), ctx.class_loader))
             })
             .cloned()
             .collect();
@@ -267,17 +267,36 @@ fn is_subtype_of(
 ) -> bool {
     let ancestor_short = ancestor_name.rsplit('\\').next().unwrap_or(ancestor_name);
 
-    // Same class?
-    if class.name == ancestor_name || class.name == ancestor_short {
+    // Same class?  When the ancestor is a FQN, compare against the
+    // class's own FQN to avoid false positives when two classes share
+    // the same short name (e.g. `Contracts\Provider` vs
+    // `Concrete\Provider`).
+    if ancestor_name.contains('\\') {
+        if class.fqn() == ancestor_name {
+            return true;
+        }
+    } else if class.name == ancestor_name {
         return true;
     }
+
+    // When the ancestor is qualified, only match against normalised
+    // FQNs — never fall back to short-name comparison, which would
+    // produce false positives when two different classes share the
+    // same short name (e.g. `Contracts\Provider` vs
+    // `Concrete\Provider`).
+    let fqn_mode = ancestor_name.contains('\\');
 
     // Check interfaces on the class itself.
     for iface in &class.interfaces {
         let iface_norm = iface.strip_prefix('\\').unwrap_or(iface);
-        let iface_short = iface_norm.rsplit('\\').next().unwrap_or(iface_norm);
-        if iface_norm == ancestor_name || iface_short == ancestor_short {
+        if iface_norm == ancestor_name {
             return true;
+        }
+        if !fqn_mode {
+            let iface_short = iface_norm.rsplit('\\').next().unwrap_or(iface_norm);
+            if iface_short == ancestor_short {
+                return true;
+            }
         }
     }
 
@@ -290,17 +309,27 @@ fn is_subtype_of(
             break;
         }
         let normalized = name.strip_prefix('\\').unwrap_or(name);
-        let short = normalized.rsplit('\\').next().unwrap_or(normalized);
-        if normalized == ancestor_name || short == ancestor_short {
+        if normalized == ancestor_name {
             return true;
+        }
+        if !fqn_mode {
+            let short = normalized.rsplit('\\').next().unwrap_or(normalized);
+            if short == ancestor_short {
+                return true;
+            }
         }
         // Load the parent to check its interfaces and continue the chain.
         if let Some(parent_info) = class_loader(name) {
             for iface in &parent_info.interfaces {
                 let iface_norm = iface.strip_prefix('\\').unwrap_or(iface);
-                let iface_short = iface_norm.rsplit('\\').next().unwrap_or(iface_norm);
-                if iface_norm == ancestor_name || iface_short == ancestor_short {
+                if iface_norm == ancestor_name {
                     return true;
+                }
+                if !fqn_mode {
+                    let iface_short = iface_norm.rsplit('\\').next().unwrap_or(iface_norm);
+                    if iface_short == ancestor_short {
+                        return true;
+                    }
                 }
             }
             current_parent = parent_info.parent_class.clone();
