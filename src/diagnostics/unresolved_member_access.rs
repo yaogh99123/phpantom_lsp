@@ -775,4 +775,63 @@ namespace App\Http\Controllers {
             prop_chain_diags
         );
     }
+
+    // ── Arrow function: outer-scope variables ───────────────────────────
+
+    /// A variable assigned before an arrow function should be resolvable
+    /// inside the arrow function body.  Arrow functions capture the
+    /// enclosing scope automatically (unlike closures), so `$feature`
+    /// must not trigger an unresolved-member-access diagnostic.
+    #[test]
+    fn no_diagnostic_for_outer_scope_variable_in_arrow_function() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Feature {
+    public int $id = 0;
+    public string $name = '';
+}
+
+class FeatureVariation {
+    public int $feature_id = 0;
+    /** @return Feature */
+    public function getFeature(): Feature { return new Feature(); }
+}
+
+/** @template T */
+class Collection {
+    /** @return T */
+    public function firstOrFail(): mixed { return null; }
+    /**
+     * @param callable(T): bool $callback
+     * @return T|null
+     */
+    public function first(callable $callback): mixed { return null; }
+}
+
+class Service {
+    /** @return Collection<FeatureVariation> */
+    public function getVariations(): Collection { return new Collection(); }
+    /** @return Collection<FeatureVariation> */
+    public function getSelected(): Collection { return new Collection(); }
+
+    public function run(): void {
+        $availableVariations = $this->getVariations();
+        $selected = $this->getSelected();
+        $feature = $availableVariations->firstOrFail()->getFeature();
+        $isSelected = $selected->first(fn(FeatureVariation $variation): bool => $variation->feature_id === $feature->id);
+    }
+}
+"#;
+        let diags = collect_enabled(&backend, uri, content);
+        let feature_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("$feature"))
+            .collect();
+        assert!(
+            feature_diags.is_empty(),
+            "No diagnostic expected for outer-scope $feature inside arrow function, got: {:?}",
+            feature_diags
+        );
+    }
 }

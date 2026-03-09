@@ -16350,3 +16350,80 @@ async fn test_completion_array_map_var_property_arg() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Arrow function: outer-scope variable capture ───────────────────────────
+
+/// Arrow functions in PHP automatically capture variables from the
+/// enclosing scope.  A variable assigned before the arrow function
+/// must remain resolvable inside the arrow function body.
+#[tokio::test]
+async fn test_completion_outer_scope_variable_inside_arrow_function() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///arrow_outer_scope.php").unwrap();
+    let text = concat!(
+        "<?php\n",                             // 0
+        "class Feature {\n",                   // 1
+        "    public int $id = 0;\n",           // 2
+        "    public string $name = '';\n",     // 3
+        "}\n",                                 // 4
+        "class FeatureVariation {\n",          // 5
+        "    public int $feature_id = 0;\n",   // 6
+        "}\n",                                 // 7
+        "class Service {\n",                   // 8
+        "    public function run(): void {\n", // 9
+        "        $feature = new Feature();\n", // 10
+        "        $x = array_map(fn(FeatureVariation $v): bool => $v->feature_id === $feature->, []);\n", // 11
+        "    }\n", // 12
+        "}\n",     // 13
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `$feature->` on line 11
+    // `        $x = array_map(fn(FeatureVariation $v): bool => $v->feature_id === $feature->`
+    //  85 chars to the end of `->`
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 11,
+                character: 85,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should resolve outer-scope $feature inside arrow function"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            assert!(
+                labels.iter().any(|l| l.starts_with("id")),
+                "Should include id property from outer-scope $feature, got: {:?}",
+                labels
+            );
+            assert!(
+                labels.iter().any(|l| l.starts_with("name")),
+                "Should include name property from outer-scope $feature, got: {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

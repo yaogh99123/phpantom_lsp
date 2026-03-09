@@ -13,6 +13,8 @@
 ///   - `@phpstan-assert` / `@psalm-assert` — custom type guard functions
 ///   - `match(true) { $var instanceof Foo => … }` — match-arm narrowing
 ///   - `$var instanceof Foo ? $var->method() : …` — ternary narrowing
+///   - `$var instanceof Foo && $var->method()` — inline `&&` narrowing
+///     (the RHS of `&&` sees the narrowed type from the LHS)
 ///   - Guard clauses: `if (!$var instanceof Foo) { return; }` — narrows
 ///     after the if block when the body unconditionally exits via
 ///     `return`, `throw`, `continue`, or `break`.
@@ -1206,6 +1208,114 @@ pub(in crate::completion) fn try_apply_ternary_instanceof_narrowing(
             }
         }
         _ => {}
+    }
+}
+
+// ── Inline `&&` short-circuit narrowing ─────────────────────────
+//
+// In PHP, the right-hand side of `&&` is only evaluated when the
+// left-hand side is truthy.  Therefore, if the LHS is an
+// `instanceof` check, the RHS can see the narrowed type.
+//
+// Example:
+//   if ($req instanceof LaravelRequest && $req->fullUrlIs('…'))
+//                                          ^^^ cursor here
+// The cursor is inside the *condition* (not the if-body), but
+// `$req` should resolve to `LaravelRequest` because the LHS of
+// `&&` guarantees it.
+//
+// This function recursively walks an expression tree and, when it
+// finds a `&&` whose RHS contains the cursor, applies any
+// instanceof narrowing from the LHS.
+
+/// Apply instanceof narrowing from the left-hand side of `&&` when the
+/// cursor falls inside the right-hand side.
+///
+/// This handles short-circuit semantics: in `A && B`, `B` is only
+/// evaluated when `A` is truthy, so any `instanceof` check in `A`
+/// narrows the variable's type within `B`.
+///
+/// The function recurses into the expression tree so that chained
+/// `&&` expressions (`A && B && C`) and nested sub-expressions are
+/// handled correctly.
+pub(in crate::completion) fn try_apply_inline_and_narrowing(
+    expr: &Expression<'_>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    match expr {
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_)
+            ) =>
+        {
+            let rhs_span = bin.rhs.span();
+            let cursor_in_rhs = ctx.cursor_offset >= rhs_span.start.offset
+                && ctx.cursor_offset <= rhs_span.end.offset;
+
+            if cursor_in_rhs {
+                // The cursor is in the RHS — apply all instanceof
+                // checks found in the LHS.  For chained `&&` the
+                // LHS is itself a `&&`, so we collect recursively.
+                apply_and_lhs_narrowing(bin.lhs, ctx, results);
+            }
+
+            // Recurse into both sides so that deeply nested `&&`
+            // chains are handled (e.g. `A && B && C` parses as
+            // `(A && B) && C`; when the cursor is in C we need to
+            // also recurse into the LHS `(A && B)` for the case
+            // where the cursor is in B).
+            try_apply_inline_and_narrowing(bin.lhs, ctx, results);
+            try_apply_inline_and_narrowing(bin.rhs, ctx, results);
+        }
+        Expression::Parenthesized(inner) => {
+            try_apply_inline_and_narrowing(inner.expression, ctx, results);
+        }
+        _ => {}
+    }
+}
+
+/// Collect and apply all instanceof narrowing checks from the LHS of a
+/// `&&` expression.
+///
+/// When the LHS is itself a chain of `&&` (e.g. `A && B`), both `A`
+/// and `B` contribute narrowing.  This function recurses through `&&`
+/// nodes and applies each instanceof extraction it finds.
+fn apply_and_lhs_narrowing(
+    expr: &Expression<'_>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    match expr {
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_)
+            ) =>
+        {
+            // Both sides of the inner `&&` are known-true.
+            apply_and_lhs_narrowing(bin.lhs, ctx, results);
+            apply_and_lhs_narrowing(bin.rhs, ctx, results);
+        }
+        Expression::Parenthesized(inner) => {
+            apply_and_lhs_narrowing(inner.expression, ctx, results);
+        }
+        _ => {
+            // Try to extract a single instanceof / is_a / class-identity check.
+            if let Some(extraction) = try_extract_instanceof_with_negation(expr, ctx.var_name) {
+                if extraction.negated {
+                    apply_instanceof_exclusion(&extraction.class_name, ctx, results);
+                } else {
+                    apply_instanceof_inclusion(
+                        &extraction.class_name,
+                        extraction.exact,
+                        ctx,
+                        results,
+                    );
+                }
+            }
+        }
     }
 }
 

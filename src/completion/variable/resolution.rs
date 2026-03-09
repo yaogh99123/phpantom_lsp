@@ -615,6 +615,12 @@ pub(in crate::completion) fn walk_statements_for_assignments<'b>(
                     ctx,
                     results,
                 );
+
+                // ── inline && narrowing ──
+                // `$var instanceof Foo && $var->method()`
+                // When the cursor is inside the RHS of `&&` whose
+                // LHS checks instanceof, narrow accordingly.
+                narrowing::try_apply_inline_and_narrowing(expr_stmt.expression, ctx, results);
             }
             // Recurse into blocks — these are just `{ … }` groupings,
             // not conditional, so preserve the current `conditional` flag.
@@ -687,6 +693,13 @@ fn walk_if_statement<'b>(
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
 ) {
+    // ── Inline && narrowing inside the condition expression ──
+    // When the cursor is inside the RHS of `&&` in the condition,
+    // apply instanceof narrowing from the LHS so that e.g.
+    // `if ($x instanceof Foo && $x->bar())` narrows `$x` to `Foo`
+    // at the `$x->bar()` call site.
+    narrowing::try_apply_inline_and_narrowing(if_stmt.condition, ctx, results);
+
     match &if_stmt.body {
         IfBody::Statement(body) => {
             // ── instanceof narrowing for then-body ──
@@ -714,6 +727,8 @@ fn walk_if_statement<'b>(
             check_statement_for_assignments(body.statement, ctx, results, true);
 
             for else_if in body.else_if_clauses.iter() {
+                // ── inline && narrowing for elseif condition ──
+                narrowing::try_apply_inline_and_narrowing(else_if.condition, ctx, results);
                 // ── instanceof narrowing for elseif-body ──
                 narrowing::try_apply_instanceof_narrowing(
                     else_if.condition,
@@ -819,6 +834,8 @@ fn walk_if_statement<'b>(
             narrowing::try_apply_in_array_narrowing(if_stmt.condition, then_span, ctx, results);
             walk_statements_for_assignments(body.statements.iter(), ctx, results, true);
             for else_if in body.else_if_clauses.iter() {
+                // ── inline && narrowing for elseif condition ──
+                narrowing::try_apply_inline_and_narrowing(else_if.condition, ctx, results);
                 let ei_span = mago_span::Span::new(
                     else_if.colon.file_id,
                     else_if.colon.start,
@@ -980,6 +997,9 @@ fn walk_while_statement<'b>(
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
 ) {
+    // ── Inline && narrowing inside the while condition ──
+    narrowing::try_apply_inline_and_narrowing(while_stmt.condition, ctx, results);
+
     match &while_stmt.body {
         WhileBody::Statement(inner) => {
             narrowing::try_apply_instanceof_narrowing(

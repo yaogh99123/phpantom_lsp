@@ -1,11 +1,18 @@
 /// Closure and arrow-function variable resolution.
 ///
-/// When the cursor is inside a closure (`function (Type $p) { … }`) or
-/// arrow function (`fn(Type $p) => …`), variables are resolved from the
-/// closure's own parameter list rather than the enclosing scope.  This
-/// module contains the recursive AST walkers that detect whether the
-/// cursor falls inside such a construct and, if so, resolve the target
-/// variable from its typed parameters.
+/// When the cursor is inside a **closure** (`function (Type $p) { … }`),
+/// variables are resolved from the closure's own parameter list rather
+/// than the enclosing scope (closures have isolated scope in PHP).
+///
+/// **Arrow functions** (`fn(Type $p) => …`) automatically capture the
+/// enclosing scope.  If the target variable matches an arrow function
+/// parameter, it is resolved from that parameter list.  Otherwise the
+/// walker returns `false` so the enclosing scope continues to resolve
+/// the variable from prior assignments, just as PHP semantics require.
+///
+/// This module contains the recursive AST walkers that detect whether
+/// the cursor falls inside such a construct and handle resolution
+/// accordingly.
 ///
 /// ## Callable parameter inference
 ///
@@ -209,15 +216,30 @@ pub(in crate::completion) fn try_resolve_in_closure_expr<'b>(
             false
         }
         // ── Arrow function: `fn(Type $param) => expr` ──
+        // Arrow functions capture the enclosing scope automatically
+        // (unlike closures which require `use`).  Only claim the
+        // variable if it matches one of the arrow function's own
+        // parameters; otherwise return `false` so the outer scope
+        // walk continues and can resolve variables like `$feature`
+        // that were assigned before the arrow function.
         Expression::ArrowFunction(arrow) => {
             let arrow_body_span = arrow.expression.span();
             if ctx.cursor_offset >= arrow.arrow.start.offset
                 && ctx.cursor_offset <= arrow_body_span.end.offset
             {
-                resolve_closure_params(&arrow.parameter_list, ctx, results);
-                // Arrow functions have a single expression body — no
-                // statements to walk, but the params are resolved.
-                return true;
+                let is_arrow_param = arrow
+                    .parameter_list
+                    .parameters
+                    .iter()
+                    .any(|p| *p.variable.name == *ctx.var_name);
+                if is_arrow_param {
+                    resolve_closure_params(&arrow.parameter_list, ctx, results);
+                    return true;
+                }
+                // Variable is not a parameter of this arrow function —
+                // it must come from the enclosing scope.  Return false
+                // so the outer walk resolves it.
+                return false;
             }
             false
         }
@@ -521,10 +543,12 @@ where
                             results,
                             &inferred,
                         );
-                    } else {
-                        resolve_closure_params(&arrow.parameter_list, ctx, results);
+                        return true;
                     }
-                    return true;
+                    // Variable is not a parameter of this arrow
+                    // function — it comes from the enclosing scope.
+                    // Return false so the outer walk resolves it.
+                    return false;
                 }
             }
             _ => {}

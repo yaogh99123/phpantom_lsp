@@ -197,6 +197,12 @@ class TypeNarrowingDemo
         $target = getUnknownValue();
         assert($target instanceof Banana);
         $target->peel();                          // assert() narrowing
+
+        // Inline && narrowing — RHS of && sees the narrowed type from LHS
+        $sample = pickRockOrBanana();
+        if ($sample instanceof Rock && $sample->crush()) {
+            // $sample is Rock here too
+        }
     }
 }
 
@@ -3863,6 +3869,12 @@ function runDemoAssertions(): void
     } else {
         assert($specimen instanceof Banana, 'Not Rock must be Banana');
         assert(method_exists($specimen, 'peel'), 'Banana must have peel()');
+    }
+
+    // ── Type narrowing: inline && ───────────────────────────────────────
+    $sample = pickRockOrBanana();
+    if ($sample instanceof Rock && $sample->crush()) {
+        assert($sample instanceof Rock, 'RHS of && must see Rock');
     }
 
     // ── Type narrowing: negated instanceof ──────────────────────────────
