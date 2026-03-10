@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Variable type resolves through ternary, elvis, null-coalesce, and match assignments.** When a variable is reassigned via `$x = $x ?: Foo::bar()`, `$x = $a ?? $b`, `$x = $cond ? $a : $b`, or `$x = match(...) { ... }`, hover and foreach iteration now show the resolved type from the assignment branches. Previously these expressions returned unknown because the raw type inference path did not recurse into conditional expressions.
 - **Parameter types resolve inside `function_exists` guards.** Functions wrapped in `if (!function_exists('name')) { … }` now resolve parameter type hints for completion and hover. Previously the nested function scope was invisible to the variable resolver.
 - **Virtual property merging picks the most specific type.** When multiple sources contribute the same model property (e.g. `$fillable` produces `mixed`, `$casts` produces `array`, `@property` declares `array<string>`), the most specific type now wins. Previously the first writer was kept regardless of specificity.
 - **Custom cast classes declared as string literals resolve correctly.** Cast entries like `'description' => 'App\Casts\HtmlCast'` no longer have their FQN mangled by prepending the file's namespace. Previously this produced broken names like `App\Models\App\Casts\HtmlCast`.

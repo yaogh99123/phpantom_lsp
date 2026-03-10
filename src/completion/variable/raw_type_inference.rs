@@ -776,6 +776,31 @@ fn resolve_rhs_raw_type<'b>(rhs: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
         },
         // ── Parenthesized: unwrap ──
         Expression::Parenthesized(p) => resolve_rhs_raw_type(p.expression, ctx),
+        // ── Ternary / elvis: `$a ? $b : $c` or `$a ?: $c` ──
+        // Resolve both branches and union the types.  For the elvis
+        // operator (`$a ?: $c`), `then` is `None` and the condition
+        // itself is the "then" branch.
+        Expression::Conditional(cond_expr) => {
+            let then_expr = cond_expr.then.unwrap_or(cond_expr.condition);
+            let then_type = resolve_rhs_raw_type(then_expr, ctx);
+            let else_type = resolve_rhs_raw_type(cond_expr.r#else, ctx);
+            union_raw_types(then_type, else_type)
+        }
+        // ── Null coalesce: `$a ?? $b` ──
+        Expression::Binary(binary) if binary.operator.is_null_coalesce() => {
+            let lhs_type = resolve_rhs_raw_type(binary.lhs, ctx);
+            let rhs_type = resolve_rhs_raw_type(binary.rhs, ctx);
+            union_raw_types(lhs_type, rhs_type)
+        }
+        // ── Match expression: union all arm result types ──
+        Expression::Match(match_expr) => {
+            let mut combined: Option<String> = None;
+            for arm in match_expr.arms.iter() {
+                let arm_type = resolve_rhs_raw_type(arm.expression(), ctx);
+                combined = union_raw_types(combined, arm_type);
+            }
+            combined
+        }
         // ── Call / property access — delegate to iterable extractor,
         //    with a source-scan fallback for standalone function calls
         //    when no `function_loader` is available. ──
@@ -795,6 +820,26 @@ fn resolve_rhs_raw_type<'b>(rhs: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
             }
             None
         }),
+    }
+}
+
+/// Combine two optional raw type strings into a union.
+///
+/// When both sides resolve to the same type string, returns a single
+/// (non-duplicated) type.  When they differ, joins them with `|`.
+/// Returns `None` only when both inputs are `None`.
+fn union_raw_types(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            if a == b {
+                Some(a)
+            } else {
+                Some(format!("{}|{}", a, b))
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
     }
 }
 

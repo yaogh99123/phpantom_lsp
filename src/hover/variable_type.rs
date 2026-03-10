@@ -57,9 +57,6 @@ pub(crate) fn resolve_variable_type_string(
                 cursor_offset,
             )
         });
-    if ast_result.is_some() {
-        return ast_result;
-    }
 
     // 4b. Foreach binding via class resolution.
     //     When the AST path above found no inline docblock annotation for
@@ -67,32 +64,38 @@ pub(crate) fn resolve_variable_type_string(
     //     a class and extract the iterable element type from its
     //     `@implements` / `@extends` generics.  This handles cases like
     //     `@implements IteratorAggregate<array<string, Foo|Bar>>`.
-    let dummy_class;
-    let effective_class = match current_class {
-        Some(cc) => cc,
-        None => {
-            dummy_class = ClassInfo::default();
-            &dummy_class
+    if ast_result.is_none() {
+        let dummy_class;
+        let effective_class = match current_class {
+            Some(cc) => cc,
+            None => {
+                dummy_class = ClassInfo::default();
+                &dummy_class
+            }
+        };
+        let foreach_result: Option<String> =
+            with_parsed_program(content, "resolve_foreach_via_class", |program, _| {
+                resolve_foreach_type_via_class(
+                    &program.statements.iter().collect::<Vec<_>>(),
+                    var_name,
+                    content,
+                    cursor_offset,
+                    effective_class,
+                    all_classes,
+                    class_loader,
+                )
+            });
+        if foreach_result.is_some() {
+            return foreach_result;
         }
-    };
-    let foreach_result: Option<String> =
-        with_parsed_program(content, "resolve_foreach_via_class", |program, _| {
-            resolve_foreach_type_via_class(
-                &program.statements.iter().collect::<Vec<_>>(),
-                var_name,
-                content,
-                cursor_offset,
-                effective_class,
-                all_classes,
-                class_loader,
-            )
-        });
-    if foreach_result.is_some() {
-        return foreach_result;
     }
 
-    // 5. Assignment raw type
-    resolve_variable_assignment_raw_type(
+    // 5. Assignment raw type — tried before falling back to the
+    //    parameter type from step 2–4 so that reassignments like
+    //    `$markets = $markets ?: Country::getActiveCountries();`
+    //    resolve to the richer assignment type (`array<int, Country>`)
+    //    instead of the bare parameter type (`array`).
+    let assignment_result = resolve_variable_assignment_raw_type(
         var_name,
         content,
         cursor_offset,
@@ -100,7 +103,13 @@ pub(crate) fn resolve_variable_type_string(
         all_classes,
         class_loader,
         function_loader,
-    )
+    );
+    if assignment_result.is_some() {
+        return assignment_result;
+    }
+
+    // Fall back to the AST-based parameter/foreach/catch type.
+    ast_result
 }
 
 /// Walk top-level statements to find the scope containing the cursor

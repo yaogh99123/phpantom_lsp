@@ -6955,3 +6955,187 @@ final class ScheduledJob extends Model {
         text2
     );
 }
+
+// ─── Ternary / elvis / null-coalesce variable type inference ────────────────
+
+#[test]
+fn hover_variable_assigned_via_elvis_operator_with_static_call() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+enum Country: string {
+    case US = 'us';
+    case UK = 'uk';
+    /** @return array<int, self> */
+    public static function getActiveCountries(): array {
+        return [self::US, self::UK];
+    }
+}
+class Indexer {
+    public function index(array $markets = [], bool $shouldDelete = false): void {
+        $markets = $markets ?: Country::getActiveCountries();
+        $markets;
+    }
+}
+"#;
+
+    // Hover on `$markets` at line 12 (the bare `$markets;` usage after reassignment)
+    let hover = hover_at(&backend, uri, content, 12, 9).expect("expected hover on $markets");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("array<int, Country>"),
+        "should resolve elvis RHS static call return type, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_via_ternary_operator() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Bucket {}
+class Factory {
+    /** @return list<Bucket> */
+    public static function makeBuckets(): array { return []; }
+}
+class Demo {
+    public function run(bool $flag): void {
+        $items = $flag ? Factory::makeBuckets() : Factory::makeBuckets();
+        $items;
+    }
+}
+"#;
+
+    // Hover on `$items` at line 9
+    let hover = hover_at(&backend, uri, content, 9, 9).expect("expected hover on $items");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("list<Bucket>"),
+        "should resolve ternary branches to list<Bucket>, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_via_null_coalesce_operator() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Widget {}
+class Store {
+    /** @return list<Widget> */
+    public function getWidgets(): array { return []; }
+    public function run(): void {
+        $widgets = $this->getWidgets() ?? [];
+        $widgets;
+    }
+}
+"#;
+
+    // Hover on `$widgets` at line 7
+    let hover = hover_at(&backend, uri, content, 7, 9).expect("expected hover on $widgets");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("list<Widget>"),
+        "should resolve null coalesce LHS to list<Widget>, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_via_match_expression() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Alpha {}
+class Beta {}
+class Demo {
+    public function run(int $mode): void {
+        $result = match($mode) {
+            1 => new Alpha(),
+            2 => new Beta(),
+        };
+        $result;
+    }
+}
+"#;
+
+    // Hover on `$result` at line 9
+    let hover = hover_at(&backend, uri, content, 9, 9).expect("expected hover on $result");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Alpha") || text.contains("Beta"),
+        "should resolve match expression arm types, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_via_elvis_with_identical_branches() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Item {}
+class Repo {
+    /** @return list<Item> */
+    public function getItems(): array { return []; }
+    /** @return list<Item> */
+    public function getDefaultItems(): array { return []; }
+    public function run(): void {
+        $items = $this->getItems() ?: $this->getDefaultItems();
+        $items;
+    }
+}
+"#;
+
+    // Hover on `$items` at line 9
+    let hover = hover_at(&backend, uri, content, 9, 9).expect("expected hover on $items");
+    let text = hover_text(&hover);
+    // Both branches return list<Item>, so the union should be just list<Item>
+    assert!(
+        text.contains("list<Item>"),
+        "should resolve elvis with identical branch types to list<Item>, got: {}",
+        text
+    );
+    // Should NOT have a duplicated union like list<Item>|list<Item>
+    assert!(
+        !text.contains("list<Item>|list<Item>"),
+        "should not duplicate identical types in union, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_foreach_over_variable_assigned_via_elvis_with_static_call() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+enum Country: string {
+    case US = 'us';
+    case UK = 'uk';
+    public function label(): string { return $this->value; }
+    /** @return array<int, self> */
+    public static function getActiveCountries(): array {
+        return [self::US, self::UK];
+    }
+}
+class Indexer {
+    public function index(array $markets = []): void {
+        $markets = $markets ?: Country::getActiveCountries();
+        foreach ($markets as $market) {
+            $market->label();
+        }
+    }
+}
+"#;
+
+    // Hover on `$market` inside the foreach body (line 14)
+    let hover = hover_at(&backend, uri, content, 14, 13).expect("expected hover on $market");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Country"),
+        "foreach value variable should resolve to Country, got: {}",
+        text
+    );
+}
