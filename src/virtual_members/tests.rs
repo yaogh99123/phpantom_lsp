@@ -314,6 +314,195 @@ fn merge_does_not_overwrite_existing_property() {
 }
 
 #[test]
+fn merge_replaces_mixed_property_with_specific_type() {
+    let mut class = make_class("Foo");
+    class.properties.push(make_property("vat", Some("mixed")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("vat", Some("Decimal"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("Decimal"),
+        "mixed-typed property should be replaced by a more specific type"
+    );
+}
+
+#[test]
+fn merge_replaces_untyped_property_with_specific_type() {
+    let mut class = make_class("Foo");
+    class.properties.push(make_property("vat", None));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("vat", Some("Decimal"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("Decimal"),
+        "untyped property should be replaced by a more specific type"
+    );
+}
+
+#[test]
+fn merge_does_not_replace_mixed_with_mixed() {
+    let mut class = make_class("Foo");
+    class.properties.push(make_property("col", Some("mixed")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("col", Some("mixed"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(class.properties[0].type_hint.as_deref(), Some("mixed"));
+}
+
+#[test]
+fn merge_does_not_replace_specific_type_with_mixed() {
+    let mut class = make_class("Foo");
+    class.properties.push(make_property("col", Some("string")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("col", Some("mixed"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("string"),
+        "specific type should not be overwritten by mixed"
+    );
+}
+
+#[test]
+fn merge_generic_type_beats_bare_type() {
+    let mut class = make_class("Foo");
+    class.properties.push(make_property("tags", Some("array")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array<string>"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("array<string>"),
+        "generic type should replace bare type of the same base"
+    );
+}
+
+#[test]
+fn merge_bare_type_beats_mixed() {
+    let mut class = make_class("Foo");
+    class.properties.push(make_property("tags", Some("mixed")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("array"),
+        "bare type should replace mixed"
+    );
+}
+
+#[test]
+fn merge_bare_type_does_not_replace_generic() {
+    let mut class = make_class("Foo");
+    class
+        .properties
+        .push(make_property("tags", Some("array<int>")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("array<int>"),
+        "bare type should not replace a more specific generic type"
+    );
+}
+
+#[test]
+fn merge_same_specificity_preserves_first_writer() {
+    let mut class = make_class("Foo");
+    class
+        .properties
+        .push(make_property("tags", Some("array<int>")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array<string>"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("array<int>"),
+        "equal specificity should preserve the first writer, not merge or replace"
+    );
+}
+
+#[test]
+fn merge_mixed_does_not_replace_bare_type() {
+    let mut class = make_class("Foo");
+    class.properties.push(make_property("tags", Some("array")));
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("mixed"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("array"),
+        "mixed should not replace a bare type"
+    );
+}
+
+#[test]
 fn merge_handles_empty_virtual_members() {
     let mut class = make_class("Foo");
     class.methods.push(make_method("foo", Some("void")));
@@ -496,6 +685,145 @@ fn apply_providers_property_priority() {
     assert_eq!(email.type_hint.as_deref(), Some("string"));
 }
 
+/// When a higher-priority provider contributes a `mixed` property and
+/// a lower-priority provider has a specific type, the specific type
+/// should replace the `mixed` placeholder.
+#[test]
+fn apply_providers_low_priority_overrides_mixed_from_high_priority() {
+    let mut class = make_class("Foo");
+
+    // Simulates the Laravel model provider adding a column with type `mixed`
+    // (e.g. from $fillable or an unresolvable cast).
+    let high_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("vat", Some("mixed"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    // Simulates the PHPDoc provider contributing `@property Decimal $vat`.
+    let low_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("vat", Some("Decimal"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    let providers: Vec<Box<dyn VirtualMemberProvider>> = vec![high_priority, low_priority];
+    let class_loader = |_: &str| -> Option<ClassInfo> { None };
+
+    apply_virtual_members(&mut class, &class_loader, &providers, None);
+
+    assert_eq!(class.properties.len(), 1);
+
+    let vat = class.properties.iter().find(|p| p.name == "vat").unwrap();
+    assert_eq!(
+        vat.type_hint.as_deref(),
+        Some("Decimal"),
+        "PHPDoc @property type should replace mixed from Laravel provider"
+    );
+}
+
+/// When a higher-priority provider contributes a specific type,
+/// a lower-priority provider must not replace it — even with another
+/// specific type.
+#[test]
+fn apply_providers_low_priority_cannot_override_specific_from_high_priority() {
+    let mut class = make_class("Foo");
+
+    let high_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("is_admin", Some("bool"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    let low_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("is_admin", Some("int"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    let providers: Vec<Box<dyn VirtualMemberProvider>> = vec![high_priority, low_priority];
+    let class_loader = |_: &str| -> Option<ClassInfo> { None };
+
+    apply_virtual_members(&mut class, &class_loader, &providers, None);
+
+    assert_eq!(class.properties.len(), 1);
+
+    let prop = class
+        .properties
+        .iter()
+        .find(|p| p.name == "is_admin")
+        .unwrap();
+    assert_eq!(
+        prop.type_hint.as_deref(),
+        Some("bool"),
+        "higher-priority specific type should not be replaced"
+    );
+}
+
+/// When a higher-priority provider contributes a bare type (`array`) and
+/// a lower-priority provider has a generic type (`array<string>`), the
+/// more specific generic type should win.
+#[test]
+fn apply_providers_generic_from_low_priority_beats_bare_from_high_priority() {
+    let mut class = make_class("Foo");
+
+    // Simulates the Laravel model provider adding a cast column with
+    // bare type `array` (from `$casts = ['tags' => 'array']`).
+    let high_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    // Simulates the PHPDoc provider contributing
+    // `@property array<string> $tags`.
+    let low_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array<string>"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    let providers: Vec<Box<dyn VirtualMemberProvider>> = vec![high_priority, low_priority];
+    let class_loader = |_: &str| -> Option<ClassInfo> { None };
+
+    apply_virtual_members(&mut class, &class_loader, &providers, None);
+
+    assert_eq!(class.properties.len(), 1);
+
+    let tags = class.properties.iter().find(|p| p.name == "tags").unwrap();
+    assert_eq!(
+        tags.type_hint.as_deref(),
+        Some("array<string>"),
+        "generic type from PHPDoc should replace bare type from Laravel provider"
+    );
+}
+
+/// When both providers contribute the same specificity level, the
+/// first writer (higher priority) wins.  We do NOT try to merge
+/// `array<int>` and `array<string>` into `array<int|string>`.
+#[test]
+fn apply_providers_same_specificity_preserves_high_priority() {
+    let mut class = make_class("Foo");
+
+    let high_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array<int>"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    let low_priority = Box::new(TestProvider {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array<string>"))],
+    }) as Box<dyn VirtualMemberProvider>;
+
+    let providers: Vec<Box<dyn VirtualMemberProvider>> = vec![high_priority, low_priority];
+    let class_loader = |_: &str| -> Option<ClassInfo> { None };
+
+    apply_virtual_members(&mut class, &class_loader, &providers, None);
+
+    assert_eq!(class.properties.len(), 1);
+
+    let tags = class.properties.iter().find(|p| p.name == "tags").unwrap();
+    assert_eq!(
+        tags.type_hint.as_deref(),
+        Some("array<int>"),
+        "equal specificity should preserve higher-priority provider, not merge types"
+    );
+}
+
 #[test]
 fn default_providers_has_laravel_and_phpdoc() {
     let providers = default_providers();
@@ -540,4 +868,180 @@ fn resolve_class_fully_returns_same_as_base_when_no_providers() {
             "full resolution should contain all base methods"
         );
     }
+}
+
+// ── evict_fqn / depends_on_any tests ────────────────────────────────
+
+/// Helper: create a plain `HashMap` cache for eviction tests.
+/// `evict_fqn` operates on the inner `HashMap`, not the
+/// `Arc<Mutex<…>>` wrapper used at runtime.
+fn make_cache() -> HashMap<ResolvedClassCacheKey, ClassInfo> {
+    HashMap::new()
+}
+
+#[test]
+fn evict_removes_direct_match() {
+    let mut cache = make_cache();
+    let cls = make_class("App\\Models\\User");
+    cache.insert(("App\\Models\\User".to_string(), Vec::new()), cls);
+
+    evict_fqn(&mut cache, "App\\Models\\User");
+    assert!(cache.is_empty(), "direct match should be evicted");
+}
+
+#[test]
+fn evict_transitively_removes_child_class() {
+    let mut cache = make_cache();
+
+    let parent = make_class("Model");
+    cache.insert(("App\\Models\\Model".to_string(), Vec::new()), parent);
+
+    let mut child = make_class("User");
+    child.parent_class = Some("App\\Models\\Model".to_string());
+    cache.insert(("App\\Models\\User".to_string(), Vec::new()), child);
+
+    evict_fqn(&mut cache, "App\\Models\\Model");
+    assert!(cache.is_empty(), "both parent and child should be evicted");
+}
+
+#[test]
+fn evict_transitively_removes_model_referencing_cast_class() {
+    let mut cache = make_cache();
+
+    let cast_class = make_class("DecimalCast");
+    cache.insert(
+        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        cast_class,
+    );
+
+    let mut model = make_class("Setting");
+    model.laravel_mut().casts_definitions =
+        vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
+    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+
+    // Evict the cast class — the model should be transitively evicted.
+    evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
+    assert!(
+        cache.is_empty(),
+        "model referencing cast class via $casts should be transitively evicted"
+    );
+}
+
+#[test]
+fn evict_cast_class_with_colon_argument_transitively_removes_model() {
+    let mut cache = make_cache();
+
+    let cast_class = make_class("DecimalCast");
+    cache.insert(
+        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        cast_class,
+    );
+
+    let mut model = make_class("Setting");
+    // Cast type has a `:argument` suffix like `DecimalCast:8:2`.
+    model.laravel_mut().casts_definitions =
+        vec![("vat".to_string(), "App\\Casts\\DecimalCast:8:2".to_string())];
+    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+
+    evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
+    assert!(
+        cache.is_empty(),
+        "cast type with :argument suffix should still trigger transitive eviction"
+    );
+}
+
+#[test]
+fn evict_cast_class_matched_by_short_name() {
+    let mut cache = make_cache();
+
+    let cast_class = make_class("DecimalCast");
+    cache.insert(
+        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        cast_class,
+    );
+
+    let mut model = make_class("Setting");
+    // The model references the cast class by short name (same-file scenario).
+    model.laravel_mut().casts_definitions = vec![("vat".to_string(), "DecimalCast".to_string())];
+    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+
+    evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
+    assert!(
+        cache.is_empty(),
+        "short-name cast reference should match FQN eviction"
+    );
+}
+
+#[test]
+fn evict_cast_class_with_leading_backslash() {
+    let mut cache = make_cache();
+
+    let cast_class = make_class("DecimalCast");
+    cache.insert(
+        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        cast_class,
+    );
+
+    let mut model = make_class("Setting");
+    model.laravel_mut().casts_definitions =
+        vec![("vat".to_string(), "\\App\\Casts\\DecimalCast".to_string())];
+    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+
+    evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
+    assert!(
+        cache.is_empty(),
+        "cast type with leading backslash should still trigger transitive eviction"
+    );
+}
+
+#[test]
+fn evict_builtin_cast_does_not_affect_model() {
+    let mut cache = make_cache();
+
+    let mut model = make_class("Setting");
+    model.laravel_mut().casts_definitions = vec![
+        ("is_active".to_string(), "boolean".to_string()),
+        ("created_at".to_string(), "datetime".to_string()),
+    ];
+    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+
+    // Evicting a random class should not affect the model since
+    // its casts only reference built-in types.
+    evict_fqn(&mut cache, "App\\Something\\Unrelated");
+    assert_eq!(
+        cache.len(),
+        1,
+        "model with only built-in casts should not be evicted"
+    );
+}
+
+#[test]
+fn evict_cast_class_chains_through_model_to_child() {
+    let mut cache = make_cache();
+
+    let cast_class = make_class("DecimalCast");
+    cache.insert(
+        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        cast_class,
+    );
+
+    let mut model = make_class("Setting");
+    model.laravel_mut().casts_definitions =
+        vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
+    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+
+    let mut child = make_class("AdvancedSetting");
+    child.parent_class = Some("App\\Models\\Setting".to_string());
+    cache.insert(
+        ("App\\Models\\AdvancedSetting".to_string(), Vec::new()),
+        child,
+    );
+
+    // Evicting the cast class should evict the model (via casts_definitions),
+    // and the child (via parent_class → model).
+    evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
+    assert!(
+        cache.is_empty(),
+        "cast eviction should chain: cast → model (via casts) → child (via parent)"
+    );
 }

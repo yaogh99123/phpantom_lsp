@@ -16427,3 +16427,142 @@ async fn test_completion_outer_scope_variable_inside_arrow_function() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+/// Test: parameter type resolution inside a function wrapped in
+/// `if (! function_exists('...'))` guard — the pattern used by Laravel
+/// helpers and many other PHP libraries.
+#[tokio::test]
+async fn test_completion_param_inside_function_exists_guard() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///guarded_func.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Country {\n",
+        "    public function isActiveCountry(): bool { return true; }\n",
+        "    public function getCode(): string { return ''; }\n",
+        "}\n",
+        "\n",
+        "if (!function_exists('getHTMLCountryFlagFromLangCode')) {\n",
+        "    function getHTMLCountryFlagFromLangCode(Country $langCode, string $height = ''): string\n",
+        "    {\n",
+        "        $langCode->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 9,
+                character: 19,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for $langCode-> inside function_exists guard"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                method_names.contains(&"isActiveCountry"),
+                "Should include 'isActiveCountry' from Country, got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getCode"),
+                "Should include 'getCode' from Country, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Test: parameter type resolution inside a function at the top level
+/// (no `function_exists` guard) still works as before — regression guard.
+#[tokio::test]
+async fn test_completion_param_inside_top_level_function() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///toplevel_func.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Country {\n",
+        "    public function isActiveCountry(): bool { return true; }\n",
+        "}\n",
+        "\n",
+        "function getFlag(Country $langCode): string\n",
+        "{\n",
+        "    $langCode->\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 7,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for $langCode-> inside top-level function"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                method_names.contains(&"isActiveCountry"),
+                "Should include 'isActiveCountry' from Country, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

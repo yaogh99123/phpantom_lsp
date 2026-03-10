@@ -53,6 +53,7 @@ parallel file processing.
 | 78 | Inline Function/Method | High | Code Actions | [actions.md §9](todo/actions.md#9-inline-functionmethod) |
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 | 88 | Early-exit and `Cow` return in `apply_substitution` | Low | Performance | [performance.md §7](todo/performance.md#7-recursive-string-substitution-in-apply_substitution) |
+| 95 | Canonicalize FQN representation | High | Refactoring | [refactor.md §1](todo/refactor.md#1-canonicalize-fqn-representation) |
 
 ---
 
@@ -222,6 +223,7 @@ separately by their own impact÷effort scoring.
 | L9 | Higher-order collection proxies | ★★ | ★★★★ | [§9](todo/laravel.md#9-higher-order-collection-proxies) |
 | L11 | `View::withX()` / `RedirectResponse::withX()` dynamic methods | ★ | ★★ | [§11](todo/laravel.md#11-viewwithx-and-redirectresponsewithx-dynamic-methods) |
 | L12 | `$appends` array | ★ | ★ | [§12](todo/laravel.md#12-appends-array) |
+| LF | Facade `getFacadeAccessor` resolution should beat `@method static` tags | ★★★★ | ★★★ | [§Facades](todo/laravel.md#facade-completion) |
 
 ---
 

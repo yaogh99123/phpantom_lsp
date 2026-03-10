@@ -134,12 +134,18 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, ClassInfo>, fqn: &st
 }
 
 /// Check whether `cls` directly depends on any FQN in `fqns` through
-/// its `parent_class`, `used_traits`, `interfaces`, or `mixins`.
+/// its `parent_class`, `used_traits`, `interfaces`, `mixins`, or
+/// `casts_definitions`.
 ///
 /// Comparisons are done against both the raw field value and the short
 /// name of the evicted FQN, because the cached `ClassInfo` may store
 /// parent/trait/interface names as short names (same-file references)
 /// or as FQNs (cross-file, post-resolution).
+///
+/// The `casts_definitions` check ensures that when a cast class is
+/// edited (e.g. its `@implements CastsAttributes<T>` annotation
+/// changes), models referencing that cast class via `$casts` are
+/// transitively evicted from the resolved-class cache.
 fn depends_on_any(cls: &ClassInfo, fqns: &[String]) -> bool {
     for fqn in fqns {
         let short = crate::util::short_name(fqn);
@@ -163,6 +169,19 @@ fn depends_on_any(cls: &ClassInfo, fqns: &[String]) -> bool {
 
         // mixins
         if cls.mixins.iter().any(|m| m == fqn || m == short) {
+            return true;
+        }
+
+        // casts_definitions — cast type values may reference class FQNs
+        // (e.g. `"App\\Casts\\DecimalCast"` or `"DecimalCast:8:2"`).
+        // Strip the `:argument` suffix before comparing.
+        if let Some(laravel) = cls.laravel()
+            && laravel.casts_definitions.iter().any(|(_, cast_type)| {
+                let class_part = cast_type.split(':').next().unwrap_or(cast_type);
+                let clean = class_part.strip_prefix('\\').unwrap_or(class_part);
+                clean == fqn || clean == short
+            })
+        {
             return true;
         }
     }
@@ -247,11 +266,26 @@ pub trait VirtualMemberProvider {
 /// completion results.  The virtual replacement is `public` with the
 /// first `$query` parameter stripped, which is what callers actually see.
 ///
-/// Properties and constants are deduplicated by name only.
+/// Properties are deduplicated by name.  When a property with the same
+/// name already exists, the **more specific** type wins regardless of
+/// which provider contributed it.  Specificity is ranked as:
+///
+///   `array<int, string>` > `array` > `mixed` > (absent)
+///
+/// More precisely:
+/// - absent / empty / `mixed` is the weakest (score 0)
+/// - a bare type like `array`, `string`, `Collection` (score 1)
+/// - a type with generic parameters like `array<int>` (score 2)
+///
+/// This allows PHPDoc `@property array<string> $tags` to override a
+/// bare `array` from `$casts`, and a `$casts` `array` to override
+/// `mixed` from `$fillable`.
+///
+/// Constants are deduplicated by name only.
 ///
 /// This ensures that real declared members (and contributions from
 /// higher-priority providers that were merged earlier) are never
-/// overwritten.
+/// overwritten, unless the incoming property carries a more specific type.
 pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMembers) {
     for method in virtual_members.methods {
         let existing = class
@@ -272,9 +306,23 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
             }
         }
     }
-    let mut prop_names: HashSet<String> = class.properties.iter().map(|p| p.name.clone()).collect();
     for property in virtual_members.properties {
-        if prop_names.insert(property.name.clone()) {
+        if let Some(idx) = class
+            .properties
+            .iter()
+            .position(|p| p.name == property.name)
+        {
+            // The property already exists.  Replace it only when the
+            // incoming property carries a strictly more specific type.
+            // This lets PHPDoc `@property array<string> $tags` override
+            // a bare `array` from `$casts`, and a `$casts` `array`
+            // override `mixed` from `$fillable`.
+            if type_specificity(&property.type_hint)
+                > type_specificity(&class.properties[idx].type_hint)
+            {
+                class.properties[idx] = property;
+            }
+        } else {
             class.properties.push(property);
         }
     }
@@ -282,6 +330,34 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
     for constant in virtual_members.constants {
         if const_names.insert(constant.name.clone()) {
             class.constants.push(constant);
+        }
+    }
+}
+
+/// Score a type hint by how specific it is.
+///
+/// The ranking (lowest to highest):
+/// - **0** — absent, empty, or `mixed` (no useful type information)
+/// - **1** — a bare type name without generic parameters
+///   (e.g. `array`, `string`, `Collection`, `?Foo`)
+/// - **2** — a type with generic parameters
+///   (e.g. `array<int, string>`, `Collection<User>`)
+///
+/// When merging virtual properties, the property with the higher
+/// specificity score wins.  Equal scores preserve the existing property
+/// (first-writer-wins within the same specificity tier).
+fn type_specificity(hint: &Option<String>) -> u8 {
+    match hint {
+        None => 0,
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed == "mixed" {
+                0
+            } else if trimmed.contains('<') {
+                2
+            } else {
+                1
+            }
         }
     }
 }

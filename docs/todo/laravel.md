@@ -12,14 +12,14 @@ virtual member provider design, see `ARCHITECTURE.md`.
 | Item | Reason |
 |------|--------|
 | Container string aliases | Requires booting the application. Use `::class` references instead. |
-| Facade `getFacadeAccessor()` with string aliases | Same problem. `@method` tags provide a workable fallback. |
+| Facade `getFacadeAccessor()` with string aliases | Requires booting the application. `@method static` tags provide a workable fallback. |
 | Blade templates | Separate project. See `todo-blade.md` for the implementation plan. |
 | Model column types from DB/migrations | Unreasonable complexity. Require `@property` annotations (via ide-helper or hand-written). |
 | Legacy Laravel versions | We target current Larastan-style annotations. Older code may degrade gracefully. |
 | Application provider scanning | Low-value, high-complexity. |
 | Macro discovery (`Macroable` trait) | Requires booting the application to inspect runtime `$macros` static property. `@method` tags provide a workable fallback. |
 | Auth model from config | Requires reading runtime config (`config/auth.php`). Larastan boots the app for this. |
-| Facade → concrete resolution | Requires booting (`getFacadeRoot()`). `@mixin` on facade stubs handles most cases. |
+| Facade → concrete resolution via booting | Requires booting (`getFacadeRoot()`). When `getFacadeAccessor()` returns a `::class` reference, static resolution is possible without booting. See "Facade completion" section below. |
 | Contract → concrete resolution | Requires container bindings at runtime. |
 | Manager → driver resolution | Requires instantiating the manager at runtime. |
 
@@ -34,9 +34,92 @@ virtual member provider design, see `ARCHITECTURE.md`.
 - **Larastan-style hints preferred.** We expect relationship methods to be
   annotated in the style that Larastan expects. Fallback heuristics
   are best-effort.
-- **Facades fall back to `@method`.** Facades whose `getFacadeAccessor()`
-  returns a string alias cannot be resolved. `@method` tags on facade
-  classes provide completion without template intelligence.
+- **Facades prefer `getFacadeAccessor` over `@method`.** When a facade's
+  `getFacadeAccessor()` returns a `::class` reference, we can resolve
+  the concrete service class and present its instance methods as static
+  methods on the facade with full type information (`@template`,
+  conditional return types, etc.). `@method static` tags are a lossy
+  fallback for IDEs that cannot perform this resolution.
+
+---
+
+## Facade completion
+
+Facades are the primary way Laravel developers interact with framework
+services (`Cache::get(...)`, `DB::table(...)`, `Route::get(...)`, etc.).
+The facade pattern works by forwarding static calls on the facade class
+to instance methods on a concrete service class via `__callStatic()`.
+
+Every facade stub ships with `@method static` tags that duplicate the
+concrete class's public API in simplified form:
+
+```php
+/**
+ * @method static \Illuminate\Contracts\Process\ProcessResult run(array|string|null $command = null, callable|null $output = null)
+ * @method static \Illuminate\Process\InvokedProcess start(array|string|null $command = null, callable|null $output = null)
+ * ...
+ */
+class Process extends Facade {
+    protected static function getFacadeAccessor() { return \Illuminate\Process\Factory::class; }
+}
+```
+
+Some facades return a `::class` reference (like `Process` above), while
+others return a string alias (e.g. `Cache` returns `'cache'`). Only the
+`::class` form is statically resolvable without booting the application.
+
+### Current behaviour
+
+Facade completion relies entirely on `@method static` tags from the
+`PHPDocProvider`. These tags are simplified summaries that lose:
+
+- `@template` parameters on the concrete class's methods.
+- Conditional return types (`@return ($key is class-string ? T : mixed)`)
+  flattened to a single type.
+- Parameter defaults, variadic markers, and docblock descriptions from
+  the real method signatures.
+
+### Desired behaviour
+
+When a facade's `getFacadeAccessor()` returns a `::class` reference
+(statically resolvable without booting the application), we should
+resolve the concrete service class and present its instance methods as
+static methods on the facade. This preserves the full type information
+from the concrete class. `@method static` tags should only be used as a
+fallback when `getFacadeAccessor()` returns a string alias (which
+requires the container and is out of scope).
+
+The key transformation: the concrete class has **instance** methods, but
+facades expose them as **static** calls. The provider must flip
+`is_static = true` on the forwarded methods.
+
+### Implementation notes
+
+**Impact: High. Effort: Medium.**
+
+This would be a new virtual member provider (or an extension of the
+Laravel provider) that:
+
+1. Detects facade classes (extends `Illuminate\Support\Facades\Facade`
+   or has a `getFacadeAccessor()` method).
+2. Parses `getFacadeAccessor()` for a `::class` return value. String
+   alias returns are ignored (require container resolution).
+3. Loads the concrete service class via the class loader.
+4. Collects its public instance methods and re-emits them as static
+   virtual methods on the facade, preserving full signatures.
+5. Runs at higher priority than the `PHPDocProvider` so that the rich
+   resolved methods shadow the simplified `@method static` tags.
+
+Edge cases to handle:
+- Some facades override specific methods (e.g. `DB::connection()` has
+  a different return type than the underlying manager). Real methods on
+  the facade class should still take priority over forwarded ones.
+- The concrete class may use `@template` at the class level. Generic
+  substitution is not needed here since facades are singletons, but
+  method-level `@template` should pass through unchanged.
+- `getFacadeAccessor()` may return `$this->app->make(...)` or other
+  dynamic expressions. Only the `return SomeClass::class;` pattern is
+  statically resolvable.
 
 ---
 

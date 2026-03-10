@@ -496,6 +496,54 @@ impl Backend {
                 class.laravel_mut().custom_collection = Some(resolved);
             }
 
+            // Resolve cast class names to FQN so that custom cast
+            // classes like `DecimalCast` (imported via `use`) are
+            // loadable cross-file when `cast_type_to_php_type` calls
+            // the class loader.
+            {
+                let casts: Vec<(String, String)> = class
+                    .laravel()
+                    .map(|l| l.casts_definitions.clone())
+                    .unwrap_or_default();
+                if !casts.is_empty() {
+                    let resolved: Vec<(String, String)> = casts
+                        .into_iter()
+                        .map(|(col, cast_type)| {
+                            // Only resolve class-like cast types (not
+                            // built-in strings like "boolean", "datetime",
+                            // etc.).  A simple heuristic: if the value
+                            // contains an uppercase letter and is not a
+                            // known built-in, treat it as a class name.
+                            //
+                            // Skip names that already contain a `\` — they
+                            // are already qualified (e.g. the string literal
+                            // `'App\Casts\HtmlCast'`).  Passing them through
+                            // `resolve_name` would prepend the file's
+                            // namespace, producing a broken FQN like
+                            // `App\Models\App\Casts\HtmlCast`.
+                            let first_segment = cast_type.split(':').next().unwrap_or(&cast_type);
+                            if first_segment.contains('\\') || first_segment.starts_with('\\') {
+                                // Already qualified — keep as-is.
+                                (col, cast_type)
+                            } else if first_segment.chars().any(|c| c.is_ascii_uppercase()) {
+                                let resolved_class =
+                                    Self::resolve_name(first_segment, use_map, namespace);
+                                if resolved_class != first_segment {
+                                    // Re-attach any `:argument` suffix.
+                                    let suffix = &cast_type[first_segment.len()..];
+                                    (col, format!("{resolved_class}{suffix}"))
+                                } else {
+                                    (col, cast_type)
+                                }
+                            } else {
+                                (col, cast_type)
+                            }
+                        })
+                        .collect();
+                    class.laravel_mut().casts_definitions = resolved;
+                }
+            }
+
             // Resolve type arguments in @extends, @implements, and @use
             // generics so that after generic substitution, return types
             // and property types are fully-qualified and can be resolved

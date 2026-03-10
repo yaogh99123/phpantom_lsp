@@ -527,7 +527,7 @@ fn cast_custom_class_falls_back_to_implements_generics() {
 }
 
 #[test]
-fn cast_custom_class_get_return_type_takes_priority_over_implements() {
+fn cast_implements_generics_take_priority_over_get_return_type() {
     let loader = |name: &str| -> Option<ClassInfo> {
         if name == "App\\Casts\\HtmlCast" {
             let mut cast_class = make_class("HtmlCast");
@@ -538,6 +538,28 @@ fn cast_custom_class_get_return_type_takes_priority_over_implements() {
                 "CastsAttributes".to_string(),
                 vec!["DifferentType".to_string(), "DifferentType".to_string()],
             )];
+            Some(cast_class)
+        } else {
+            None
+        }
+    };
+    // @implements CastsAttributes<DifferentType, DifferentType> is the
+    // canonical type declaration and should win over get()'s return type.
+    assert_eq!(
+        cast_type_to_php_type("App\\Casts\\HtmlCast", &loader),
+        "DifferentType"
+    );
+}
+
+#[test]
+fn cast_get_return_type_used_when_no_implements_generics() {
+    let loader = |name: &str| -> Option<ClassInfo> {
+        if name == "App\\Casts\\HtmlCast" {
+            let mut cast_class = make_class("HtmlCast");
+            cast_class
+                .methods
+                .push(make_method("get", Some("?HtmlString")));
+            // No @implements generics — get() is the only signal.
             Some(cast_class)
         } else {
             None

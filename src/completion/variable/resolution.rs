@@ -215,55 +215,18 @@ pub(in crate::completion) fn resolve_variable_in_statements<'b>(
             // at the top level, resolve the variable from its params
             // and walk its body.
             Statement::Function(func) => {
-                let body_start = func.body.left_brace.start.offset;
-                let body_end = func.body.right_brace.end.offset;
-                if ctx.cursor_offset >= body_start && ctx.cursor_offset <= body_end {
-                    // Extract the enclosing function's @return type
-                    // for generator yield inference inside the body.
-                    // Use body_start + 1 (just past the opening `{`)
-                    // so the backward brace scan in
-                    // find_enclosing_return_type immediately finds
-                    // the function's own `{` and does NOT get
-                    // confused by intermediate `{`/`}` from nested
-                    // control-flow (if, while, foreach, etc.) that
-                    // would sit between the cursor and the function
-                    // brace when cursor_offset is used.
-                    let enclosing_ret = crate::docblock::find_enclosing_return_type(
-                        ctx.content,
-                        (body_start + 1) as usize,
-                    );
-                    let body_ctx = ctx.with_enclosing_return_type(enclosing_ret);
-                    // The cursor is inside this function body.  PHP
-                    // function scopes are isolated, so return the
-                    // result directly (even if empty after `unset`).
-                    let mut results: Vec<ClassInfo> = Vec::new();
-                    super::closure_resolution::resolve_closure_params(
-                        &func.parameter_list,
-                        &body_ctx,
-                        &mut results,
-                    );
-                    walk_statements_for_assignments(
-                        func.body.statements.iter(),
-                        &body_ctx,
-                        &mut results,
-                        false,
-                    );
-                    if !results.is_empty() {
-                        return results;
-                    }
-
-                    // Generator yield reverse inference for
-                    // top-level functions.
-                    if let Some(ref ret_type) = body_ctx.enclosing_return_type {
-                        let yield_results =
-                            super::raw_type_inference::try_infer_from_generator_yield(
-                                ret_type, &body_ctx,
-                            );
-                        if !yield_results.is_empty() {
-                            return yield_results;
-                        }
-                    }
-
+                if let Some(results) = try_resolve_in_function(func, ctx) {
+                    return results;
+                }
+            }
+            // ── Functions inside if-guards / blocks ──
+            // The common PHP pattern `if (! function_exists('foo'))
+            // { function foo(Type $p) { … } }` nests the function
+            // declaration inside an if body.  Recurse into blocks
+            // and if-bodies so the function's parameters and body
+            // assignments are still resolved.
+            Statement::If(_) | Statement::Block(_) => {
+                if let Some(results) = try_resolve_in_nested_function(stmt, ctx) {
                     return results;
                 }
             }
@@ -277,6 +240,130 @@ pub(in crate::completion) fn resolve_variable_in_statements<'b>(
     let mut results: Vec<ClassInfo> = Vec::new();
     walk_statements_for_assignments(stmts.into_iter(), ctx, &mut results, false);
     results
+}
+
+/// Try to resolve the target variable inside a `Function` declaration.
+///
+/// Returns `Some(results)` when the cursor falls inside the function body
+/// (the function introduces an isolated scope, so we always return even
+/// when the result vec is empty).  Returns `None` when the cursor is
+/// outside this function.
+fn try_resolve_in_function(
+    func: &Function<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<Vec<ClassInfo>> {
+    let body_start = func.body.left_brace.start.offset;
+    let body_end = func.body.right_brace.end.offset;
+    if ctx.cursor_offset < body_start || ctx.cursor_offset > body_end {
+        return None;
+    }
+    // Extract the enclosing function's @return type for generator
+    // yield inference inside the body.  Use body_start + 1 (just
+    // past the opening `{`) so the backward brace scan in
+    // find_enclosing_return_type immediately finds the function's
+    // own `{` and does NOT get confused by intermediate `{`/`}`
+    // from nested control-flow.
+    let enclosing_ret =
+        crate::docblock::find_enclosing_return_type(ctx.content, (body_start + 1) as usize);
+    let body_ctx = ctx.with_enclosing_return_type(enclosing_ret);
+    // The cursor is inside this function body.  PHP function scopes
+    // are isolated, so return the result directly (even if empty
+    // after `unset`).
+    let mut results: Vec<ClassInfo> = Vec::new();
+    super::closure_resolution::resolve_closure_params(
+        &func.parameter_list,
+        &body_ctx,
+        &mut results,
+    );
+    walk_statements_for_assignments(func.body.statements.iter(), &body_ctx, &mut results, false);
+    if !results.is_empty() {
+        return Some(results);
+    }
+
+    // Generator yield reverse inference for top-level functions.
+    if let Some(ref ret_type) = body_ctx.enclosing_return_type {
+        let yield_results =
+            super::raw_type_inference::try_infer_from_generator_yield(ret_type, &body_ctx);
+        if !yield_results.is_empty() {
+            return Some(yield_results);
+        }
+    }
+
+    Some(results)
+}
+
+/// Recursively search a statement for a nested `Function` declaration
+/// whose body contains the cursor.
+///
+/// This handles the common PHP pattern where functions are wrapped in
+/// `if (! function_exists('name')) { function name(…) { … } }` guards.
+/// The function may be nested inside `Block`, `If`, or other compound
+/// statements.
+fn try_resolve_in_nested_function(
+    stmt: &Statement<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<Vec<ClassInfo>> {
+    // Quick span check — skip if cursor is outside this statement entirely.
+    let span = stmt.span();
+    if ctx.cursor_offset < span.start.offset || ctx.cursor_offset > span.end.offset {
+        return None;
+    }
+    match stmt {
+        Statement::Function(func) => try_resolve_in_function(func, ctx),
+        Statement::Block(block) => {
+            for inner in block.statements.iter() {
+                if let Some(results) = try_resolve_in_nested_function(inner, ctx) {
+                    return Some(results);
+                }
+            }
+            None
+        }
+        Statement::If(if_stmt) => {
+            match &if_stmt.body {
+                IfBody::Statement(body) => {
+                    if let Some(results) = try_resolve_in_nested_function(body.statement, ctx) {
+                        return Some(results);
+                    }
+                    for else_if in body.else_if_clauses.iter() {
+                        if let Some(results) =
+                            try_resolve_in_nested_function(else_if.statement, ctx)
+                        {
+                            return Some(results);
+                        }
+                    }
+                    if let Some(else_clause) = &body.else_clause
+                        && let Some(results) =
+                            try_resolve_in_nested_function(else_clause.statement, ctx)
+                    {
+                        return Some(results);
+                    }
+                }
+                IfBody::ColonDelimited(body) => {
+                    for inner in body.statements.iter() {
+                        if let Some(results) = try_resolve_in_nested_function(inner, ctx) {
+                            return Some(results);
+                        }
+                    }
+                    for else_if in body.else_if_clauses.iter() {
+                        for inner in else_if.statements.iter() {
+                            if let Some(results) = try_resolve_in_nested_function(inner, ctx) {
+                                return Some(results);
+                            }
+                        }
+                    }
+                    if let Some(else_clause) = &body.else_clause {
+                        for inner in else_clause.statements.iter() {
+                            if let Some(results) = try_resolve_in_nested_function(inner, ctx) {
+                                return Some(results);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Resolve a variable's type by scanning class-like members for parameter

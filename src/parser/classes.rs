@@ -370,16 +370,11 @@ fn extract_string_literal(text: &str) -> Option<String> {
     }
     // For class-string cast values like `SomeCast::class` or
     // `SomeCast::class.':argument'`, extract the class name.
-    // First, strip any `.':...'` or `.":...."` concatenation suffix.
-    let without_concat = if let Some(dot_pos) = t.find(".'") {
-        t[..dot_pos].trim()
-    } else if let Some(dot_pos) = t.find(".\"") {
-        t[..dot_pos].trim()
-    } else {
-        t
-    };
-    if let Some(before) = without_concat.strip_suffix("::class") {
-        let name = before.trim().strip_prefix('\\').unwrap_or(before.trim());
+    // The concatenation dot may have surrounding whitespace, so
+    // look for `::class` and take everything before it.
+    if let Some(class_pos) = t.find("::class") {
+        let before = t[..class_pos].trim();
+        let name = before.strip_prefix('\\').unwrap_or(before);
         if !name.is_empty() {
             return Some(name.to_string());
         }

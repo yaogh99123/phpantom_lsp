@@ -143,10 +143,18 @@ impl VirtualMemberProvider for PHPDocProvider {
         // Dedup sets for O(1) membership checks.  Seeded from the
         // base-resolved class members (real + inherited) and updated
         // as virtual members are collected.
+        //
+        // `seen_props` is NOT seeded from existing class properties.
+        // Phase 1 (`@property` tags) always emits its properties so
+        // that `merge_virtual_members` can compare type specificity
+        // and keep the most specific type (e.g. `array<string>` from
+        // `@property` beats bare `array` from `$casts`).  After
+        // phase 1 emits, names are added to `seen_props` to prevent
+        // lower-priority sources (trait tags, parent tags, `@mixin`
+        // members) from overriding them.
         let mut seen_methods: HashSet<String> =
             class.methods.iter().map(|m| m.name.clone()).collect();
-        let mut seen_props: HashSet<String> =
-            class.properties.iter().map(|p| p.name.clone()).collect();
+        let mut seen_props: HashSet<String> = HashSet::new();
         let seen_consts: HashSet<String> = class.constants.iter().map(|c| c.name.clone()).collect();
 
         // ── Phase 1: @method and @property tags (higher precedence) ─────

@@ -123,20 +123,26 @@ pub(super) fn cast_type_to_php_type(
             return format!("\\{clean}");
         }
 
-        // 7c. CastsAttributes / custom cast class — inspect `get()`.
-        if let Some(get_method) = cast_class.methods.iter().find(|m| m.name == "get")
-            && let Some(ref rt) = get_method.return_type
-        {
-            return rt.clone();
-        }
-
-        // 7d. Fallback: extract TGet from `@implements CastsAttributes<TGet, TSet>`.
-        //     When the `get()` method has no return type (native or docblock),
-        //     the type may be declared via the class-level `@implements`
-        //     annotation on the `CastsAttributes` interface.  The first
-        //     generic argument corresponds to `TGet`.
+        // 7c. `@implements CastsAttributes<TGet, TSet>` — the canonical
+        //     type declaration.  The class-level generic annotation is
+        //     the strongest signal because it is the developer's
+        //     explicit contract.  The `get()` method's return type is
+        //     an implementation detail that may be `mixed`, less
+        //     specific, or missing entirely.
         if let Some(tget) = extract_tget_from_implements_generics(&cast_class) {
             return tget;
+        }
+
+        // 7d. Fallback: inspect the `get()` method's return type.
+        //     When no `@implements` generics are declared, the concrete
+        //     return type on `get()` is the next best signal.  Skip
+        //     `mixed` — it carries no useful type information and is
+        //     the default native hint on the interface method.
+        if let Some(get_method) = cast_class.methods.iter().find(|m| m.name == "get")
+            && let Some(ref rt) = get_method.return_type
+            && rt != "mixed"
+        {
+            return rt.clone();
         }
     }
 

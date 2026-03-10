@@ -10,10 +10,12 @@ const COMPOSER_JSON: &str = r#"{
     "autoload": {
         "psr-4": {
             "App\\Models\\": "src/Models/",
+            "App\\Casts\\": "src/Casts/",
             "App\\Collections\\": "src/Collections/",
             "App\\Concerns\\": "src/Concerns/",
             "Database\\Factories\\": "database/factories/",
             "Illuminate\\Support\\": "vendor/illuminate/Support/",
+            "Illuminate\\Contracts\\Database\\Eloquent\\": "vendor/illuminate/Contracts/",
             "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
             "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
             "Illuminate\\Database\\Eloquent\\Factories\\": "vendor/illuminate/Eloquent/Factories/",
@@ -284,6 +286,31 @@ class Factory {
 ";
 
 /// Standard set of framework stub files that every test needs.
+///
+/// Note: `CastsAttributes` is intentionally NOT included here because
+/// several existing tests define their own version (with or without a
+/// native return type on `get()`).  Tests that need it should add the
+/// stub explicitly via the `CASTS_ATTRIBUTES_PHP` constant.
+const CASTS_ATTRIBUTES_PHP: &str = "\
+<?php
+namespace Illuminate\\Contracts\\Database\\Eloquent;
+/**
+ * @template TGet
+ * @template TSet
+ */
+interface CastsAttributes
+{
+    /**
+     * @param \\Illuminate\\Database\\Eloquent\\Model $model
+     * @param string $key
+     * @param mixed $value
+     * @param array<string, mixed> $attributes
+     * @return TGet|null
+     */
+    public function get($model, string $key, mixed $value, array $attributes): mixed;
+}
+";
+
 fn framework_stubs() -> Vec<(&'static str, &'static str)> {
     vec![
         ("vendor/illuminate/Eloquent/Model.php", MODEL_PHP),
@@ -9691,6 +9718,343 @@ class Customer extends Model {
     assert!(
         methods.contains(&"getDisplayName"),
         "first() after withTrashed() should return Customer with getDisplayName(), got: {:?}",
+        methods
+    );
+}
+
+// ─── PHPDoc @property overrides mixed from unresolvable cast ────────────────
+
+/// When a model declares `@property Decimal $vat` and the `$casts` entry
+/// for `vat` resolves to `mixed` (e.g. because the cast class is not
+/// loadable), the PHPDoc type should win.
+#[tokio::test]
+async fn test_phpdoc_property_overrides_mixed_from_unresolvable_cast() {
+    let setting_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+/**
+ * @property \\App\\Models\\Decimal $vat
+ */
+class Setting extends Model {
+    protected $casts = [
+        'vat' => 'UnresolvableCast',
+    ];
+    protected $fillable = [
+        'vat',
+    ];
+    public function test() {
+        $s = new Setting();
+        $s->vat->
+    }
+}
+";
+    let decimal_php = "\
+<?php
+namespace App\\Models;
+class Decimal {
+    public function toFloat(): float { return 0.0; }
+    public function format(int $decimals = 2): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Setting.php", setting_php),
+        ("src/Models/Decimal.php", decimal_php),
+    ]);
+
+    // "$s->vat->" at line 15, character 17
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Setting.php",
+        setting_php,
+        15,
+        17,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"toFloat"),
+        "PHPDoc @property Decimal should override mixed from unresolvable cast; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"format"),
+        "Should include format() from Decimal, got: {:?}",
+        methods
+    );
+}
+
+/// When a model declares `@property Decimal $is_active` and the `$casts`
+/// entry resolves to a specific type (e.g. `boolean` -> `bool`), the cast
+/// type should win because it reflects the runtime behaviour.
+#[tokio::test]
+async fn test_specific_cast_type_beats_phpdoc_property() {
+    let setting_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+/**
+ * @property \\App\\Models\\Decimal $is_active
+ */
+class Setting extends Model {
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+    public function test() {
+        $s = new Setting();
+        $s->
+    }
+}
+";
+    let decimal_php = "\
+<?php
+namespace App\\Models;
+class Decimal {
+    public function toFloat(): float { return 0.0; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Setting.php", setting_php),
+        ("src/Models/Decimal.php", decimal_php),
+    ]);
+
+    // "$s->" at line 12, character 12
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Setting.php",
+        setting_php,
+        12,
+        12,
+    )
+    .await;
+
+    // The is_active property should show type `bool` from the cast,
+    // not `Decimal` from @property.  The detail string contains the type.
+    let is_active = items
+        .iter()
+        .find(|i| {
+            i.kind == Some(CompletionItemKind::PROPERTY)
+                && i.filter_text.as_deref() == Some("is_active")
+        })
+        .expect("is_active should appear as a property on Setting");
+
+    let detail = is_active.detail.as_deref().unwrap_or("");
+    assert!(
+        detail.contains("bool"),
+        "Cast bool should beat @property Decimal — detail should contain 'bool', got: {:?}",
+        detail
+    );
+    assert!(
+        !detail.contains("Decimal"),
+        "Cast bool should beat @property Decimal — detail should not contain 'Decimal', got: {:?}",
+        detail
+    );
+}
+
+/// When a column comes only from $fillable (no cast, no @property),
+/// it should still appear as a property (typed `mixed`).  Adding a
+/// @property tag upgrades the type.
+#[tokio::test]
+async fn test_phpdoc_property_overrides_mixed_from_fillable() {
+    let setting_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+/**
+ * @property \\App\\Models\\Decimal $vat
+ */
+class Setting extends Model {
+    protected $fillable = [
+        'vat',
+    ];
+    public function test() {
+        $s = new Setting();
+        $s->vat->
+    }
+}
+";
+    let decimal_php = "\
+<?php
+namespace App\\Models;
+class Decimal {
+    public function toFloat(): float { return 0.0; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Setting.php", setting_php),
+        ("src/Models/Decimal.php", decimal_php),
+    ]);
+
+    // "$s->vat->" at line 12, character 17
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Setting.php",
+        setting_php,
+        12,
+        17,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"toFloat"),
+        "PHPDoc @property Decimal should override mixed from $fillable, got: {:?}",
+        methods
+    );
+}
+
+// ─── Custom cast class with @implements CastsAttributes<TGet> ───────────────
+
+/// When a model uses a custom cast class that declares
+/// `@implements CastsAttributes<Decimal, Decimal>`, the property type
+/// should resolve to `Decimal` (the TGet argument) even when the cast
+/// class has no explicit `get()` return type.
+#[tokio::test]
+async fn test_custom_cast_class_implements_generics_resolves_tget() {
+    let cast_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Contracts\\Database\\Eloquent\\CastsAttributes;
+use App\\Models\\Decimal;
+/**
+ * @implements CastsAttributes<Decimal, Decimal>
+ */
+class DecimalCast implements CastsAttributes
+{
+    public function get($model, string $key, mixed $value, array $attributes): mixed
+    {
+        return new Decimal();
+    }
+}
+";
+    let setting_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use App\\Casts\\DecimalCast;
+class Setting extends Model {
+    protected $casts = [
+        'vat' => DecimalCast::class,
+    ];
+    public function test() {
+        $s = new Setting();
+        $s->vat->
+    }
+}
+";
+    let decimal_php = "\
+<?php
+namespace App\\Models;
+class Decimal {
+    public function toFloat(): float { return 0.0; }
+    public function format(int $decimals = 2): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Decimal.php", decimal_php),
+        ("src/Casts/DecimalCast.php", cast_php),
+        ("src/Models/Setting.php", setting_php),
+        (
+            "vendor/illuminate/Contracts/CastsAttributes.php",
+            CASTS_ATTRIBUTES_PHP,
+        ),
+    ]);
+
+    // "$s->vat->" at line 10, character 17
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Setting.php",
+        setting_php,
+        10,
+        17,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"toFloat"),
+        "Cast @implements CastsAttributes<Decimal, Decimal> should resolve vat to Decimal; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"format"),
+        "Should include format() from Decimal; got: {:?}",
+        methods
+    );
+}
+
+/// Same as above but using the `DecimalCast::class . ':8:2'` concatenation
+/// syntax that is common in real-world Laravel code.
+#[tokio::test]
+async fn test_custom_cast_class_with_concat_argument_resolves_tget() {
+    let decimal_php = "\
+<?php
+namespace App\\Models;
+class Decimal {
+    public function toFloat(): float { return 0.0; }
+}
+";
+    let cast_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Contracts\\Database\\Eloquent\\CastsAttributes;
+use App\\Models\\Decimal;
+/**
+ * @implements CastsAttributes<Decimal, Decimal>
+ */
+class DecimalCast implements CastsAttributes
+{
+    public function get($model, string $key, mixed $value, array $attributes): mixed
+    {
+        return new Decimal();
+    }
+}
+";
+    let setting_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use App\\Casts\\DecimalCast;
+class Setting extends Model {
+    protected $casts = [
+        'vat' => DecimalCast::class . ':8:2',
+    ];
+    public function test() {
+        $s = new Setting();
+        $s->vat->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Decimal.php", decimal_php),
+        ("src/Casts/DecimalCast.php", cast_php),
+        ("src/Models/Setting.php", setting_php),
+        (
+            "vendor/illuminate/Contracts/CastsAttributes.php",
+            CASTS_ATTRIBUTES_PHP,
+        ),
+    ]);
+
+    // "$s->vat->" at line 10, character 17
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Setting.php",
+        setting_php,
+        10,
+        17,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"toFloat"),
+        "Cast DecimalCast::class.':8:2' should resolve vat to Decimal via @implements; got: {:?}",
         methods
     );
 }
