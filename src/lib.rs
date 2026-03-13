@@ -76,6 +76,7 @@ use tower_lsp::Client;
 
 pub mod classmap_scanner;
 mod code_actions;
+mod code_lens;
 pub mod completion;
 pub mod composer;
 pub mod config;

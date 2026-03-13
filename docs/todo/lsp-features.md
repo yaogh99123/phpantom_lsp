@@ -222,42 +222,6 @@ can reject a rename before the user types a new name).
 
 ---
 
-## 8. Code Lens: jump to prototype method
-**Impact: Low · Effort: Low**
-
-When a method overrides a parent class method or implements an interface
-method, show a code lens above the method declaration linking to the
-prototype (base) method. Clicking the lens navigates to the parent/
-interface declaration.
-
-**Why only this one code lens:** Most code lens features (reference
-counts, implementation counts, trait usage counts) require scanning the
-entire workspace, which conflicts with our lazy-loading design. But
-"jump to prototype" only needs the class hierarchy of the *current*
-class — data we already fully resolve via `resolve_class_with_inheritance`.
-
-### Implementation
-
-1. **Register the capability** — set `code_lens_provider: Some(CodeLensOptions { resolve_provider: Some(false) })` in `ServerCapabilities`.
-
-2. **Handler:** For each method in the file's AST:
-   - Resolve the enclosing class via `find_or_load_class`.
-   - Walk the inheritance chain (parent classes, then interfaces) to
-     find a method with the same name.
-   - If found, emit a `CodeLens` with the method's declaration range
-     and a `Command` that triggers go-to-definition for the parent
-     method's location.
-   - Label: `↑ ParentClass::methodName` or `◆ InterfaceName::methodName`.
-
-3. **Performance:** Only process the current file's methods. The class
-   loader cache means parent lookups are fast. For a file with 20
-   methods, this is 20 cache lookups — negligible.
-
-**Future expansion:** If/when Find References ships and proves fast
-enough for interactive use, reference count lenses could be added
-behind a config flag. But the prototype lens stands alone without
-that dependency.
-
 ---
 
 ## 9. Inlay hints (`textDocument/inlayHint`)

@@ -2320,6 +2320,23 @@ class ParamClosureThisDemo
 }
 
 
+// ── Code Lens: prototype method annotations ─────────────────────────────────
+// Open this class and look at the gutter above each method. PHPantom shows
+// clickable annotations ("↑ ParentClass::method" or "◆ Interface::method")
+// that navigate to the parent/interface declaration.
+class CodeLensDemo extends ScaffoldingAbstractShape implements ScaffoldingDrawable
+{
+    // ↑ ScaffoldingAbstractShape::area  — click to jump to abstract declaration
+    public function area(): float { return 3.14; }
+
+    // ↑ ScaffoldingAbstractShape::perimeter
+    protected function perimeter(): float { return 6.28; }
+
+    // ◆ ScaffoldingDrawable::draw  — interface implementations use ◆
+    public function draw(string $color, float $opacity = 1.0): void {}
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃

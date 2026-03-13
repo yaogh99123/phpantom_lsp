@@ -23,7 +23,7 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | Document symbols / outline | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Folding ranges | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Formatting | ❌ | ✅ | ✅ | 🧩 | ✅ |
-| Code lens | ❌ | 💰 | ✅ | ❌ | ✅ |
+| Code lens | ✅ | 💰 | ✅ | ❌ | ✅ |
 | Inlay hints | ❌ | 💰 | ❌ | ❌ | ✅ |
 | **Type Intelligence** | | | | | |
 | Generics / `@template` | ✅ | 🚧 | ✅ | 🚧 | ✅ |

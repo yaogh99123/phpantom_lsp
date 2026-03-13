@@ -100,6 +100,9 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -427,6 +430,13 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.to_string();
         self.handle_with_uri("folding_range", &uri, |content| {
             self.handle_folding_range(content)
+        })
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = params.text_document.uri.to_string();
+        self.handle_with_uri("code_lens", &uri, |content| {
+            self.handle_code_lens(&uri, content)
         })
     }
 }

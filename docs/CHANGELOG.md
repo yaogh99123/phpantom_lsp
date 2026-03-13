@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Document Symbols.** The outline sidebar and breadcrumbs now show classes, interfaces, traits, enums, methods, properties, constants, and standalone functions with correct nesting, icons, visibility detail, and deprecation tags.
 - **Workspace Symbols.** "Go to Symbol in Workspace" (Ctrl+T / Cmd+T) searches classes, interfaces, traits, enums, functions, and constants across all indexed files. Vendor classes from the Composer classmap and discovered classes from the class index are included when a query is provided. Results include namespace context and deprecation markers.
 - **Folding Ranges.** AST-aware code folding for class bodies, method/function bodies, closures, arrays, argument/parameter lists, if/else/switch/match/try/catch/finally blocks, doc comments, and consecutive single-line comment groups.
+- **Code Lens.** Clickable annotations above methods that override a parent class method or implement an interface method. Clicking navigates to the prototype declaration. Parent/trait overrides show "↑ ClassName::method", interface implementations show "◆ InterfaceName::method".
 
 ### Changed
 

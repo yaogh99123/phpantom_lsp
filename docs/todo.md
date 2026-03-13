@@ -150,7 +150,6 @@ code action polish.
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
 | — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
-| 32 | Code Lens: jump to prototype method | Low | LSP Features | [lsp-features.md §8](todo/lsp-features.md#8-code-lens-jump-to-prototype-method) |
 | 34 | Document Links (`textDocument/documentLink`) | Low | LSP Features | [lsp-features.md §15](todo/lsp-features.md#15-document-links-textdocumentdocumentlink) |
 | 39 | Simplify with null coalescing / null-safe operator (code action) | Medium | Code Actions | [actions.md §2](todo/actions.md#2-simplify-with-null-coalescing--null-safe-operator) |
 | 110 | Update docblock to match signature | Medium | Code Actions | [actions.md §11](todo/actions.md#11-update-docblock-to-match-signature) |
