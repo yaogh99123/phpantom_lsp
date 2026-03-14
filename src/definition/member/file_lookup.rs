@@ -5,6 +5,8 @@
 //! `resolve_member_definition_with` after the declaring class has been
 //! identified by the `declaring` module.
 
+use std::sync::Arc;
+
 use tower_lsp::lsp_types::Position;
 
 use crate::Backend;
@@ -74,7 +76,7 @@ impl Backend {
             // `file_namespace` field first (correct for multi-namespace
             // files like example.php), falling back to the file-level
             // `namespace_map` for single-namespace files.
-            let class_in_file = |file_uri: &str, classes: &[ClassInfo]| -> bool {
+            let class_in_file = |file_uri: &str, classes: &[Arc<ClassInfo>]| -> bool {
                 match expected_ns {
                     None => classes.iter().any(|c| c.name == last_segment),
                     Some(exp) => {

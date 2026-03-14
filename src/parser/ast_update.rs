@@ -7,6 +7,7 @@
 /// helpers (`resolve_parent_class_names`, `resolve_name`) used to convert
 /// short class names to fully-qualified names.
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::docblock::types::is_scalar;
 use crate::symbol_map::extract_symbol_map;
@@ -290,7 +291,11 @@ impl Backend {
             .ast_map
             .read()
             .get(&uri_string)
-            .cloned()
+            .map(|v| {
+                v.iter()
+                    .map(|c| crate::types::ClassInfo::clone(c))
+                    .collect()
+            })
             .unwrap_or_default();
         let old_fqns: Vec<String> = old_classes_snapshot
             .iter()
@@ -338,7 +343,7 @@ impl Backend {
                 idx.insert(fqn.clone(), uri_string.clone());
                 // The `classes` vec already has `file_namespace` set,
                 // so use it for the fqn_index entry.
-                fqn_idx.insert(fqn, classes[i].clone());
+                fqn_idx.insert(fqn, Arc::new(classes[i].clone()));
             }
         }
 
@@ -346,7 +351,10 @@ impl Backend {
         // This must happen before the `Program` (and its arena) are dropped.
         let symbol_map = std::sync::Arc::new(extract_symbol_map(program, content));
 
-        self.ast_map.write().insert(uri_string.clone(), classes);
+        self.ast_map.write().insert(
+            uri_string.clone(),
+            classes.into_iter().map(Arc::new).collect(),
+        );
         self.symbol_maps
             .write()
             .insert(uri_string.clone(), symbol_map);

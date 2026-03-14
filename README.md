@@ -3,7 +3,7 @@
 A fast, lightweight PHP language server written in Rust. Ready in seconds, uses a fraction of the RAM other language servers need, and stays responsive throughout. No indexing phase, no waiting.
 
 > [!NOTE]
-> PHPantom is in active development. The core editing features are solid and used daily on production codebases. Extract Function, formatting proxy, and broader refactoring tools are still on the roadmap.
+> PHPantom is in active development. The core editing features are solid and used daily on production codebases. Extract Function and broader refactoring tools are still on the roadmap.
 
 ## Features
 
@@ -13,35 +13,38 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 |---|---|---|---|---|---|
 | **Core LSP** | | | | | |
 | Common LSP features<sup>1</sup> | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Rename | ✅ | 💰 | ✅ | ✅ | ✅ |
+| Rename | ✅ | 💰 | 💰 | ✅ | ✅ |
 | Auto-import | ✅ | 💰 | ✅ | ✅ | ✅ |
 | Go-to-implementation | ✅ | 💰 | ❌ | ✅ | ✅ |
 | Go-to-type-definition | ✅ | 💰 | ✅ | ✅ | ✅ |
 | Workspace symbols | 🚧 | ✅ | ✅ | ✅ | ✅ |
-| Folding ranges | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Formatting | ❌ | ✅ | ✅ | 🧩 | ✅ |
+| Smart select | ✅ | 💰 | ✅ | ✅ | ✅ |
+| Folding ranges | ✅ | 💰 | ✅ | ❌ | ✅ |
+| Formatting | 🧩 | ✅ | ✅ | 🧩 | ✅ |
 | Code lens | ✅ | 💰 | ✅ | ❌ | ✅ |
-| Inlay hints | ❌ | 💰 | ❌ | ❌ | ✅ |
+| Inlay hints | ❌ | 💰 | ✅ | ❌ | ✅ |
+| Type hierarchy | ❌ | 💰 | ❌ | ❌ | ✅ |
+| Document links | ❌ | 💰 | ❌ | ❌ | ✅ |
 | **Type Intelligence** | | | | | |
 | Generics / `@template` | ✅ | 🚧 | ✅ | 🚧 | ✅ |
 | `@mixin` completion | ✅ | 💰 | ✅ | ✅ | 🚧 |
-| Array / object shapes | ✅ | ❌ | ✅ | 🚧 | 🚧 |
+| Array / object shapes | ✅ | ✅ | ✅ | 🚧 | 🚧 |
 | PHPStan types | ✅ | ❌ | 🚧 | 🚧 | 🚧 |
 | Conditional return types | ✅ | ❌ | ✅ | 🚧 | ❌ |
 | Closure parameter inference | ✅ | 🚧 | 🚧 | 🚧 | ❌ |
 | Laravel Eloquent | ✅ | ❌ | 🚧 | ❌ | 🧩 |
 | **Refactoring** | | | | | |
-| Implement interface methods | ✅ | ❌ | ✅ | ✅ | ✅ |
-| Extract method / function | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Extract / inline variable | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Generate getter / setter | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Implement interface methods | ✅ | ❌ | 💰 | ✅ | ✅ |
+| Extract method / function | ❌ | ❌ | 💰 | ✅ | ✅ |
+| Extract / inline variable | ❌ | ❌ | 💰 | ✅ | ✅ |
+| Generate getter / setter | ❌ | ❌ | 💰 | ✅ | ✅ |
 | **Performance** | | | | | |
 | Time to ready | < 1 s | 1 min 25 s | 3 min 17 s | 15 min 39 s | 19 min 38 s |
 | RAM usage | 21 MB | 520 MB | 3.9 GB | 498 MB | 2.0 GB |
 | Disk cache | 0 | 45 MB | 0 | 4.1 GB | 551 MB |
 
 <sub>🚧 = partial support. 🧩 = requires plugin. 💰 = paid tier.</sub>
-<sub><sup>1</sup> Completion, hover, signature help, go-to-definition, find references, diagnostics, document symbols, selection ranges.</sub>
+<sub><sup>1</sup> Completion, hover, signature help, go-to-definition, find references, diagnostics, document symbols.</sub>
 <sub>Performance measured on a production codebase: 21K PHP files, 1.5M lines of code (vendor + application).</sub>
 
 > **Want to verify?** Open [`example.php`](example.php) in your editor and trigger completion at the marked locations. It exercises every type intelligence feature in the table, including edge cases where tools diverge.

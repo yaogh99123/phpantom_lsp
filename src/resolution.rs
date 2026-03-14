@@ -33,6 +33,7 @@
 ///   - Unqualified names resolved via the import table or current namespace
 ///   - Qualified names with alias expansion and namespace prefixing
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use std::path::Path;
 
@@ -80,11 +81,9 @@ impl Backend {
         // classes end up in the classmap, giving complete coverage.
         if let Some(file_path) = self.classmap.read().get(class_name).cloned()
             && let Some(classes) = self.parse_and_cache_file(&file_path)
+            && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
         {
-            let result = classes.iter().find(|c| c.name == last_segment).cloned();
-            if result.is_some() {
-                return result;
-            }
+            return Some(ClassInfo::clone(cls));
         }
 
         // ── Phase 2: Try PSR-4 resolution ──
@@ -100,11 +99,9 @@ impl Backend {
             };
             if let Some(file_path) = file_path
                 && let Some(classes) = self.parse_and_cache_file(&file_path)
+                && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
             {
-                let result = classes.iter().find(|c| c.name == last_segment).cloned();
-                if result.is_some() {
-                    return result;
-                }
+                return Some(ClassInfo::clone(cls));
             }
         }
 
@@ -124,11 +121,9 @@ impl Backend {
             let ver = Some(self.php_version());
             if let Some(classes) =
                 self.parse_and_cache_content_versioned(stub_content, &stub_uri, ver)
+                && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
             {
-                let result = classes.iter().find(|c| c.name == last_segment).cloned();
-                if result.is_some() {
-                    return result;
-                }
+                return Some(ClassInfo::clone(cls));
             }
         }
 
@@ -142,7 +137,7 @@ impl Backend {
     /// the file and derives a `file://` URI from the path.  Used by
     /// [`find_or_load_class`] (Phases 1.5 and 2) and by the
     /// go-to-implementation scanner.
-    pub(crate) fn parse_and_cache_file(&self, file_path: &Path) -> Option<Vec<ClassInfo>> {
+    pub(crate) fn parse_and_cache_file(&self, file_path: &Path) -> Option<Vec<Arc<ClassInfo>>> {
         let content = std::fs::read_to_string(file_path).ok()?;
         let uri = format!("file://{}", file_path.display());
         self.parse_and_cache_content(&content, &uri)
@@ -160,7 +155,7 @@ impl Backend {
         &self,
         content: &str,
         uri: &str,
-    ) -> Option<Vec<ClassInfo>> {
+    ) -> Option<Vec<Arc<ClassInfo>>> {
         self.parse_and_cache_content_versioned(content, uri, None)
     }
 
@@ -195,7 +190,7 @@ impl Backend {
         content: &str,
         uri: &str,
         php_version: Option<PhpVersion>,
-    ) -> Option<Vec<ClassInfo>> {
+    ) -> Option<Vec<Arc<ClassInfo>>> {
         let mut classes = Self::parse_php_versioned(content, php_version);
         let file_use_map = self.parse_use_statements(content);
         let file_namespace = self.parse_namespace(content);
@@ -211,7 +206,12 @@ impl Backend {
             }
         }
 
-        self.ast_map.write().insert(uri.to_owned(), classes.clone());
+        // Wrap each ClassInfo in Arc before inserting into the maps.
+        let arc_classes: Vec<Arc<ClassInfo>> = classes.into_iter().map(Arc::new).collect();
+
+        self.ast_map
+            .write()
+            .insert(uri.to_owned(), arc_classes.clone());
         self.use_map.write().insert(uri.to_owned(), file_use_map);
         self.namespace_map
             .write()
@@ -221,7 +221,7 @@ impl Backend {
         // resolve these classes via O(1) hash lookup.
         {
             let mut fqn_idx = self.fqn_index.write();
-            for cls in &classes {
+            for cls in &arc_classes {
                 if cls.name.starts_with("__anonymous@") {
                     continue;
                 }
@@ -229,7 +229,7 @@ impl Backend {
                     Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
                     _ => cls.name.clone(),
                 };
-                fqn_idx.insert(fqn, cls.clone());
+                fqn_idx.insert(fqn, Arc::clone(cls));
             }
         }
 
@@ -241,7 +241,7 @@ impl Backend {
         // without the members we just loaded.
         {
             let mut cache = self.resolved_class_cache.lock();
-            for cls in &classes {
+            for cls in &arc_classes {
                 let fqn = match &cls.file_namespace {
                     Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
                     _ => cls.name.clone(),
@@ -250,7 +250,7 @@ impl Backend {
             }
         }
 
-        Some(classes)
+        Some(arc_classes)
     }
 
     /// Try to find a standalone function by name, checking user-defined
@@ -393,7 +393,9 @@ impl Backend {
                     let stub_namespace = self.parse_namespace(stub_content);
                     Self::resolve_parent_class_names(&mut classes, &empty_use_map, &stub_namespace);
                     let class_uri = format!("phpantom-stub-fn://{}", name);
-                    self.ast_map.write().insert(class_uri, classes);
+                    let arc_classes: Vec<Arc<ClassInfo>> =
+                        classes.into_iter().map(Arc::new).collect();
+                    self.ast_map.write().insert(class_uri, arc_classes);
                 }
 
                 if result.is_some() {

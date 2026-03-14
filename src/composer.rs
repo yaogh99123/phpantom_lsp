@@ -100,6 +100,22 @@ pub(crate) fn get_vendor_dir(composer_json: &serde_json::Value) -> String {
         .unwrap_or_else(|| "vendor".to_string())
 }
 
+/// Read the configured bin directory from a parsed `composer.json` value.
+///
+/// Looks at `config.bin-dir`; defaults to `"<vendor-dir>/bin"` when absent,
+/// where `<vendor-dir>` is itself resolved via [`get_vendor_dir`].
+pub(crate) fn get_bin_dir(composer_json: &serde_json::Value) -> String {
+    if let Some(explicit) = composer_json
+        .get("config")
+        .and_then(|c| c.get("bin-dir"))
+        .and_then(|v| v.as_str())
+    {
+        explicit.trim_end_matches('/').to_string()
+    } else {
+        format!("{}/bin", get_vendor_dir(composer_json))
+    }
+}
+
 /// Parse `<vendor>/composer/autoload_classmap.php` and return a mapping
 /// from fully-qualified class name to file path (relative to the workspace
 /// root).
@@ -558,4 +574,68 @@ pub fn detect_php_version(workspace_root: &Path) -> Option<PhpVersion> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── get_vendor_dir ──────────────────────────────────────────────
+
+    #[test]
+    fn vendor_dir_default() {
+        let json: serde_json::Value = serde_json::from_str("{}").unwrap();
+        assert_eq!(get_vendor_dir(&json), "vendor");
+    }
+
+    #[test]
+    fn vendor_dir_explicit() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"config": {"vendor-dir": "lib"}}"#).unwrap();
+        assert_eq!(get_vendor_dir(&json), "lib");
+    }
+
+    #[test]
+    fn vendor_dir_strips_trailing_slash() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"config": {"vendor-dir": "lib/"}}"#).unwrap();
+        assert_eq!(get_vendor_dir(&json), "lib");
+    }
+
+    // ── get_bin_dir ─────────────────────────────────────────────────
+
+    #[test]
+    fn bin_dir_default_follows_vendor_dir() {
+        let json: serde_json::Value = serde_json::from_str("{}").unwrap();
+        assert_eq!(get_bin_dir(&json), "vendor/bin");
+    }
+
+    #[test]
+    fn bin_dir_default_with_custom_vendor_dir() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"config": {"vendor-dir": "lib"}}"#).unwrap();
+        assert_eq!(get_bin_dir(&json), "lib/bin");
+    }
+
+    #[test]
+    fn bin_dir_explicit() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"config": {"bin-dir": "bin"}}"#).unwrap();
+        assert_eq!(get_bin_dir(&json), "bin");
+    }
+
+    #[test]
+    fn bin_dir_explicit_overrides_vendor_dir() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"config": {"vendor-dir": "lib", "bin-dir": "tools/bin"}}"#)
+                .unwrap();
+        assert_eq!(get_bin_dir(&json), "tools/bin");
+    }
+
+    #[test]
+    fn bin_dir_strips_trailing_slash() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"config": {"bin-dir": "bin/"}}"#).unwrap();
+        assert_eq!(get_bin_dir(&json), "bin");
+    }
 }

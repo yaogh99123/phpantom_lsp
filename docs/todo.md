@@ -44,14 +44,13 @@ feature surface grows.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 100 | Formatting proxy (`textDocument/formatting`) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
-| 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |
-| 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
+| 40 | Inlay hints (`textDocument/inlayHint`) | Medium | LSP Features | [lsp-features.md §9](todo/lsp-features.md#9-inlay-hints-textdocumentinlayhint) |
+| 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) — propagate through APIs | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 
 **After Sprint 3:** PHPantom feels like a complete LSP to everyday
 users. Outline, breadcrumbs, workspace search, semantic highlighting,
-folding, formatting, and smart select all work. No one says "it's
-missing X" for basic editing workflows.
+folding, formatting, inlay hints, and smart select all work. No one
+says "it's missing X" for basic editing workflows.
 
 ---
 
@@ -84,25 +83,23 @@ actions.
 
 These items close the gaps that PHPStorm and VS Code + Intelephense
 users at the office would notice. PHPDoc generation is the most
-common "where did that go?" moment. Inlay hints are high-visibility
-in VS Code. The implementation error diagnostic reuses existing code
-action logic and pairs with the quick-fix. File rename on class
-rename removes a friction point that Intelephense premium users
-expect.
+common "where did that go?" moment. The implementation error
+diagnostic reuses existing code action logic and pairs with the
+quick-fix. File rename on class rename removes a friction point that
+Intelephense premium users expect.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
 | — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 24 | PHPDoc block generation on `/**` | Medium | LSP Features | [lsp-features.md §3](todo/lsp-features.md#3-phpdoc-block-generation-on-) |
-| 40 | Inlay hints (`textDocument/inlayHint`) | Medium | LSP Features | [lsp-features.md §9](todo/lsp-features.md#9-inlay-hints-textdocumentinlayhint) |
 | 102 | Implementation error diagnostic | Medium | Diagnostics | [diagnostics.md §9](todo/diagnostics.md#9-implementation-error-diagnostic) |
 | 99 | File rename on class rename | Medium | LSP Features | [lsp-features.md §20](todo/lsp-features.md#20-file-rename-on-class-rename) |
 | 103 | Stub extension selection (`[stubs] extensions`) | Low | Configuration | [config.md §stubs](todo/config.md#extension-stub-selection) |
 
 **After Sprint 5:** PHPantom is ready for office colleagues. They
-get PHPDoc generation, inlay hints, and the diagnostics they're used
-to. Nobody switching from Intelephense (free or premium) feels like
-they lost more than they gained.
+get PHPDoc generation and the diagnostics they're used to. Nobody
+switching from Intelephense (free or premium) feels like they lost
+more than they gained.
 
 ---
 
@@ -243,6 +240,7 @@ eventually but don't move the needle.
 | 108 | O(n²) transitive eviction in `evict_fqn` | Low | Performance | [performance.md §12](todo/performance.md#12-on²-transitive-eviction-in-evict_fqn) |
 | 109 | `diag_pending_uris` uses `Vec::contains` for dedup | Low | Performance | [performance.md §13](todo/performance.md#13-diag_pending_uris-uses-veccontains-for-deduplication) |
 | 110 | `find_class_in_ast_map` linear fallback scan | Low | Performance | [performance.md §14](todo/performance.md#14-find_class_in_ast_map-linear-fallback-scan) |
+| 113 | Granular progress reporting for indexing, GTI, and Find References | Medium | Indexing | [indexing.md §5.5](todo/indexing.md#phase-55-granular-progress-reporting) |
 
 ### External stubs
 

@@ -93,6 +93,7 @@ pub mod diagnostics;
 pub mod docblock;
 mod document_symbols;
 mod folding;
+mod formatting;
 mod highlight;
 mod hover;
 pub(crate) mod inheritance;
@@ -156,7 +157,7 @@ pub struct Backend {
     pub(crate) version: String,
     pub(crate) open_files: Arc<RwLock<HashMap<String, Arc<String>>>>,
     /// Maps a file URI to a list of ClassInfo extracted from that file.
-    pub(crate) ast_map: Arc<RwLock<HashMap<String, Vec<ClassInfo>>>>,
+    pub(crate) ast_map: Arc<RwLock<HashMap<String, Vec<Arc<ClassInfo>>>>>,
     /// Per-file precomputed symbol location maps for O(log n) lookup.
     ///
     /// Built during `update_ast` by walking the AST and recording every
@@ -249,7 +250,7 @@ pub struct Backend {
     /// O(1) hash lookup instead of scanning all files in `ast_map`.
     /// Maintained alongside `class_index` in `update_ast_inner` and
     /// `parse_and_cache_content_versioned`.
-    pub(crate) fqn_index: Arc<RwLock<HashMap<String, ClassInfo>>>,
+    pub(crate) fqn_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
     /// Composer classmap: fully-qualified class name → file path on disk.
     ///
     /// Parsed from `<vendor>/composer/autoload_classmap.php` during server
@@ -547,6 +548,8 @@ impl Backend {
     /// moved into the `tokio::spawn`-ed diagnostic worker task while
     /// still observing every mutation the "real" `Backend` makes to
     /// the shared `Arc<Mutex<…>>` maps.
+    ///
+    /// Also used by [`clone_for_blocking`](Self::clone_for_blocking).
     pub(crate) fn clone_for_diagnostic_worker(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -582,6 +585,15 @@ impl Backend {
             diag_last_slow: Arc::clone(&self.diag_last_slow),
             config: Mutex::new(self.config.lock().clone()),
         }
+    }
+
+    /// Cheap clone that shares all `Arc`-wrapped state with the original.
+    ///
+    /// Used by `goto_implementation` and `references` to move the
+    /// blocking sync work onto a `spawn_blocking` thread while keeping
+    /// the async runtime free to flush progress notifications.
+    pub(crate) fn clone_for_blocking(&self) -> Self {
+        self.clone_for_diagnostic_worker()
     }
 
     /// Return the current project configuration.

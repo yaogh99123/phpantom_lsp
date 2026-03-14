@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Formatting.** `textDocument/formatting` proxies to php-cs-fixer and phpcbf (both can run in sequence). Auto-detects tools via Composer's configured bin directory, then `$PATH`. Per-tool command overrides and disable switches in `[formatting]` in `.phpantom.toml`.
+- **Progress indicators.** Go to Implementation and Find References now show a progress indicator in the editor while scanning.
 - **Selection Ranges.** Smart select / expand selection returns AST-aware nested ranges from innermost to outermost (identifier, expression, statement, block, function, class, file).
 - **Argument count diagnostic.** Flags function and method calls that pass too few or too many arguments. Variadic parameters and argument unpacking are handled correctly.
 - **Document Symbols.** The outline sidebar and breadcrumbs now show classes, interfaces, traits, enums, methods, properties, constants, and standalone functions with correct nesting, icons, visibility detail, and deprecation tags.

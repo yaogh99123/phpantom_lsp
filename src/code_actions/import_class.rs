@@ -41,7 +41,16 @@ impl Backend {
             None => return,
         };
 
-        let local_classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let local_classes: Vec<crate::types::ClassInfo> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|v| {
+                v.iter()
+                    .map(|c| crate::types::ClassInfo::clone(c))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Convert LSP range to byte offsets for comparison with symbol spans.
         let request_start = position_to_offset(content, params.range.start);

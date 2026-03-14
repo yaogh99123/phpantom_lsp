@@ -59,8 +59,12 @@ impl Backend {
 
         let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
 
-        let local_classes: Vec<ClassInfo> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let local_classes: Vec<ClassInfo> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
+            .unwrap_or_default();
 
         // ── Collect type alias names from local classes ──────────────────
         // `@phpstan-type` / `@psalm-type` / `@phpstan-import-type` aliases

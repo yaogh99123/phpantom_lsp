@@ -22,6 +22,8 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
     /// Indexing strategy and file discovery settings.
     pub indexing: IndexingConfig,
+    /// Formatting proxy settings.
+    pub formatting: FormattingConfig,
 }
 
 /// `[php]` section — PHP version override.
@@ -55,6 +57,54 @@ impl DiagnosticsConfig {
     /// Defaults to `false` (off) when not explicitly set.
     pub fn unresolved_member_access_enabled(&self) -> bool {
         self.unresolved_member_access.unwrap_or(false)
+    }
+}
+
+/// `[formatting]` section — controls the external formatting proxy.
+///
+/// PHPantom does not ship a formatter. Instead, it proxies
+/// `textDocument/formatting` requests to external tools.  Both tools
+/// can run in sequence: php-cs-fixer first, then phpcbf.
+///
+/// Each tool has its own command setting.  When unset (`None`),
+/// PHPantom auto-detects via `vendor/bin/<tool>` then `$PATH`.
+/// Set to `""` (empty string) to explicitly disable a tool.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FormattingConfig {
+    /// Command (path or name) to run php-cs-fixer.
+    ///
+    /// - `None` (default) — auto-detect `vendor/bin/php-cs-fixer`,
+    ///   then `php-cs-fixer` on `$PATH`.
+    /// - `""` — disable php-cs-fixer.
+    /// - Any other value — use as the command (e.g.
+    ///   `"/usr/local/bin/php-cs-fixer"` or `"php-cs-fixer"`).
+    #[serde(rename = "php-cs-fixer")]
+    pub php_cs_fixer: Option<String>,
+    /// Command (path or name) to run phpcbf.
+    ///
+    /// - `None` (default) — auto-detect `vendor/bin/phpcbf`, then
+    ///   `phpcbf` on `$PATH`.
+    /// - `""` — disable phpcbf.
+    /// - Any other value — use as the command.
+    pub phpcbf: Option<String>,
+    /// Maximum runtime in milliseconds before each formatter is killed.
+    /// Defaults to 10 000 ms (10 seconds).  Applied per tool, not
+    /// for the combined pipeline.
+    pub timeout: Option<u64>,
+}
+
+impl FormattingConfig {
+    /// Return the configured timeout in milliseconds, falling back to
+    /// 10 000 ms when unset.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout.unwrap_or(10_000)
+    }
+
+    /// Whether formatting is entirely disabled (both tools explicitly
+    /// set to empty strings).
+    pub fn is_disabled(&self) -> bool {
+        self.php_cs_fixer.as_deref() == Some("") && self.phpcbf.as_deref() == Some("")
     }
 }
 
@@ -163,6 +213,16 @@ pub const DEFAULT_CONFIG_CONTENT: &str = r#"# PHPantom project configuration
 #   "full"    - background-parse all project files (not yet implemented)
 #   "none"    - no proactive scanning, Composer classmap only
 # strategy = "composer"
+
+[formatting]
+# External formatter proxy. PHPantom delegates textDocument/formatting
+# to external tools. Both can run in sequence (php-cs-fixer first,
+# then phpcbf). When unset, each tool is auto-detected via
+# vendor/bin/<tool> then $PATH. Set to "" to disable a tool.
+# php-cs-fixer = "vendor/bin/php-cs-fixer"
+# phpcbf = ""
+# Maximum runtime in milliseconds per tool (default 10000).
+# timeout = 10000
 "#;
 
 /// Create a default `.phpantom.toml` in the given workspace root.
@@ -282,6 +342,10 @@ mod tests {
         assert!(config.php.version.is_none());
         assert!(!config.diagnostics.unresolved_member_access_enabled());
         assert_eq!(config.indexing.strategy, IndexingStrategy::Composer);
+        assert!(config.formatting.php_cs_fixer.is_none());
+        assert!(config.formatting.phpcbf.is_none());
+        assert!(config.formatting.timeout.is_none());
+        assert_eq!(config.formatting.timeout_ms(), 10_000);
     }
 
     #[test]
@@ -291,6 +355,8 @@ mod tests {
         assert!(config.php.version.is_none());
         assert!(!config.diagnostics.unresolved_member_access_enabled());
         assert_eq!(config.indexing.strategy, IndexingStrategy::Composer);
+        assert!(config.formatting.php_cs_fixer.is_none());
+        assert!(config.formatting.phpcbf.is_none());
     }
 
     #[test]
@@ -302,6 +368,8 @@ mod tests {
         assert!(config.php.version.is_none());
         assert!(!config.diagnostics.unresolved_member_access_enabled());
         assert_eq!(config.indexing.strategy, IndexingStrategy::Composer);
+        assert!(config.formatting.php_cs_fixer.is_none());
+        assert!(config.formatting.phpcbf.is_none());
     }
 
     #[test]
@@ -384,6 +452,11 @@ unresolved-member-access = true
 
 [indexing]
 strategy = "self"
+
+[formatting]
+php-cs-fixer = ""
+phpcbf = "/usr/local/bin/phpcbf"
+timeout = 5000
 "#,
         )
         .unwrap();
@@ -391,6 +464,12 @@ strategy = "self"
         assert_eq!(config.php.version.as_deref(), Some("8.2"));
         assert!(config.diagnostics.unresolved_member_access_enabled());
         assert_eq!(config.indexing.strategy, IndexingStrategy::SelfScan);
+        assert_eq!(config.formatting.php_cs_fixer.as_deref(), Some(""));
+        assert_eq!(
+            config.formatting.phpcbf.as_deref(),
+            Some("/usr/local/bin/phpcbf")
+        );
+        assert_eq!(config.formatting.timeout_ms(), 5000);
     }
 
     #[test]
@@ -453,5 +532,65 @@ strategy = "self"
         assert_eq!(IndexingStrategy::SelfScan.to_string(), "self");
         assert_eq!(IndexingStrategy::Full.to_string(), "full");
         assert_eq!(IndexingStrategy::None.to_string(), "none");
+    }
+
+    #[test]
+    fn parses_formatting_php_cs_fixer_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(
+            &path,
+            "[formatting]\nphp-cs-fixer = \"/usr/bin/php-cs-fixer\"\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(
+            config.formatting.php_cs_fixer.as_deref(),
+            Some("/usr/bin/php-cs-fixer")
+        );
+        assert!(config.formatting.phpcbf.is_none());
+    }
+
+    #[test]
+    fn parses_formatting_phpcbf_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[formatting]\nphpcbf = \"vendor/bin/phpcbf\"\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(
+            config.formatting.phpcbf.as_deref(),
+            Some("vendor/bin/phpcbf")
+        );
+        assert!(config.formatting.php_cs_fixer.is_none());
+    }
+
+    #[test]
+    fn parses_formatting_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[formatting]\ntimeout = 3000\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.formatting.timeout_ms(), 3000);
+    }
+
+    #[test]
+    fn formatting_empty_string_disables_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[formatting]\nphp-cs-fixer = \"\"\nphpcbf = \"\"\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.formatting.php_cs_fixer.as_deref(), Some(""));
+        assert_eq!(config.formatting.phpcbf.as_deref(), Some(""));
+        assert!(config.formatting.is_disabled());
+    }
+
+    #[test]
+    fn formatting_defaults() {
+        let config = Config::default();
+        assert!(config.formatting.php_cs_fixer.is_none());
+        assert!(config.formatting.phpcbf.is_none());
+        assert!(config.formatting.timeout.is_none());
+        assert_eq!(config.formatting.timeout_ms(), 10_000);
+        assert!(!config.formatting.is_disabled());
     }
 }

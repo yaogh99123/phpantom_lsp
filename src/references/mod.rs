@@ -337,7 +337,12 @@ impl Backend {
         };
 
         // Determine the class body the cursor is in.
-        let ctx_classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let ctx_classes: Vec<ClassInfo> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
+            .unwrap_or_default();
         let current_class = crate::util::find_class_at_offset(&ctx_classes, cursor_offset);
         let (class_start, class_end) = match current_class {
             Some(cc) => (cc.start_offset, cc.end_offset),
@@ -811,7 +816,12 @@ impl Backend {
         namespace: &Option<String>,
         offset: u32,
     ) -> Option<String> {
-        let classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes: Vec<ClassInfo> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
+            .unwrap_or_default();
 
         let current_class = crate::util::find_class_at_offset(&classes, offset)?;
 
@@ -859,7 +869,12 @@ impl Backend {
         uri: &str,
         offset: u32,
     ) -> Option<HashSet<String>> {
-        let classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes: Vec<ClassInfo> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
+            .unwrap_or_default();
         let current_class = find_class_at_offset(&classes, offset)?;
         let fqn = current_class.fqn();
         Some(self.collect_hierarchy_for_fqns(&[fqn]))
@@ -997,7 +1012,7 @@ impl Backend {
             let all_classes: Vec<ClassInfo> = {
                 let map = self.ast_map.read();
                 map.values()
-                    .flat_map(|classes| classes.iter().cloned())
+                    .flat_map(|classes| classes.iter().map(|c| ClassInfo::clone(c)))
                     .collect()
             };
 

@@ -299,23 +299,82 @@ limitation.
 ## 15. Document Links (`textDocument/documentLink`)
 **Impact: Low-Medium · Effort: Low**
 
-Makes `require`, `require_once`, `include`, and `include_once` paths
-Ctrl+Clickable in the editor. Useful for legacy codebases that use
-file-based includes rather than PSR-4 autoloading.
+Makes file-referencing strings Ctrl+Clickable in the editor. The
+primary targets are `require`/`include` paths, but the same mechanism
+can surface links for any string that resolves to a file on disk.
 
-**Implementation:**
+### Link sources (in priority order)
+
+**1. `require` / `require_once` / `include` / `include_once`**
+
+The highest-value target. Legacy codebases (and even modern ones for
+bootstrap files) use file-based includes extensively.
+
+Supported patterns:
+- String literals: `require_once '/path/to/file.php';`
+- `__DIR__` concatenation: `require __DIR__ . '/bootstrap.php';`
+- `dirname(__FILE__)` and `dirname(__DIR__)`: common in older code.
+
+The codebase already extracts require/include paths in
+`composer::extract_require_once_paths()`. The document link handler
+can reuse or parallel that logic, but must also produce span ranges
+for each path expression.
+
+**2. Class-string references in `@see` / `@link` tags**
+
+PHPDoc `@see ClassName` and `@link ClassName` tags reference other
+symbols. When the target resolves to a known class (via the class
+index or PSR-4), emit a link to the file containing that class.
+
+**3. URLs in comments and docblocks**
+
+Strings matching `https?://...` in comments and PHPDoc blocks are
+natural link targets. Editors already linkify URLs in most contexts,
+but registering them as document links ensures consistent behaviour
+across all clients.
+
+### Implementation
 
 1. **Register the capability** — set `document_link_provider:
    Some(DocumentLinkOptions { resolve_provider: Some(false) })` in
    `ServerCapabilities`.
 
-2. **Handler:** Walk the AST for include/require expressions. For each:
-   - Extract the path string from the argument (only handle string
-     literals and simple concatenations like `__DIR__ . '/file.php'`).
-   - Resolve the path relative to the current file's directory and the
-     workspace root.
-   - If the resolved path exists on disk, emit a `DocumentLink` with
-     the target URI and the range of the string literal.
+2. **Handler:** Walk the AST and source text, emitting `DocumentLink`
+   entries:
+   - **Include/require expressions:** extract the path string,
+     resolve it relative to the current file's directory (for
+     `__DIR__`-relative paths) or the workspace root (for absolute
+     or root-relative paths). If the resolved path exists on disk,
+     emit a link with the target URI and the range of the string
+     literal.
+   - **`@see` / `@link` tags:** extract the referenced name, attempt
+     to resolve it as a class via the class index and PSR-4 mappings.
+     If found, emit a link to `file://<path>#L<line>`.
+   - **URLs in comments:** scan comment and docblock text for
+     `https?://` patterns, emit a link for each match.
+
+3. **Path resolution rules:**
+   - `__DIR__ . '/relative.php'` — resolve relative to the
+     directory of the file containing the expression.
+   - `dirname(__DIR__) . '/relative.php'` — walk up one directory
+     from the file's parent.
+   - Bare string `'file.php'` — resolve relative to the workspace
+     root. If not found, try relative to the file's directory.
+   - Skip expressions that contain variables or non-trivial
+     concatenations (e.g. `$base . '/file.php'`). These are not
+     statically resolvable.
+
+### Edge cases
+
+- **Non-existent targets.** Only emit a link when the resolved file
+  exists on disk. Dead include paths should surface as diagnostics
+  (a separate feature), not broken links.
+- **Vendor files.** Include paths into `vendor/` are valid link
+  targets. Do not filter them out.
+- **Windows paths.** Normalise backslashes to forward slashes
+  before resolution.
+- **Duplicate links.** A single `require_once` statement produces
+  one link, not one per AST node in the expression.
 
 ---
 
@@ -405,105 +464,11 @@ workspace symbols on large codebases.
 
 ---
 
-## 18. Work-done progress for GTI and Find References
-**Impact: Medium · Effort: Low**
+## 19. Formatting proxy (`textDocument/formatting`)
 
-Go-to-Implementation takes ~3 seconds on large codebases (first
-invocation) and Find References takes ~2 seconds. On older hardware
-these numbers can be significantly higher. With no feedback, the user
-cannot tell whether the request is working or frozen.
-
-Add `workDoneProgress` reporting to both handlers so the editor shows
-a progress indicator (e.g. "Scanning: 1,234 / 5,678 files") while
-the scan runs.
-
-**Implementation:**
-
-1. In `goto_implementation` and `references`, check whether the
-   client provided a `workDoneToken` in the request params.
-2. If yes, send `WorkDoneProgressBegin` before starting the scan.
-3. During file processing, send `WorkDoneProgressReport` with a
-   percentage and message (file count or current phase). Throttle
-   to at most one report per 100 ms to avoid notification spam.
-4. Send `WorkDoneProgressEnd` when the scan completes.
-5. If no token was provided, behave exactly as today.
-
-The total file count is known up front (classmap size for GTI,
-workspace file list for Find References), so percentage reporting is
-straightforward.
-
-**Existing infrastructure:** The `$/progress` helper methods
-(`progress_create`, `progress_begin`, `progress_report`,
-`progress_end` on `Backend`) are already implemented and used during
-workspace initialization.  This item only needs to call those helpers
-from the GTI and Find References handlers, checking the
-`workDoneToken` from the request params.
-
-**Relationship with partial result streaming (§6):** Work-done
-progress tells the user "I'm working on it." Partial result streaming
-(§6) additionally sends results incrementally as they are found. This
-item is much simpler and provides immediate value without the
-complexity of streaming partial results. §6 can build on top of it
-later.
-
----
-
-## 19. Formatting proxy (`textDocument/formatting`, `textDocument/rangeFormatting`)
-**Impact: Medium · Effort: Medium**
-
-PHPantom does not ship a formatter and should not build one. Instead,
-register as a formatting provider and proxy formatting requests to an
-external tool installed in the project.
-
-### Supported tools (in priority order)
-
-1. **php-cs-fixer** — the most widely used PHP formatter. Detected via
-   `vendor/bin/php-cs-fixer` or `php-cs-fixer` on `$PATH`.
-2. **phpcbf** (PHP_CodeSniffer fixer) — detected via
-   `vendor/bin/phpcbf` or `phpcbf` on `$PATH`.
-
-When both are available, prefer php-cs-fixer. The user can override
-the choice via `.phpantom.toml`:
-
-```toml
-[formatting]
-tool = "php-cs-fixer"   # or "phpcbf" or "none"
-```
-
-Setting `tool = "none"` disables formatting entirely (PHPantom does
-not register the capability).
-
-### Document formatting
-
-1. Write the file content to a temp file (or use `--dry-run --diff`
-   to avoid touching the original).
-2. Run `php-cs-fixer fix --using-cache=no --quiet <tempfile>` (or
-   `phpcbf --stdin-path=<uri> -` for phpcbf).
-3. Diff the result against the original and produce `TextEdit[]`.
-4. Return the edits to the client.
-
-For **range formatting**, php-cs-fixer does not natively support
-formatting a range. Two options:
-- Format the full file and filter the resulting edits to only those
-  that touch the requested range.
-- Skip range formatting registration if the tool does not support it.
-
-### Error handling
-
-- If the tool is not installed, do not register the formatting
-  capability at all. Log the detection result.
-- If the tool fails (non-zero exit, timeout), return an error
-  response. Do not silently return no edits.
-- Timeout: 10 seconds default, configurable via `.phpantom.toml`.
-
-### Configuration
-
-The `[formatting]` section in `.phpantom.toml`:
-
-| Key     | Type   | Default     | Description                              |
-|---------|--------|-------------|------------------------------------------|
-| `tool`  | string | auto-detect | `"php-cs-fixer"`, `"phpcbf"`, or `"none"` |
-| `timeout` | int  | 10000       | Maximum runtime in milliseconds          |
+No outstanding items. The formatting proxy is fully implemented:
+per-tool command configuration, Composer bin-dir auto-detection,
+sequential pipeline execution, and sibling temp file config discovery.
 
 ---
 

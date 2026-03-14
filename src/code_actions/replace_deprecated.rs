@@ -58,8 +58,12 @@ impl Backend {
         let file_use_map: HashMap<String, String> =
             self.use_map.read().get(uri).cloned().unwrap_or_default();
         let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
-        let local_classes: Vec<ClassInfo> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let local_classes: Vec<ClassInfo> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
+            .unwrap_or_default();
 
         let class_loader = self.class_loader_with(&local_classes, &file_use_map, &file_namespace);
         let cache = &self.resolved_class_cache;

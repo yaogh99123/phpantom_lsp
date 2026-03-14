@@ -18,56 +18,56 @@ within the same impact tier.
 ## 2. Reference-counted `ClassInfo` (`Arc<ClassInfo>`)
 **Impact: High · Effort: Medium**
 
-`ClassInfo` is a large struct: 30+ fields including `Vec<MethodInfo>`,
-`Vec<PropertyInfo>`, `Vec<ConstantInfo>`, multiple `HashMap`s, and
-many `Vec<String>` fields. It is deep-cloned constantly:
+### Completed
 
-- `find_class_in_ast_map` returns `Some(cls.clone())`
-- `find_or_load_class` clones the result from the ast_map
-- `resolve_class_with_inheritance` starts with `class.clone()` and
-  clones every parent method/property during merging
-- `resolve_class_fully_inner` calls `resolve_class_with_inheritance`
-  (more clones), then caches the result with `.clone()`
-- `resolve_target_classes` returns `Vec<ClassInfo>` (each a full clone)
-- Cache retrieval clones on read: `map.get(&key) → cached.clone()`
+The three main data stores now hold `Arc<ClassInfo>`:
 
-A single completion on `$this->` in a class with a deep inheritance
-chain can produce dozens of full `ClassInfo` clones, each involving
-deep copies of all method signatures, parameter lists, and docblock
-strings.
+- `ast_map`: `HashMap<String, Vec<Arc<ClassInfo>>>`
+- `fqn_index`: `HashMap<String, Arc<ClassInfo>>`
+- `resolved_class_cache`: `HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>`
 
-Under full background indexing (indexing.md Phase 5), the ast_map
-holds thousands of `ClassInfo` values. Cloning them out on every
-lookup produces significant allocation pressure.
+Insertion sites (`parse_and_cache_content_versioned`, `update_ast_inner`)
+wrap `ClassInfo` in `Arc` before storing.
 
-### Fix
+### Remaining work
 
-Store `Arc<ClassInfo>` in `ast_map` instead of owned `ClassInfo`.
-Retrieval becomes a cheap reference-count increment instead of a
-deep copy. The `resolved_class_cache` should also store
-`Arc<ClassInfo>` so that cache hits are free.
+Every retrieval site currently unwraps the `Arc` with a full deep
+clone (`ClassInfo::clone(c)`), negating the benefit of reference
+counting. The following API changes are needed to actually eliminate
+deep copies on the hot paths:
 
-### Mutation
+1. **`find_class_in_ast_map`** — return `Option<Arc<ClassInfo>>`
+   instead of `Option<ClassInfo>`.
+2. **`find_or_load_class`** — return `Option<Arc<ClassInfo>>`.
+3. **`class_loader` closures** — change the signature from
+   `Fn(&str) -> Option<ClassInfo>` to
+   `Fn(&str) -> Option<Arc<ClassInfo>>` throughout the codebase.
+   This is the most pervasive change: `class_loader` is threaded
+   through completion, hover, diagnostics, inheritance, virtual
+   members, and definition resolution.
+4. **`resolve_class_fully_cached`** and related functions — return
+   `Arc<ClassInfo>`. Cache hits become a cheap `Arc::clone` instead
+   of a deep copy.
+5. **Downstream consumers** — the majority only read from `ClassInfo`
+   (checking methods, properties, etc.) and can work through
+   `&ClassInfo` via `Arc`'s `Deref`. Only mutation sites (inheritance
+   merging in `resolve_class_with_inheritance`,
+   `apply_virtual_members`) need to call `Arc::unwrap_or_clone()` or
+   `Arc::make_mut()`.
 
-Inheritance merging (`resolve_class_with_inheritance`) mutates the
-merged class. Use `Arc::make_mut` (copy-on-write) at the start of
-merging: the first mutation clones the inner value, but subsequent
-mutations on the same `Arc` are free. Code that only reads a
-`ClassInfo` (the majority of call sites) never pays for a clone.
+### Migration strategy
 
-### Scope
+Propagate `Arc<ClassInfo>` outward from the storage layer one
+function at a time. Each step compiles and passes tests independently:
 
-This is a pervasive change that touches every function returning or
-accepting `ClassInfo`. It can be done incrementally:
-
-1. Change `ast_map` to store `Arc<ClassInfo>`. Update
-   `find_class_in_ast_map` and `parse_and_cache_content_versioned`.
-2. Change `resolved_class_cache` to store `Arc<ClassInfo>`. Update
-   `resolve_class_fully_inner`.
-3. Update `resolve_target_classes` and downstream consumers to accept
-   `Arc<ClassInfo>` where possible.
-
-Each step compiles and passes tests independently.
+1. Change `find_class_in_ast_map` → update its ~5 call sites.
+2. Change `find_or_load_class` → update `class_loader` closure
+   construction in `file_context`, `class_loader()` helper, and
+   all inline closures across the codebase (~20 sites).
+3. Change `resolve_class_fully*` return types → update callers in
+   completion, hover, diagnostics (~15 sites).
+4. Audit remaining `ClassInfo::clone(c)` unwrap sites and convert
+   to `Arc::clone` where the consumer is read-only.
 
 ---
 

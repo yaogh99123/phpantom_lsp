@@ -597,7 +597,7 @@ impl Backend {
         let ast_candidates: Vec<ClassInfo> = {
             let map = self.ast_map.read();
             map.values()
-                .flat_map(|classes| classes.iter().cloned())
+                .flat_map(|classes| classes.iter().map(|c| ClassInfo::clone(c)))
                 .collect()
         };
 
@@ -667,7 +667,7 @@ impl Backend {
                     if self.class_implements_or_extends(cls, target_short, target_fqn, class_loader)
                     {
                         seen_fqns.insert(cls_fqn);
-                        result.push(cls.clone());
+                        result.push(ClassInfo::clone(cls));
                     }
                 }
             }
@@ -756,7 +756,7 @@ impl Backend {
                                 class_loader,
                             ) {
                                 seen_fqns.insert(cls_fqn);
-                                result.push(cls.clone());
+                                result.push(ClassInfo::clone(cls));
                             }
                         }
                     }

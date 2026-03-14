@@ -22,7 +22,7 @@ use super::point_location;
 use crate::Backend;
 use crate::composer;
 use crate::symbol_map::SymbolKind;
-use crate::types::AccessKind;
+use crate::types::{AccessKind, ClassInfo};
 use crate::util::{find_class_at_offset, position_to_offset, short_name};
 
 impl Backend {
@@ -766,7 +766,12 @@ impl Backend {
     ) -> Option<Location> {
         let cursor_offset = position_to_offset(content, position);
 
-        let classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes: Vec<ClassInfo> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
+            .unwrap_or_default();
 
         let current_class = find_class_at_offset(&classes, cursor_offset)?;
 

@@ -27,6 +27,7 @@ use crate::Backend;
 use crate::classmap_scanner::{self, WorkspaceScanResult};
 use crate::composer;
 use crate::config::IndexingStrategy;
+use crate::formatting;
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
@@ -104,6 +105,7 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                 }),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -305,11 +307,35 @@ impl LanguageServer for Backend {
             .uri
             .to_string();
         let position = params.text_document_position_params.position;
+        let token = match params.work_done_progress_params.work_done_token {
+            Some(t) => Some(t),
+            None => self.progress_create("goto_implementation").await,
+        };
 
-        self.handle_with_position("goto_implementation", &uri, position, |content| {
-            self.resolve_implementation(&uri, content, position)
-                .and_then(wrap_locations)
+        if let Some(ref tok) = token {
+            self.progress_begin(tok, "Go to Implementation", Some("Scanning…".to_string()))
+                .await;
+        }
+
+        // Run on a blocking thread so the async runtime stays free to
+        // flush progress notifications to the client.
+        let backend = self.clone_for_blocking();
+        let uri_clone = uri.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            backend.handle_with_position("goto_implementation", &uri_clone, position, |content| {
+                backend
+                    .resolve_implementation(&uri_clone, content, position)
+                    .and_then(wrap_locations)
+            })
         })
+        .await
+        .unwrap_or(Ok(None));
+
+        if let Some(ref tok) = token {
+            self.progress_end(tok, Some("Done".to_string())).await;
+        }
+
+        result
     }
 
     async fn goto_type_definition(
@@ -350,10 +376,33 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position.text_document.uri.to_string();
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
+        let token = match params.work_done_progress_params.work_done_token {
+            Some(t) => Some(t),
+            None => self.progress_create("find_references").await,
+        };
 
-        self.handle_with_position("references", &uri, position, |content| {
-            self.find_references(&uri, content, position, include_declaration)
+        if let Some(ref tok) = token {
+            self.progress_begin(tok, "Find References", Some("Scanning…".to_string()))
+                .await;
+        }
+
+        // Run on a blocking thread so the async runtime stays free to
+        // flush progress notifications to the client.
+        let backend = self.clone_for_blocking();
+        let uri_clone = uri.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            backend.handle_with_position("references", &uri_clone, position, |content| {
+                backend.find_references(&uri_clone, content, position, include_declaration)
+            })
         })
+        .await
+        .unwrap_or(Ok(None));
+
+        if let Some(ref tok) = token {
+            self.progress_end(tok, Some("Done".to_string())).await;
+        }
+
+        result
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
@@ -472,6 +521,69 @@ impl LanguageServer for Backend {
         self.handle_with_uri("semantic_tokens_full", &uri, |content| {
             self.handle_semantic_tokens_full(&uri, content)
         })
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri.to_string();
+        let config = self.config();
+
+        // If both tools are explicitly disabled, skip entirely.
+        if config.formatting.is_disabled() {
+            return Ok(None);
+        }
+
+        // Resolve the formatting pipeline (zero, one, or two tools).
+        // Read Composer's configured bin directory so auto-detect looks
+        // in the right place (respects `config.bin-dir` in composer.json).
+        let workspace_root = self.workspace_root.read().clone();
+        let bin_dir: Option<String> = workspace_root.as_deref().and_then(|root| {
+            let content = std::fs::read_to_string(root.join("composer.json")).ok()?;
+            let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+            Some(composer::get_bin_dir(&json))
+        });
+        let pipeline = formatting::resolve_pipeline(
+            workspace_root.as_deref(),
+            &config.formatting,
+            bin_dir.as_deref(),
+        );
+
+        if pipeline.is_empty() {
+            // No tools found — not an error, just nothing to do.
+            return Ok(None);
+        }
+
+        // Resolve the file path from the URI for config discovery.
+        let file_path = Url::parse(&uri).ok().and_then(|u| u.to_file_path().ok());
+        let file_path = match file_path {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Get the file content.
+        let content = match self.get_file_content(&uri) {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        // Run the formatting pipeline (php-cs-fixer then phpcbf).
+        match formatting::run_pipeline(&pipeline, &content, &file_path, &config.formatting) {
+            Ok(edits) => {
+                if edits.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(edits))
+                }
+            }
+            Err(e) => {
+                self.log(MessageType::ERROR, format!("Formatting failed: {}", e))
+                    .await;
+                Err(tower_lsp::jsonrpc::Error {
+                    code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+                    message: format!("Formatting failed: {}", e),
+                    data: None,
+                })
+            }
+        }
     }
 }
 

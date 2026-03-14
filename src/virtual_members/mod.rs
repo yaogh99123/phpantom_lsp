@@ -83,7 +83,7 @@ pub type ResolvedClassCacheKey = (String, Vec<String>);
 /// Within a single request cycle (completion, hover, etc.) the cache
 /// eliminates redundant calls to [`resolve_class_fully`] for the same
 /// class at the same generic instantiation.
-pub type ResolvedClassCache = Arc<Mutex<HashMap<ResolvedClassCacheKey, ClassInfo>>>;
+pub type ResolvedClassCache = Arc<Mutex<HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>>>;
 
 /// Create a new, empty [`ResolvedClassCache`].
 pub fn new_resolved_class_cache() -> ResolvedClassCache {
@@ -105,7 +105,7 @@ pub fn new_resolved_class_cache() -> ResolvedClassCache {
 /// from its parent.  When the parent's `@property` docblock changes,
 /// the child's cache entry still holds the old inherited property and
 /// must be discarded.
-pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, ClassInfo>, fqn: &str) {
+pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn: &str) {
     // Collect the set of FQNs to evict, starting with the requested one.
     // After removing direct matches, scan remaining entries for classes
     // whose inheritance chain references any evicted FQN and repeat
@@ -496,7 +496,7 @@ fn resolve_class_fully_inner(
     if let Some(cache) = cache {
         let map = cache.lock();
         if let Some(cached) = map.get(&cache_key) {
-            return cached.clone();
+            return ClassInfo::clone(cached);
         }
     }
 
@@ -630,7 +630,7 @@ fn resolve_class_fully_inner(
                 if let Some(c) = cache {
                     let map = c.lock();
                     if let Some(cached) = map.get(&iface_key) {
-                        let resolved_iface = cached.clone();
+                        let resolved_iface = ClassInfo::clone(cached);
                         drop(map);
                         merge_interface_members_into(&mut merged, resolved_iface, &iface_subs);
                         continue;
@@ -668,7 +668,7 @@ fn resolve_class_fully_inner(
 
     // ── Cache store ─────────────────────────────────────────────────
     if let Some(cache) = cache {
-        cache.lock().insert(cache_key, merged.clone());
+        cache.lock().insert(cache_key, Arc::new(merged.clone()));
     }
 
     merged

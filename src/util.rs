@@ -649,7 +649,7 @@ impl Backend {
         // itself.  For bare names (no backslash) the FQN equals the
         // short name, which is also stored in the index.
         if let Some(cls) = self.fqn_index.read().get(class_name) {
-            return Some(cls.clone());
+            return Some(ClassInfo::clone(cls));
         }
 
         // ── Slow fallback: linear scan of ast_map ──
@@ -683,7 +683,7 @@ impl Backend {
                         continue;
                     }
                 }
-                return Some(cls.clone());
+                return Some(ClassInfo::clone(cls));
             }
         }
         None
@@ -756,7 +756,10 @@ impl Backend {
 
     /// Public helper for tests: get the ast_map for a given URI.
     pub fn get_classes_for_uri(&self, uri: &str) -> Option<Vec<ClassInfo>> {
-        self.ast_map.read().get(uri).cloned()
+        self.ast_map
+            .read()
+            .get(uri)
+            .map(|classes| classes.iter().map(|c| ClassInfo::clone(c)).collect())
     }
 
     /// Gather the per-file context (classes, use-map, namespace) in one call.
@@ -768,7 +771,12 @@ impl Backend {
     /// blocks acquiring `ast_map`, `use_map`, and `namespace_map` locks
     /// and extracting the entry for a given URI.
     pub(crate) fn file_context(&self, uri: &str) -> FileContext {
-        let classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes = self
+            .ast_map
+            .read()
+            .get(uri)
+            .map(|arcs| arcs.iter().map(|c| ClassInfo::clone(c)).collect())
+            .unwrap_or_default();
 
         let use_map = self.use_map.read().get(uri).cloned().unwrap_or_default();
 

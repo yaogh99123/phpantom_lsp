@@ -875,7 +875,7 @@ fn resolve_class_fully_returns_same_as_base_when_no_providers() {
 /// Helper: create a plain `HashMap` cache for eviction tests.
 /// `evict_fqn` operates on the inner `HashMap`, not the
 /// `Arc<Mutex<…>>` wrapper used at runtime.
-fn make_cache() -> HashMap<ResolvedClassCacheKey, ClassInfo> {
+fn make_cache() -> HashMap<ResolvedClassCacheKey, Arc<ClassInfo>> {
     HashMap::new()
 }
 
@@ -883,7 +883,7 @@ fn make_cache() -> HashMap<ResolvedClassCacheKey, ClassInfo> {
 fn evict_removes_direct_match() {
     let mut cache = make_cache();
     let cls = make_class("App\\Models\\User");
-    cache.insert(("App\\Models\\User".to_string(), Vec::new()), cls);
+    cache.insert(("App\\Models\\User".to_string(), Vec::new()), Arc::new(cls));
 
     evict_fqn(&mut cache, "App\\Models\\User");
     assert!(cache.is_empty(), "direct match should be evicted");
@@ -894,11 +894,17 @@ fn evict_transitively_removes_child_class() {
     let mut cache = make_cache();
 
     let parent = make_class("Model");
-    cache.insert(("App\\Models\\Model".to_string(), Vec::new()), parent);
+    cache.insert(
+        ("App\\Models\\Model".to_string(), Vec::new()),
+        Arc::new(parent),
+    );
 
     let mut child = make_class("User");
     child.parent_class = Some("App\\Models\\Model".to_string());
-    cache.insert(("App\\Models\\User".to_string(), Vec::new()), child);
+    cache.insert(
+        ("App\\Models\\User".to_string(), Vec::new()),
+        Arc::new(child),
+    );
 
     evict_fqn(&mut cache, "App\\Models\\Model");
     assert!(cache.is_empty(), "both parent and child should be evicted");
@@ -911,13 +917,16 @@ fn evict_transitively_removes_model_referencing_cast_class() {
     let cast_class = make_class("DecimalCast");
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
-        cast_class,
+        Arc::new(cast_class),
     );
 
     let mut model = make_class("Setting");
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
-    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+    cache.insert(
+        ("App\\Models\\Setting".to_string(), Vec::new()),
+        Arc::new(model),
+    );
 
     // Evict the cast class — the model should be transitively evicted.
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
@@ -934,14 +943,17 @@ fn evict_cast_class_with_colon_argument_transitively_removes_model() {
     let cast_class = make_class("DecimalCast");
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
-        cast_class,
+        Arc::new(cast_class),
     );
 
     let mut model = make_class("Setting");
     // Cast type has a `:argument` suffix like `DecimalCast:8:2`.
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast:8:2".to_string())];
-    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+    cache.insert(
+        ("App\\Models\\Setting".to_string(), Vec::new()),
+        Arc::new(model),
+    );
 
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
     assert!(
@@ -957,13 +969,16 @@ fn evict_cast_class_matched_by_short_name() {
     let cast_class = make_class("DecimalCast");
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
-        cast_class,
+        Arc::new(cast_class),
     );
 
     let mut model = make_class("Setting");
     // The model references the cast class by short name (same-file scenario).
     model.laravel_mut().casts_definitions = vec![("vat".to_string(), "DecimalCast".to_string())];
-    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+    cache.insert(
+        ("App\\Models\\Setting".to_string(), Vec::new()),
+        Arc::new(model),
+    );
 
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
     assert!(
@@ -979,14 +994,17 @@ fn evict_cast_class_canonical() {
     let cast_class = make_class("DecimalCast");
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
-        cast_class,
+        Arc::new(cast_class),
     );
 
     let mut model = make_class("Setting");
     // Cast values are canonical (no leading `\`) after ingestion normalization.
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
-    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+    cache.insert(
+        ("App\\Models\\Setting".to_string(), Vec::new()),
+        Arc::new(model),
+    );
 
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
     assert!(
@@ -1004,7 +1022,10 @@ fn evict_builtin_cast_does_not_affect_model() {
         ("is_active".to_string(), "boolean".to_string()),
         ("created_at".to_string(), "datetime".to_string()),
     ];
-    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+    cache.insert(
+        ("App\\Models\\Setting".to_string(), Vec::new()),
+        Arc::new(model),
+    );
 
     // Evicting a random class should not affect the model since
     // its casts only reference built-in types.
@@ -1023,19 +1044,22 @@ fn evict_cast_class_chains_through_model_to_child() {
     let cast_class = make_class("DecimalCast");
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
-        cast_class,
+        Arc::new(cast_class),
     );
 
     let mut model = make_class("Setting");
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
-    cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
+    cache.insert(
+        ("App\\Models\\Setting".to_string(), Vec::new()),
+        Arc::new(model),
+    );
 
     let mut child = make_class("AdvancedSetting");
     child.parent_class = Some("App\\Models\\Setting".to_string());
     cache.insert(
         ("App\\Models\\AdvancedSetting".to_string(), Vec::new()),
-        child,
+        Arc::new(child),
     );
 
     // Evicting the cast class should evict the model (via casts_definitions),
