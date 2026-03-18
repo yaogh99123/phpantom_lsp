@@ -467,6 +467,21 @@ impl Backend {
                 // Offer $parameter names from the function declaration.
                 let sym = extract_symbol_info(content, position);
                 let partial_lower = partial.to_lowercase();
+
+                // Compute an explicit replacement range covering the typed
+                // `$…` prefix.  Using `text_edit` with a range prevents
+                // the double-dollar problem in editors (Helix, Neovim) that
+                // don't treat `$` as a word character — the same fix that
+                // was applied to regular variable completion.
+                let prefix_char_len = partial.chars().count() as u32;
+                let replace_range = Range {
+                    start: Position {
+                        line: position.line,
+                        character: position.character.saturating_sub(prefix_char_len),
+                    },
+                    end: position,
+                };
+
                 let items: Vec<CompletionItem> = sym
                     .params
                     .iter()
@@ -475,16 +490,14 @@ impl Backend {
                     })
                     .map(|(type_hint, name)| {
                         let detail = type_hint.as_deref().unwrap_or("mixed").to_string();
-                        // Always use the full `$name` as insert_text
-                        // — the LSP client replaces the typed prefix
-                        // (whether `$`, `$na`, or empty) with whatever
-                        // we provide, matching how regular variable
-                        // completion works in variable_completion.rs.
                         CompletionItem {
                             label: name.clone(),
                             kind: Some(CompletionItemKind::VARIABLE),
                             detail: Some(detail),
-                            insert_text: Some(name.clone()),
+                            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                                range: replace_range,
+                                new_text: name.clone(),
+                            })),
                             filter_text: Some(name.clone()),
                             sort_text: Some(format!("0_{}", name.to_lowercase())),
                             ..CompletionItem::default()

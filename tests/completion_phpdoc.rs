@@ -2937,6 +2937,116 @@ async fn test_phpdoc_var_type_excludes_traits() {
 /// `@throws` type completions should still use Throwable-filtered
 /// completion (not the TypeHint filter), so this is unchanged.
 #[tokio::test]
+async fn test_phpdoc_param_variable_uses_text_edit_with_dollar() {
+    // Regression test for issue #27: typing `$` (or `$va`) after the type
+    // in a @param tag was doubling the dollar sign in editors like Helix and
+    // Neovim that don't treat `$` as a word character.  The fix is to return
+    // a `text_edit` with an explicit replacement range covering the typed
+    // `$…` prefix instead of using `insert_text`.
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/phpdoc_var_text_edit.php").unwrap();
+
+    // Cursor is right after `$v` on the @param line — partial = "$v".
+    let src = concat!(
+        "<?php\n",
+        "class Demo {\n",
+        "    /**\n",
+        "     * @param string $v\n",
+        "     */\n",
+        "    public function foo(string $value): void {}\n",
+        "}\n",
+    );
+    // Line 3: `     * @param string $v`
+    // character 24 = right after `$v`
+    let items = complete_at(&backend, &uri, src, 3, 24).await;
+
+    let value_item = items.iter().find(|i| i.label == "$value");
+    assert!(
+        value_item.is_some(),
+        "Should suggest $value, got: {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+    let item = value_item.unwrap();
+
+    // Must use text_edit (not insert_text) so the editor replaces the
+    // already-typed `$v` prefix rather than inserting after it.
+    match &item.text_edit {
+        Some(CompletionTextEdit::Edit(te)) => {
+            assert_eq!(te.new_text, "$value", "text_edit new_text should be $value");
+            // Range must start at the `$` (col 22) and end at cursor (col 24).
+            assert_eq!(
+                te.range.start,
+                Position::new(3, 22),
+                "replacement range should start at the `$`"
+            );
+            assert_eq!(
+                te.range.end,
+                Position::new(3, 24),
+                "replacement range end should be at the cursor"
+            );
+        }
+        other => panic!(
+            "Expected text_edit with Edit variant to prevent double-dollar, got: {:?}",
+            other
+        ),
+    }
+
+    // insert_text must NOT be set — having both confuses editors.
+    assert!(
+        item.insert_text.is_none(),
+        "insert_text should be None when text_edit is set"
+    );
+}
+
+/// When the cursor is right after the bare `$` (no letters yet), the
+/// replacement range should cover just that single character.
+#[tokio::test]
+async fn test_phpdoc_param_variable_bare_dollar_text_edit_range() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/phpdoc_bare_dollar.php").unwrap();
+
+    // Cursor is right after `$` on the @param line — partial = "$".
+    let src = concat!(
+        "<?php\n",
+        "class Demo {\n",
+        "    /**\n",
+        "     * @param string $\n",
+        "     */\n",
+        "    public function foo(string $name): void {}\n",
+        "}\n",
+    );
+    // Line 3: `     * @param string $`
+    // character 22 = right after `$`
+    let items = complete_at(&backend, &uri, src, 3, 22).await;
+
+    let name_item = items.iter().find(|i| i.label == "$name");
+    assert!(
+        name_item.is_some(),
+        "Should suggest $name, got: {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+    let item = name_item.unwrap();
+
+    match &item.text_edit {
+        Some(CompletionTextEdit::Edit(te)) => {
+            assert_eq!(te.new_text, "$name", "new_text should be $name");
+            // Range covers just the `$` at col 21..22.
+            assert_eq!(
+                te.range.start,
+                Position::new(3, 21),
+                "replacement should start at the `$`"
+            );
+            assert_eq!(
+                te.range.end,
+                Position::new(3, 22),
+                "replacement end should be at the cursor"
+            );
+        }
+        other => panic!("Expected text_edit with Edit variant, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn test_phpdoc_throws_uses_throwable_filter_not_type_hint() {
     let backend = create_test_backend();
     let uri = Url::parse("file:///test/phpdoc_throws_filter.php").unwrap();

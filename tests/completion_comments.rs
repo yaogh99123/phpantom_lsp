@@ -822,7 +822,7 @@ async fn docblock_param_description_no_completion() {
     );
 }
 
-// ─── Variable completion has correct insert_text ────────────────────────────
+// ─── Variable completion uses text_edit to prevent double-dollar ─────────────
 
 #[tokio::test]
 async fn docblock_param_variable_insert_text_always_includes_dollar() {
@@ -836,18 +836,30 @@ async fn docblock_param_variable_insert_text_always_includes_dollar() {
         "function greet(string $name): void {}\n",
     );
 
-    // User already typed `$` — insert_text should still be "$name"
-    // because the LSP client replaces the typed prefix (`$`) with insert_text.
+    // User already typed `$` — completion must use text_edit with an explicit
+    // replacement range covering the `$` prefix to prevent double-dollar in
+    // editors like Helix and Neovim.
     let result = complete_at_raw(&backend, &uri, text, 2, 18).await;
     assert!(result.is_some());
     let items = result.unwrap();
     let name_item = items.iter().find(|i| i.label == "$name");
     assert!(name_item.is_some(), "Should have a $name completion item");
     let item = name_item.unwrap();
-    assert_eq!(
-        item.insert_text.as_deref(),
-        Some("$name"),
-        "insert_text should always be $name — the LSP client handles prefix replacement"
+    match &item.text_edit {
+        Some(CompletionTextEdit::Edit(te)) => {
+            assert_eq!(te.new_text, "$name", "text_edit new_text should be $name");
+            // Range must cover the typed `$` at col 17..18.
+            assert_eq!(te.range.start, Position::new(2, 17));
+            assert_eq!(te.range.end, Position::new(2, 18));
+        }
+        other => panic!(
+            "Expected text_edit with Edit variant to prevent double-dollar, got: {:?}",
+            other
+        ),
+    }
+    assert!(
+        item.insert_text.is_none(),
+        "insert_text should be None when text_edit is set"
     );
     assert_eq!(
         item.kind,
@@ -868,18 +880,26 @@ async fn docblock_param_variable_insert_text_includes_dollar_when_not_typed() {
         "function greet(string $name): void {}\n",
     );
 
-    // User has NOT typed `$` — insert_text should be "$name"
+    // User has NOT typed `$` yet — text_edit new_text should still be "$name"
+    // and the replacement range should be empty (start == end == cursor).
     let result = complete_at_raw(&backend, &uri, text, 2, 17).await;
     assert!(result.is_some());
     let items = result.unwrap();
     let name_item = items.iter().find(|i| i.label == "$name");
     assert!(name_item.is_some(), "Should have a $name completion item");
     let item = name_item.unwrap();
-    assert_eq!(
-        item.insert_text.as_deref(),
-        Some("$name"),
-        "insert_text should include $ when user hasn't typed it"
-    );
+    match &item.text_edit {
+        Some(CompletionTextEdit::Edit(te)) => {
+            assert_eq!(
+                te.new_text, "$name",
+                "text_edit new_text should include the $ prefix"
+            );
+            // Empty prefix → range start == end == cursor position.
+            assert_eq!(te.range.start, Position::new(2, 17));
+            assert_eq!(te.range.end, Position::new(2, 17));
+        }
+        other => panic!("Expected text_edit with Edit variant, got: {:?}", other),
+    }
 }
 
 // ─── Scalar / built-in type completion in docblocks ─────────────────────────
