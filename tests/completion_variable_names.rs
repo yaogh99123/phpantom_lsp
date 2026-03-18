@@ -2182,3 +2182,355 @@ async fn test_var_docblock_without_name_no_phantom_variable() {
         );
     }
 }
+
+// ─── arrow function parameter scoping ───────────────────────────────────────
+
+/// Arrow function parameters must appear in variable completion inside the
+/// arrow function body, even though the outer scope is also inherited.
+#[tokio::test]
+async fn test_completion_arrow_function_param_visible_in_body() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///arrow_param_basic.php").unwrap();
+    // Cursor is at `$im|` inside the arrow function body.
+    let text = concat!(
+        "<?php\n",                                                 // 0
+        "/** @var list<string> */\n",                              // 1
+        "$images = [];\n",                                         // 2
+        "array_map(fn(string $image): string => $im, $images);\n", // 3
+    );
+
+    // Position is at end of `$im` on line 3, character 42
+    let items = complete_at(&backend, &uri, text, 3, 42).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$image"),
+        "Arrow function parameter $image should be visible inside the body. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Outer-scope variables must ALSO be visible inside an arrow function body
+/// (arrow functions capture the enclosing scope automatically).
+#[tokio::test]
+async fn test_completion_arrow_function_outer_scope_visible_in_body() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///arrow_outer_scope.php").unwrap();
+    let text = concat!(
+        "<?php\n",                          // 0
+        "$outerVar = 'hello';\n",           // 1
+        "array_map(fn($x) => $out, []);\n", // 2
+    );
+
+    // `array_map(fn($x) => $out` — `$out` ends at character 24 (0-based)
+    let items = complete_at(&backend, &uri, text, 2, 24).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$outerVar"),
+        "Outer-scope $outerVar should be visible inside arrow function body. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Both the arrow function's own parameters AND outer-scope variables should
+/// appear together in variable completion inside the arrow body.
+///
+/// Two separate completion requests are used because the prefix filters the
+/// results: `$im` matches `$image` but not `$outerVar`, and vice-versa.
+#[tokio::test]
+async fn test_completion_arrow_function_both_param_and_outer_visible() {
+    let backend = create_test_backend();
+
+    // ── probe 1: prefix "$im" should match the arrow param $image ──
+    {
+        let uri = Url::parse("file:///arrow_both_scopes_a.php").unwrap();
+        let text = concat!(
+            "<?php\n",                                           // 0
+            "$outerVar = 'hello';\n",                            // 1
+            "array_map(fn(string $image) => $im, $outerVar);\n", // 2
+        );
+        // `array_map(fn(string $image) => $im` — `$im` ends at character 34
+        let items = complete_at(&backend, &uri, text, 2, 34).await;
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|i| i.label.as_str())
+            .collect();
+
+        assert!(
+            var_labels.contains(&"$image"),
+            "Arrow function parameter $image should be visible (probe 1). Got: {:?}",
+            var_labels
+        );
+    }
+
+    // ── probe 2: prefix "$out" should match the outer-scope $outerVar ──
+    {
+        let uri = Url::parse("file:///arrow_both_scopes_b.php").unwrap();
+        let text = concat!(
+            "<?php\n",                                            // 0
+            "$outerVar = 'hello';\n",                             // 1
+            "array_map(fn(string $image) => $out, $outerVar);\n", // 2
+        );
+        // `array_map(fn(string $image) => $out` — `$out` ends at character 35
+        let items = complete_at(&backend, &uri, text, 2, 35).await;
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|i| i.label.as_str())
+            .collect();
+
+        assert!(
+            var_labels.contains(&"$outerVar"),
+            "Outer-scope $outerVar should also be visible inside arrow body (probe 2). Got: {:?}",
+            var_labels
+        );
+    }
+}
+
+/// Arrow function parameters must be visible inside a method body too,
+/// not just at the top level.
+#[tokio::test]
+async fn test_completion_arrow_function_param_visible_inside_method() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///arrow_in_method.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                        // 0
+        "class Demo {\n",                                                 // 1
+        "    public function run(): void {\n",                            // 2
+        "        $items = [];\n",                                         // 3
+        "        array_map(fn(string $item): string => $ite, $items);\n", // 4
+        "    }\n",                                                        // 5
+        "}\n",                                                            // 6
+    );
+
+    // `        array_map(fn(string $item): string => $ite`
+    // 8 spaces + "array_map(fn(string $item): string => $ite" = 8+42 = 50 chars
+    // cursor is at character 50 (0-based, end of "$ite")
+    let items = complete_at(&backend, &uri, text, 4, 50).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$item"),
+        "Arrow function parameter $item should be visible inside method body. Got: {:?}",
+        var_labels
+    );
+}
+
+// ─── closure scope isolation ─────────────────────────────────────────────────
+
+/// A closure passed to a function (e.g. `array_map`) must show only its own
+/// parameters, `use`-captured variables, and variables assigned inside its
+/// body — not the outer method's locals.
+///
+/// Two separate probes are used because the prefix filter only returns names
+/// that start with the typed prefix: `$bra` matches `$brand` but not
+/// `$keywords`, and vice-versa.
+#[tokio::test]
+async fn test_completion_closure_in_return_isolates_outer_scope() {
+    let backend = create_test_backend();
+
+    // ── probe 1: "$bra" matches the closure parameter $brand ──
+    {
+        let uri = Url::parse("file:///closure_isolation_a.php").unwrap();
+        let text = concat!(
+            "<?php\n",                                                                      // 0
+            "class Mapper {\n",                                                             // 1
+            "    public function run(): array {\n",                                         // 2
+            "        $keywords = [];\n",                                                    // 3
+            "        $brands = [];\n",                                                      // 4
+            "        return array_map(function (string $brand) use ($keywords): array {\n", // 5
+            "            $bra\n",                                                           // 6
+            "        }, $brands);\n",                                                       // 7
+            "    }\n",                                                                      // 8
+            "}\n",                                                                          // 9
+        );
+
+        // Cursor at end of `$bra` on line 6, character 16
+        let items = complete_at(&backend, &uri, text, 6, 16).await;
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|i| i.label.as_str())
+            .collect();
+
+        assert!(
+            var_labels.contains(&"$brand"),
+            "Closure parameter $brand should be visible. Got: {:?}",
+            var_labels
+        );
+
+        // Outer $brands was not captured via `use` — must NOT appear.
+        assert!(
+            !var_labels.contains(&"$brands"),
+            "Outer $brands should NOT leak into closure scope. Got: {:?}",
+            var_labels
+        );
+    }
+
+    // ── probe 2: "$key" matches the use-captured $keywords ──
+    {
+        let uri = Url::parse("file:///closure_isolation_b.php").unwrap();
+        let text = concat!(
+            "<?php\n",                                                                      // 0
+            "class Mapper {\n",                                                             // 1
+            "    public function run(): array {\n",                                         // 2
+            "        $keywords = [];\n",                                                    // 3
+            "        $brands = [];\n",                                                      // 4
+            "        return array_map(function (string $brand) use ($keywords): array {\n", // 5
+            "            $key\n",                                                           // 6
+            "        }, $brands);\n",                                                       // 7
+            "    }\n",                                                                      // 8
+            "}\n",                                                                          // 9
+        );
+
+        // Cursor at end of `$key` on line 6, character 16
+        let items = complete_at(&backend, &uri, text, 6, 16).await;
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|i| i.label.as_str())
+            .collect();
+
+        assert!(
+            var_labels.contains(&"$keywords"),
+            "use-captured $keywords should be visible inside closure. Got: {:?}",
+            var_labels
+        );
+    }
+}
+
+/// Variables defined inside the closure body are also visible at the cursor.
+#[tokio::test]
+async fn test_completion_closure_body_variable_visible() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///closure_body_var.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                      // 0
+        "class Mapper {\n",                                             // 1
+        "    public function run(): array {\n",                         // 2
+        "        $outer = 'x';\n",                                      // 3
+        "        return array_map(function (string $brand): array {\n", // 4
+        "            $local = 'y';\n",                                  // 5
+        "            $loc\n",                                           // 6
+        "        }, []);\n",                                            // 7
+        "    }\n",                                                      // 8
+        "}\n",                                                          // 9
+    );
+
+    // Cursor at end of `$loc` on line 6, character 16
+    let items = complete_at(&backend, &uri, text, 6, 16).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$local"),
+        "Variable assigned inside closure body should be visible. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "Outer method local $outer should NOT be visible (not captured). Got: {:?}",
+        var_labels
+    );
+}
+
+/// `$this` must be visible inside a closure defined inside a non-static method,
+/// because PHP automatically binds `$this` in closures created in instance methods.
+///
+/// Two probes: one to confirm `$this` is present, another to confirm the outer
+/// local is absent (using a prefix that would match it if it leaked).
+#[tokio::test]
+async fn test_completion_closure_this_visible_in_instance_method() {
+    let backend = create_test_backend();
+
+    // ── probe 1: "$thi" matches $this ──
+    {
+        let uri = Url::parse("file:///closure_this_a.php").unwrap();
+        let text = concat!(
+            "<?php\n",                                                      // 0
+            "class Processor {\n",                                          // 1
+            "    public function process(): array {\n",                     // 2
+            "        $outer = 1;\n",                                        // 3
+            "        return array_map(function (string $item): string {\n", // 4
+            "            $thi\n",                                           // 5
+            "        }, []);\n",                                            // 6
+            "    }\n",                                                      // 7
+            "}\n",                                                          // 8
+        );
+
+        // Cursor at end of `$thi` on line 5, character 16
+        let items = complete_at(&backend, &uri, text, 5, 16).await;
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|i| i.label.as_str())
+            .collect();
+
+        assert!(
+            var_labels.contains(&"$this"),
+            "$this should be visible inside a closure in an instance method. Got: {:?}",
+            var_labels
+        );
+    }
+
+    // ── probe 2: "$out" would match $outer if it leaked — it must not ──
+    {
+        let uri = Url::parse("file:///closure_this_b.php").unwrap();
+        let text = concat!(
+            "<?php\n",                                                      // 0
+            "class Processor {\n",                                          // 1
+            "    public function process(): array {\n",                     // 2
+            "        $outer = 1;\n",                                        // 3
+            "        return array_map(function (string $item): string {\n", // 4
+            "            $out\n",                                           // 5
+            "        }, []);\n",                                            // 6
+            "    }\n",                                                      // 7
+            "}\n",                                                          // 8
+        );
+
+        // Cursor at end of `$out` on line 5, character 16
+        let items = complete_at(&backend, &uri, text, 5, 16).await;
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|i| i.label.as_str())
+            .collect();
+
+        assert!(
+            !var_labels.contains(&"$outer"),
+            "Outer local $outer should NOT leak into closure scope. Got: {:?}",
+            var_labels
+        );
+    }
+}

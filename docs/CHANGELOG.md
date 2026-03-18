@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Closure and arrow function variable scope.** Variable name completion now correctly respects PHP scoping rules for anonymous functions and arrow functions. Parameters of a closure are visible inside its body, `use`-captured variables appear alongside them, and `$this` is available when the closure is defined in an instance method. Outer method locals that were not captured do not leak in. Arrow function parameters are now visible inside the arrow body while the enclosing scope's variables remain accessible, matching PHP's implicit capture behaviour.
 - **Namespace alias completion.** Typing a class name through a namespace alias (e.g. `OA\Re` with `use OpenApi\Attributes as OA`) now correctly suggests classes under the aliased namespace such as `OA\Response` and `OA\RequestBody`. Previously only unrelated classes matched because the alias was not expanded before prefix matching.
 
 ### Changed

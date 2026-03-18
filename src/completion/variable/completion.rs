@@ -551,11 +551,14 @@ fn expr_contains_enclosing_closure<'b>(
         Expression::ArrowFunction(arrow) => {
             let span = arrow.span();
             if cursor_offset >= span.start.offset && cursor_offset <= span.end.offset {
-                // Arrow functions inherit the outer scope (like JS), but
-                // also have their own parameters.  However, for the purpose
-                // of variable *completion*, the arrow function body is
-                // inside the enclosing scope — we do NOT isolate it.
-                // Let the caller handle it.
+                // Arrow functions capture the enclosing scope automatically,
+                // so outer variables remain visible.  But the arrow function
+                // also introduces its own parameters, which are NOT present
+                // in the outer scope and would be missed if we just let the
+                // caller handle this.  Add the parameters now, then return
+                // `false` so the enclosing scope walk still runs and
+                // contributes its variables too.
+                collect_from_params(&arrow.parameter_list, vars);
             }
             false
         }
@@ -732,6 +735,33 @@ fn collect_from_statements<'b>(
         let stmt_span = stmt.span();
         if stmt_span.start.offset > cursor_offset {
             continue;
+        }
+
+        // ── Closure / arrow-function scope isolation ──
+        // If the cursor falls inside this statement, check whether
+        // it contains a closure whose body encloses the cursor.
+        // Closures introduce an isolated scope: only their parameters,
+        // `use` clause, and body variables are visible — not the
+        // enclosing method's locals.  When found, collect only from
+        // the closure's scope, discard any outer vars accumulated so
+        // far, and return immediately.
+        //
+        // Arrow functions are NOT isolated (they capture the enclosing
+        // scope), so try_collect_from_enclosing_closure returns false
+        // for them and we fall through to normal processing.
+        if cursor_offset >= stmt_span.start.offset && cursor_offset <= stmt_span.end.offset {
+            let mut closure_vars: HashSet<String> = HashSet::new();
+            if try_collect_from_enclosing_closure(content, stmt, cursor_offset, &mut closure_vars) {
+                // PHP automatically binds `$this` inside closures defined
+                // in non-static instance methods.  If the enclosing scope
+                // had `$this`, carry it into the closure scope so it stays
+                // visible even though it was not listed in the `use` clause.
+                if vars.contains("$this") {
+                    closure_vars.insert("$this".to_string());
+                }
+                *vars = closure_vars;
+                return;
+            }
         }
 
         // ── @var docblock variable declarations ──
@@ -1004,14 +1034,33 @@ fn collect_vars_from_expression<'b>(
         }
         Expression::ArrowFunction(arrow) => {
             let span = arrow.span();
-            if cursor_offset >= span.start.offset && cursor_offset <= span.end.offset {
+            if cursor_offset >= span.start.offset && cursor_offset <= span.end.offset + 1 {
                 collect_from_params(&arrow.parameter_list, vars);
                 collect_vars_from_expression(content, arrow.expression, cursor_offset, vars);
             }
         }
-        // Don't recurse into sub-expressions that aren't scoping constructs
-        // — we only care about assignment LHS variables, not every variable
-        // reference (those are handled by the statement walker).
+        // Recurse into call arguments to find any arrow functions or closures
+        // whose body contains the cursor.  Arrow function parameters must be
+        // visible when the cursor is inside an arrow function passed as a
+        // call argument (e.g. `array_map(fn($x) => $x|, $arr)`).
+        Expression::Call(call) => {
+            let arg_list = call.get_argument_list();
+            for arg in arg_list.arguments.iter() {
+                let arg_expr = match arg {
+                    Argument::Positional(a) => a.value,
+                    Argument::Named(a) => a.value,
+                };
+                let arg_span = arg_expr.span();
+                if cursor_offset >= arg_span.start.offset
+                    && cursor_offset <= arg_span.end.offset + 1
+                {
+                    collect_vars_from_expression(content, arg_expr, cursor_offset, vars);
+                    break;
+                }
+            }
+        }
+        // Don't recurse into other sub-expressions — we only care about
+        // assignment LHS variables and scoping constructs.
         _ => {}
     }
 }
