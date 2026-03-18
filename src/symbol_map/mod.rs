@@ -199,6 +199,12 @@ pub(crate) struct CallSite {
     /// (e.g. `name: $value`).  Inlay hints are suppressed for these
     /// because the parameter name is already visible in source.
     pub named_arg_indices: Vec<u32>,
+    /// Parameter names (without `$` prefix) for each named argument,
+    /// in the same order as `named_arg_indices`.  Used by inlay hints
+    /// to determine which parameters are already consumed by named
+    /// arguments so that positional arguments map to the correct
+    /// remaining parameters.
+    pub named_arg_names: Vec<String>,
     /// Indices (into `arg_offsets`) of arguments that use the `...`
     /// spread/unpacking operator.  Inlay hints are suppressed for these
     /// because a single spread argument may expand into multiple parameters.

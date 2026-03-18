@@ -15,24 +15,6 @@ within the same impact tier.
 
 ---
 
-## B7. Inlay hints: wrong parameter name with mixed named and positional arguments
-
-**Impact: Medium · Effort: Medium**
-
-`emit_parameter_hints` in `src/inlay_hints.rs` maps each argument to
-a parameter by its positional index (`arg_idx`). This is wrong when
-named arguments appear before positional arguments or consume
-parameters out of order. For example, `greet(city: 'NYC', 'Alice')`
-would label `'Alice'` as `age:` instead of `name:`.
-
-**Fix:** Track which parameters are consumed by named arguments
-first, then assign remaining positional arguments to the remaining
-parameters in order.
-
-**File:** `src/inlay_hints.rs` L115-121.
-
----
-
 ## B1. Native type hints not considered in virtual property specificity ranking
 
 **Impact: Low-Medium · Effort: Medium**

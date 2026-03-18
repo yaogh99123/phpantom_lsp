@@ -203,6 +203,101 @@ greet('Alice', age: 25, 'NYC');
         !lbls.contains(&"age:".to_string()),
         "age: should be suppressed"
     );
+    assert!(
+        lbls.contains(&"city:".to_string()),
+        "expected city: hint for third arg, got {:?}",
+        lbls
+    );
+}
+
+#[tokio::test]
+async fn named_arg_before_positional_maps_correctly() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/inlay.php").unwrap();
+    // Named arg `city:` consumes param 2, so the positional arg 'Alice'
+    // should map to param 0 (`name:`), not param 1 (`age:`).
+    let text = r#"<?php
+function greet(string $name, int $age, string $city): void {}
+greet(city: 'NYC', 'Alice');
+"#;
+
+    let hints = inlay_hints_for(&backend, &uri, text).await;
+    let line_hints = hints_at_line(&hints, 2);
+    let lbls = labels(&line_hints);
+    assert!(
+        lbls.contains(&"name:".to_string()),
+        "expected name: hint for positional arg after named, got {:?}",
+        lbls
+    );
+    assert!(
+        !lbls.contains(&"age:".to_string()),
+        "positional arg should not get age: hint, got {:?}",
+        lbls
+    );
+    assert!(
+        !lbls.contains(&"city:".to_string()),
+        "city: is a named arg and should be suppressed, got {:?}",
+        lbls
+    );
+}
+
+#[tokio::test]
+async fn multiple_named_args_with_positional_remainder() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/inlay.php").unwrap();
+    // Two named args consume params 0 and 2, leaving param 1 (`age:`)
+    // for the single positional argument.
+    let text = r#"<?php
+function greet(string $name, int $age, string $city): void {}
+greet(name: 'Alice', city: 'NYC', 30);
+"#;
+
+    let hints = inlay_hints_for(&backend, &uri, text).await;
+    let line_hints = hints_at_line(&hints, 2);
+    let lbls = labels(&line_hints);
+    assert!(
+        lbls.contains(&"age:".to_string()),
+        "expected age: hint for remaining positional arg, got {:?}",
+        lbls
+    );
+    assert_eq!(
+        lbls.len(),
+        1,
+        "expected exactly one hint (the positional arg), got {:?}",
+        lbls
+    );
+}
+
+#[tokio::test]
+async fn named_arg_out_of_order_two_positional() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/inlay.php").unwrap();
+    // Named arg `age:` consumes param 1.  Remaining params in order
+    // are 0 (`name`) and 2 (`city`).  The two positional args should
+    // map to those in order.
+    let text = r#"<?php
+function greet(string $name, int $age, string $city): void {}
+greet(age: 25, 'Alice', 'NYC');
+"#;
+
+    let hints = inlay_hints_for(&backend, &uri, text).await;
+    let line_hints = hints_at_line(&hints, 2);
+    let lbls = labels(&line_hints);
+    assert!(
+        lbls.contains(&"name:".to_string()),
+        "first positional should be name:, got {:?}",
+        lbls
+    );
+    assert!(
+        lbls.contains(&"city:".to_string()),
+        "second positional should be city:, got {:?}",
+        lbls
+    );
+    assert!(
+        !lbls.contains(&"age:".to_string()),
+        "age: is named and should be suppressed, got {:?}",
+        lbls
+    );
 }
 
 // ─── By-reference indicator ─────────────────────────────────────────────────

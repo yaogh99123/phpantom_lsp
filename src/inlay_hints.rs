@@ -99,6 +99,29 @@ impl Backend {
         let range_start = position_to_offset(content, range.start);
         let range_end = position_to_offset(content, range.end);
 
+        // Build a set of parameter names consumed by named arguments so
+        // positional arguments can be mapped to the remaining parameters.
+        let named_consumed: std::collections::HashSet<&str> = call_site
+            .named_arg_names
+            .iter()
+            .map(|n| n.as_str())
+            .collect();
+
+        // Parameters not consumed by named args, in declaration order.
+        // Each positional argument is assigned to the next entry in this
+        // list.  For variadic parameters the last entry is reused.
+        let remaining_params: Vec<usize> = params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                let name = p.name.strip_prefix('$').unwrap_or(&p.name);
+                !named_consumed.contains(name)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        let mut positional_counter: usize = 0;
+
         for (arg_idx, &arg_offset) in call_site.arg_offsets.iter().enumerate() {
             // Skip arguments outside the viewport range.
             if arg_offset < range_start || arg_offset > range_end {
@@ -112,22 +135,29 @@ impl Backend {
 
             // Skip spread arguments — a single `...$args` may expand into
             // multiple parameters, so any single parameter name would be
-            // misleading.
+            // misleading.  Still advance the positional counter because
+            // the spread occupies at least one parameter slot.
             if call_site.spread_arg_indices.contains(&(arg_idx as u32)) {
+                positional_counter += 1;
                 continue;
             }
 
-            // Determine which parameter this argument corresponds to.
-            // For variadic parameters, all remaining args map to the last param.
-            let param_idx = if arg_idx < params.len() {
-                arg_idx
+            // Determine which parameter this positional argument corresponds
+            // to. Named arguments consume specific parameters out of order,
+            // so positional arguments fill the remaining slots sequentially.
+            let param_idx = if positional_counter < remaining_params.len() {
+                remaining_params[positional_counter]
             } else if params.last().is_some_and(|p| p.is_variadic) {
                 params.len() - 1
             } else {
-                // More arguments than parameters and the last param is not
-                // variadic. Skip (likely a bug in user code; we don't hint).
+                // More positional arguments than remaining parameters and
+                // the last param is not variadic. Skip (likely a bug in
+                // user code; we don't hint).
+                positional_counter += 1;
                 continue;
             };
+
+            positional_counter += 1;
 
             let param = &params[param_idx];
 
