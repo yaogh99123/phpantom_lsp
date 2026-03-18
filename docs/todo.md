@@ -19,6 +19,13 @@ within the same impact tier.
 
 # Scheduled Sprints
 
+## Sprint 3 — Diagnostics quality (finishing touches)
+
+| #   | Item                                                                                                                                                           | Impact | Effort |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
+| B13 | [Argument count: too many arguments off by default](todo/bugs.md#b13-argument-count-diagnostic-flags-too-many-arguments-by-default)                            | High   | Low    |
+| E0  | [Switch embedded stubs to master + LanguageLevelTypeAware](todo/external-stubs.md#e0-switch-embedded-stubs-to-master-and-apply-languageleveltypeaware-patches) | High   | Low    |
+
 ## Sprint 4 — Refactoring toolkit
 
 | #   | Item                                                                               | Impact | Effort |
@@ -81,67 +88,68 @@ server with Blade intelligence.
 Items not yet assigned to a sprint. Worth doing eventually but
 unlikely to move the needle for most users.
 
-| #   | Item                                                                     | Impact     | Effort      |
-| --- | ------------------------------------------------------------------------ | ---------- | ----------- |
-|     | **[Completion](todo/completion.md)**                                     |            |             |
-| C1  | Array functions needing new code paths                                   | Medium     | High        |
-| C4  | Go-to-definition for array shape keys via bracket access                 | Low-Medium | Medium      |
-| C5  | Non-array functions with dynamic return types                            | Low        | High        |
-| C6  | `#[ReturnTypeContract]` parameter-dependent return types                 | Low        | Low         |
-| C7  | `#[ExpectedValues]` parameter value suggestions                          | Low        | Medium      |
-| C8  | `class_alias()` support                                                  | Low-Medium | Medium      |
-|     | **[Type Inference](todo/type-inference.md)**                             |            |             |
-| T4  | Non-empty-\* type narrowing and propagation                              | Low        | Low         |
-| T5  | Fiber type resolution                                                    | Low        | Low         |
-| T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation   | Low-Medium | Low-Medium  |
-|     | **[Diagnostics](todo/diagnostics.md)**                                   |            |             |
-| D2  | Chain error propagation (flag only the first broken link)                | Medium     | Medium      |
-| D5  | Diagnostic suppression intelligence                                      | Medium     | Medium      |
-| D10 | PHPMD diagnostic proxy                                                   | Low        | Medium      |
-|     | **[Code Actions](todo/actions.md)**                                      |            |             |
-| A3  | Switch → match conversion                                                | Low        | Medium      |
-| A10 | Generate interface from class                                            | Low-Medium | Medium      |
-|     | **[LSP Features](todo/lsp-features.md)**                                 |            |             |
-| F3  | Incremental text sync                                                    | Low-Medium | Medium      |
-|     | **[Signature Help](todo/signature-help.md)**                             |            |             |
-| S3  | Multiple overloaded signatures                                           | Medium     | Medium-High |
-| S4  | Named argument awareness in active parameter                             | Low-Medium | Medium      |
-| S5  | Language construct signature help and hover                              | Low        | Low         |
-|     | **[Laravel](todo/laravel.md)**                                           |            |             |
-| L4  | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)        | Medium     | Medium      |
-| L2  | `morphedByMany` missing from relationship method map                     | Low-Medium | Low         |
-| L3  | `$dates` array (deprecated)                                              | Low-Medium | Low         |
-| L6  | Factory `has*`/`for*` relationship methods                               | Low-Medium | Medium      |
-| L7  | `$pivot` property on BelongsToMany                                       | Medium     | Medium-High |
-| L8  | `withSum`/`withAvg`/`withMin`/`withMax` aggregate properties             | Low-Medium | Medium-High |
-| L9  | Higher-order collection proxies                                          | Low-Medium | Medium-High |
-| L10 | `View::withX()` / `RedirectResponse::withX()` dynamic methods            | Low        | Low         |
-| L11 | `$appends` array                                                         | Low        | Low         |
-|     | **[External Stubs](todo/external-stubs.md)**                             |            |             |
-| E2  | Project-level stubs as type resolution source                            | Medium     | Medium      |
-| E3  | IDE-provided and `.phpantom.toml` stub paths                             | Low-Medium | Low         |
-| E6  | Stub install prompt for non-Composer projects                            | Low        | Low         |
-|     | **[Performance](todo/performance.md)**                                   |            |             |
-| P1a | `type_hint_to_classes` returns `Vec<Arc<ClassInfo>>`                     | Low        | Low         |
-| P1b | Propagate `Arc<ClassInfo>` through variable-resolution pipeline          | Low        | Medium      |
-| P2  | Type AST for `apply_substitution` (full refactor)                        | Medium     | High        |
-| P3  | Parallel pre-filter in `find_implementors`                               | Low-Medium | Medium      |
-| P4  | `memmem` for block comment terminator search                             | Low        | Low         |
-| P5  | `memmap2` for file reads during scanning                                 | Low        | Low         |
-| P6  | O(n²) transitive eviction in `evict_fqn`                                 | Low        | Low         |
-| P7  | `diag_pending_uris` uses `Vec::contains` for dedup                       | Low        | Low         |
-| P8  | `find_class_in_ast_map` linear fallback scan                             | Low        | Low         |
-|     | **[Indexing](todo/indexing.md)**                                         |            |             |
-| X1  | Staleness detection and auto-refresh                                     | Medium     | Medium      |
-| X3  | Completion item detail on demand (`completionItem/resolve`)              | Medium     | Medium      |
-| X2  | Parallel file processing — remaining work                                | Low-Medium | Medium      |
-| X5  | Granular progress reporting for indexing, GTI, and Find References       | Low-Medium | Medium      |
-| X4  | Full background indexing (`strategy = "full"`)                           | Medium     | High        |
-| X6  | Disk cache (evaluate later)                                              | Medium     | High        |
-|     | **[Bug Fixes](todo/bugs.md)**                                            |            |             |
-| B11 | [Diagnostic deduplication drops distinct diagnostics on same range](todo/bugs.md#b11--diagnostic-deduplication-drops-distinct-diagnostics-on-the-same-range) | Medium | Low |
-| B12 | [PHPStan cache pruning uses length-only comparison](todo/bugs.md#b12--phpstan-cache-pruning-uses-length-only-comparison) | Low | Low |
-|     | **[Inline Completion](todo/inline-completion.md)**                       |            |             |
-| N1  | Template engine (type-aware snippets)                                    | Medium     | High        |
-| N2  | N-gram prediction from PHP corpus                                        | Medium     | Very High   |
-| N3  | Fine-tuned GGUF sidecar model                                            | Medium     | Very High   |
+| #   | Item                                                                                                                                                         | Impact     | Effort      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------- |
+|     | **[Completion](todo/completion.md)**                                                                                                                         |            |             |
+| C1  | Array functions needing new code paths                                                                                                                       | Medium     | High        |
+| C4  | Go-to-definition for array shape keys via bracket access                                                                                                     | Low-Medium | Medium      |
+| C5  | Non-array functions with dynamic return types                                                                                                                | Low        | High        |
+| C6  | `#[ReturnTypeContract]` parameter-dependent return types                                                                                                     | Low        | Low         |
+| C7  | `#[ExpectedValues]` parameter value suggestions                                                                                                              | Low        | Medium      |
+| C8  | `class_alias()` support                                                                                                                                      | Low-Medium | Medium      |
+|     | **[Type Inference](todo/type-inference.md)**                                                                                                                 |            |             |
+| T4  | Non-empty-\* type narrowing and propagation                                                                                                                  | Low        | Low         |
+| T5  | Fiber type resolution                                                                                                                                        | Low        | Low         |
+| T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                       | Low-Medium | Low-Medium  |
+|     | **[Diagnostics](todo/diagnostics.md)**                                                                                                                       |            |             |
+| D2  | Chain error propagation (flag only the first broken link)                                                                                                    | Medium     | Medium      |
+| D5  | Diagnostic suppression intelligence                                                                                                                          | Medium     | Medium      |
+| D10 | PHPMD diagnostic proxy                                                                                                                                       | Low        | Medium      |
+|     | **[Code Actions](todo/actions.md)**                                                                                                                          |            |             |
+| A3  | Switch → match conversion                                                                                                                                    | Low        | Medium      |
+| A10 | Generate interface from class                                                                                                                                | Low-Medium | Medium      |
+|     | **[LSP Features](todo/lsp-features.md)**                                                                                                                     |            |             |
+| F3  | Incremental text sync                                                                                                                                        | Low-Medium | Medium      |
+|     | **[Signature Help](todo/signature-help.md)**                                                                                                                 |            |             |
+| S3  | Multiple overloaded signatures                                                                                                                               | Medium     | Medium-High |
+| S4  | Named argument awareness in active parameter                                                                                                                 | Low-Medium | Medium      |
+| S5  | Language construct signature help and hover                                                                                                                  | Low        | Low         |
+|     | **[Laravel](todo/laravel.md)**                                                                                                                               |            |             |
+| L4  | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)                                                                                            | Medium     | Medium      |
+| L2  | `morphedByMany` missing from relationship method map                                                                                                         | Low-Medium | Low         |
+| L3  | `$dates` array (deprecated)                                                                                                                                  | Low-Medium | Low         |
+| L6  | Factory `has*`/`for*` relationship methods                                                                                                                   | Low-Medium | Medium      |
+| L7  | `$pivot` property on BelongsToMany                                                                                                                           | Medium     | Medium-High |
+| L8  | `withSum`/`withAvg`/`withMin`/`withMax` aggregate properties                                                                                                 | Low-Medium | Medium-High |
+| L9  | Higher-order collection proxies                                                                                                                              | Low-Medium | Medium-High |
+| L10 | `View::withX()` / `RedirectResponse::withX()` dynamic methods                                                                                                | Low        | Low         |
+| L11 | `$appends` array                                                                                                                                             | Low        | Low         |
+|     | **[External Stubs](todo/external-stubs.md)**                                                                                                                 |            |             |
+| E2  | Project-level stubs as type resolution source                                                                                                                | Medium     | Medium      |
+| E3  | IDE-provided and `.phpantom.toml` stub paths                                                                                                                 | Low-Medium | Low         |
+| E6  | Stub install prompt for non-Composer projects                                                                                                                | Low        | Low         |
+|     | **[Performance](todo/performance.md)**                                                                                                                       |            |             |
+| P1a | `type_hint_to_classes` returns `Vec<Arc<ClassInfo>>`                                                                                                         | Low        | Low         |
+| P1b | Propagate `Arc<ClassInfo>` through variable-resolution pipeline                                                                                              | Low        | Medium      |
+| P2  | Type AST for `apply_substitution` (full refactor)                                                                                                            | Medium     | High        |
+| P3  | Parallel pre-filter in `find_implementors`                                                                                                                   | Low-Medium | Medium      |
+| P4  | `memmem` for block comment terminator search                                                                                                                 | Low        | Low         |
+| P5  | `memmap2` for file reads during scanning                                                                                                                     | Low        | Low         |
+| P6  | O(n²) transitive eviction in `evict_fqn`                                                                                                                     | Low        | Low         |
+| P7  | `diag_pending_uris` uses `Vec::contains` for dedup                                                                                                           | Low        | Low         |
+| P8  | `find_class_in_ast_map` linear fallback scan                                                                                                                 | Low        | Low         |
+|     | **[Indexing](todo/indexing.md)**                                                                                                                             |            |             |
+| X1  | Staleness detection and auto-refresh                                                                                                                         | Medium     | Medium      |
+| X3  | Completion item detail on demand (`completionItem/resolve`)                                                                                                  | Medium     | Medium      |
+| X2  | Parallel file processing — remaining work                                                                                                                    | Low-Medium | Medium      |
+| X5  | Granular progress reporting for indexing, GTI, and Find References                                                                                           | Low-Medium | Medium      |
+| X4  | Full background indexing (`strategy = "full"`)                                                                                                               | Medium     | High        |
+| X6  | Disk cache (evaluate later)                                                                                                                                  | Medium     | High        |
+|     | **[Bug Fixes](todo/bugs.md)**                                                                                                                                |            |             |
+| B11 | [Diagnostic deduplication drops distinct diagnostics on same range](todo/bugs.md#b11--diagnostic-deduplication-drops-distinct-diagnostics-on-the-same-range) | Medium     | Low         |
+| B12 | [PHPStan cache pruning uses length-only comparison](todo/bugs.md#b12--phpstan-cache-pruning-uses-length-only-comparison)                                     | Low        | Low         |
+| B13 | [Argument count diagnostic flags too many arguments by default](todo/bugs.md#b13-argument-count-diagnostic-flags-too-many-arguments-by-default)              | High       | Low         |
+|     | **[Inline Completion](todo/inline-completion.md)**                                                                                                           |            |             |
+| N1  | Template engine (type-aware snippets)                                                                                                                        | Medium     | High        |
+| N2  | N-gram prediction from PHP corpus                                                                                                                            | Medium     | Very High   |
+| N3  | Fine-tuned GGUF sidecar model                                                                                                                                | Medium     | Very High   |

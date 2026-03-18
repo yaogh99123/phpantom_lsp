@@ -16,6 +16,81 @@ within the same impact tier.
 
 ---
 
+## E0. Switch embedded stubs to `master` and apply `LanguageLevelTypeAware` patches
+
+**Impact: High · Effort: Low**
+
+The embedded phpstorm-stubs are pinned to the latest GitHub **release**,
+which ships infrequently (the current release is about six months old).
+In the meantime the stubs `master` branch receives ongoing fixes and new
+PHP version additions. Using a stale release causes false-positive
+diagnostics and missing completions for PHP features that were already
+corrected upstream.
+
+PHPStan takes `dev-master` of the stubs on a weekly automated schedule
+(see their `update-phpstorm-stubs.yml` workflow). We should do the same.
+
+### Part 1 — Pull `master` instead of `latest release`
+
+`build.rs` currently calls the GitHub API for the latest release and
+downloads its tarball. Change `fetch_stubs` to clone or download the
+`master` branch HEAD instead:
+
+- Replace the `releases/latest` API call with a direct tarball download
+  of `master`:
+  `https://github.com/JetBrains/phpstorm-stubs/archive/refs/heads/master.tar.gz`
+- No API call needed — the tarball URL is stable and does not require
+  authentication.
+- Record the commit SHA (from the archive's embedded git metadata or a
+  separate HEAD query) in `stubs/.version` so `STUBS_VERSION` remains
+  meaningful.
+- The rest of `build.rs` (map parsing, code generation) is unchanged.
+
+### Part 2 — Patch `LanguageLevelTypeAware` overloads
+
+phpstorm-stubs uses `#[LanguageLevelTypeAware]` to annotate functions
+and parameters whose types differ by PHP version. When two overloads of
+the same function exist (one for an older PHP version, one for a newer),
+PHPantom's parser can end up with the wrong variant — or both, causing
+duplicate entries.
+
+The `PhpStormStubsElementAvailable` filter (`parser/mod.rs`) already
+handles this for version-gated elements. However `LanguageLevelTypeAware`
+on return types and parameter types is not yet processed: the attribute
+is present in the stub but PHPantom reads the raw type annotation
+(which may be the oldest-PHP fallback string) instead of selecting the
+correct variant for the target PHP version.
+
+Inspect how the attribute is used in the stubs:
+
+```
+#[LanguageLevelTypeAware(['8.0' => 'string|false'], default: 'string')]
+```
+
+The attribute's first argument is an array mapping minimum PHP version
+strings to the type annotation to use from that version onward. The
+`default` named argument is the fallback for older versions.
+
+**Implementation:** In `parser/mod.rs`, after the existing
+`PhpStormStubsElementAvailable` filter, add a pass that reads
+`LanguageLevelTypeAware` attributes on return types and parameters,
+selects the appropriate type string for the configured `php_version`,
+and substitutes it in place of the raw annotation. This mirrors the
+logic PHPStan implements in their stub-loading layer.
+
+If fully implementing the attribute parsing is complex, a pragmatic
+first step is to always select the **newest** type variant (highest
+version key) rather than version-matching. This eliminates the most
+common false positives (stubs that gained union types or `never` return
+types in recent PHP versions) without requiring per-project version
+configuration.
+
+### Prerequisites
+
+None. Both changes are isolated to `build.rs` and `parser/mod.rs`.
+
+---
+
 ## Current state
 
 PHPantom embeds JetBrains phpstorm-stubs at compile time via
@@ -90,11 +165,11 @@ PHP projects commonly install stub packages via Composer as
 
 ```json
 {
-    "require-dev": {
-        "jetbrains/phpstorm-stubs": "^2025.3",
-        "php-stubs/wordpress-stubs": "^6.0",
-        "php-stubs/acf-pro-stubs": "^6.0"
-    }
+  "require-dev": {
+    "jetbrains/phpstorm-stubs": "^2025.3",
+    "php-stubs/wordpress-stubs": "^6.0",
+    "php-stubs/acf-pro-stubs": "^6.0"
+  }
 }
 ```
 
@@ -125,11 +200,11 @@ The path is communicated via `initializationOptions` in the LSP
 
 ```json
 {
-    "initializationOptions": {
-        "stubs": {
-            "path": "/path/to/bundled/stubs"
-        }
+  "initializationOptions": {
+    "stubs": {
+      "path": "/path/to/bundled/stubs"
     }
+  }
 }
 ```
 
@@ -308,11 +383,11 @@ Three new maps on `Backend`, structured identically to the embedded
 stub indices but holding owned data (file paths) instead of static
 string references:
 
-| Field | Type | Purpose |
-|---|---|---|
-| `external_stub_class_index` | `HashMap<String, PathBuf>` | Class/interface/trait/enum FQN to stub file path |
-| `external_stub_function_index` | `HashMap<String, PathBuf>` | Function FQN to stub file path |
-| `external_stub_constant_index` | `HashMap<String, PathBuf>` | Constant name to stub file path |
+| Field                          | Type                       | Purpose                                          |
+| ------------------------------ | -------------------------- | ------------------------------------------------ |
+| `external_stub_class_index`    | `HashMap<String, PathBuf>` | Class/interface/trait/enum FQN to stub file path |
+| `external_stub_function_index` | `HashMap<String, PathBuf>` | Function FQN to stub file path                   |
+| `external_stub_constant_index` | `HashMap<String, PathBuf>` | Constant name to stub file path                  |
 
 ### Resolution changes
 
@@ -320,6 +395,7 @@ Insert a new phase in each resolution chain between user code and
 embedded stubs:
 
 **`find_or_load_class`:**
+
 1. Phase 1: `ast_map` (user code, already-parsed files)
 2. Phase 1.5: Composer classmap
 3. Phase 2: PSR-4
@@ -331,6 +407,7 @@ embedded stubs:
 5. Phase 3: Embedded stubs
 
 **`find_or_load_function`:**
+
 1. `global_functions` (user code + cached results)
 2. `autoload_function_index` (from Phase 2.5 of indexing.md)
 3. **External stub function index (new).** Same unified index.
@@ -390,6 +467,7 @@ LSP `initialize` request. PHPantom reads the path from
 never sees or configures this.
 
 This enables a distribution model where the IDE extension:
+
 1. Builds PHPantom without embedded stubs (smaller binary).
 2. Ships phpstorm-stubs as plain files alongside the binary.
 3. Passes the path at startup.
@@ -569,6 +647,7 @@ PHP standard library symbols.
 
 For this to work, stubs must come from another source. The most
 reliable combinations:
+
 - IDE extension provides stubs via `initializationOptions` (Phase 3).
 - The user's project has `jetbrains/phpstorm-stubs` in Composer
   (Phase 2).
@@ -581,12 +660,12 @@ embedded stubs, built-in symbols would be invisible.
 
 ## Summary
 
-| #   | Goal | Effort | Dependencies |
-|---|---|---|---|
-| E1 | GTD for built-in symbols via project-level phpstorm-stubs | Low | None |
-| E2 | Project-level stubs as a type resolution source | Medium | indexing.md (byte-level function/constant scanner) |
-| E3 | IDE-provided and `.phpantom.toml` stub paths | Low | E2 |
-| E4 | Ship SPL overlay stubs, let external stubs override | Low | E2 |
+| #   | Goal                                                      | Effort | Dependencies                                       |
+| --- | --------------------------------------------------------- | ------ | -------------------------------------------------- |
+| E1  | GTD for built-in symbols via project-level phpstorm-stubs | Low    | None                                               |
+| E2  | Project-level stubs as a type resolution source           | Medium | indexing.md (byte-level function/constant scanner) |
+| E3  | IDE-provided and `.phpantom.toml` stub paths              | Low    | E2                                                 |
+| E4  | Ship SPL overlay stubs, let external stubs override       | Low    | E2                                                 |
 
 E1 can be done immediately and independently. It provides
 immediate value (GTD on `array_map`, `PDO`, `Iterator`, etc.) with
