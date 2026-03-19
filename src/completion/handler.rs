@@ -877,7 +877,48 @@ impl Backend {
         );
 
         match member_items {
-            Some(all_items) if !all_items.is_empty() => Some(CompletionResponse::Array(all_items)),
+            Some(all_items) if !all_items.is_empty() => {
+                // ── B15: suppress snippet parentheses when `(` already follows ──
+                // When completing `$obj->|()` or `$obj->meth|()`, the
+                // character after the cursor (past any partial identifier)
+                // is already `(`.  Inserting a snippet with its own `()`
+                // would produce `method()()`.  Detect this and downgrade
+                // callable snippets to plain method-name insertions.
+                let paren_follows = {
+                    let byte_off =
+                        crate::util::position_to_byte_offset(content, position);
+                    let rest = &content[byte_off..];
+                    // Skip past any partial identifier the user has typed
+                    // (ASCII letters, digits, underscore).
+                    let after_ident = rest.trim_start_matches(|c: char| {
+                        c.is_ascii_alphanumeric() || c == '_'
+                    });
+                    after_ident.starts_with('(')
+                };
+
+                if paren_follows {
+                    let stripped: Vec<CompletionItem> = all_items
+                        .into_iter()
+                        .map(|mut item| {
+                            if item.kind == Some(CompletionItemKind::METHOD)
+                                && item.insert_text_format
+                                    == Some(InsertTextFormat::SNIPPET)
+                            {
+                                // Replace the snippet with just the method
+                                // name (the filter_text already holds it).
+                                if let Some(ref name) = item.filter_text {
+                                    item.insert_text = Some(name.clone());
+                                }
+                                item.insert_text_format = None;
+                            }
+                            item
+                        })
+                        .collect();
+                    Some(CompletionResponse::Array(stripped))
+                } else {
+                    Some(CompletionResponse::Array(all_items))
+                }
+            }
             _ => None,
         }
     }
