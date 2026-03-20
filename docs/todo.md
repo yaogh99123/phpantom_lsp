@@ -177,3 +177,26 @@ unlikely to move the needle for most users.
 | N1  | Template engine (type-aware snippets)                                                                                                                        | Medium     | High        |
 | N2  | N-gram prediction from PHP corpus                                                                                                                            | Medium     | Very High   |
 | N3  | Fine-tuned GGUF sidecar model                                                                                                                                | Medium     | Very High   |
+|     | **[Phpactor Test Parity](todo/phpactor-test-parity.md)**                                                                                                     |            |             |
+| Q1  | `is_callable()` / `is_float()` narrowing fixtures                                                                                                            | Low        | Low         |
+| Q2  | `in_array()` with class constants in haystack                                                                                                                | Low        | Low         |
+| Q3  | Elseif with terminating statement (`die`/`throw`)                                                                                                            | Low        | Low         |
+| Q4  | Else-branch assignment union merging                                                                                                                         | Low        | Low         |
+| Q5  | Combined negated type guards (`!is_string && !instanceof`)                                                                                                   | Low        | Low         |
+| Q6  | Namespace-qualified instanceof in or-chains                                                                                                                  | Low        | Low         |
+| Q7  | Ternary assignment producing union type                                                                                                                      | Low        | Low         |
+| Q8  | Cast expression type resolution (`(string)`, `(int)`, …)                                                                                                     | Low        | Low         |
+| Q9  | Variadic parameter type inside function body                                                                                                                 | Low        | Low         |
+| Q10 | `list<T>` type alias resolution                                                                                                                              | Low        | Low         |
+| Q11 | `string\|false` return type                                                                                                                                   | Low        | Low         |
+| Q12 | Union from relative docblock class names                                                                                                                     | Low        | Low         |
+| Q13 | Callable / Closure docblock param types                                                                                                                      | Low        | Low-Medium  |
+| Q14 | `int<min,max>` range types                                                                                                                                   | Low        | Low-Medium  |
+| Q15 | Parenthesized union types with narrowing                                                                                                                     | Low        | Low-Medium  |
+| Q16 | Variable-variable `${$bar}` resolution                                                                                                                       | Low        | Low-Medium  |
+| Q17 | `global` keyword variable access                                                                                                                             | Low        | Low-Medium  |
+| Q18 | `define()` constant type resolution                                                                                                                          | Low        | Low-Medium  |
+| Q19 | Array mutation tracking (`$arr[] = …`)                                                                                                                       | Low        | Medium      |
+| Q20 | Return statement body type inference                                                                                                                         | Low        | Medium      |
+| Q21 | Binary expression type inference (arithmetic, concat, …)                                                                                                     | Low        | High        |
+| Q22 | Postfix increment / decrement literal types                                                                                                                  | Low        | Low         |

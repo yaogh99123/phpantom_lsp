@@ -563,6 +563,118 @@ $b->a()->b()->c()->d()->e()->
     });
 }
 
+// ─── PHPactor reflection benchmarks ────────────────────────────────────────
+//
+// These use the same fixture files as PHPactor's reflection benchmarks
+// (`lib/WorseReflection/Tests/Benchmarks/fixtures/`), ported to
+// `benches/fixtures/`.  They exercise completion on large, real-world
+// classes to measure type resolution and member enumeration performance.
+
+/// Carbon: a single 839-line class with ~80 `@property` annotations and
+/// many `@method` entries.  PHPactor's `CarbonReflectBench` reflects this
+/// class and iterates its methods.  We trigger completion on an instance.
+fn bench_completion_carbon(c: &mut Criterion) {
+    let runtime = rt();
+    let carbon_src =
+        std::fs::read_to_string("benches/fixtures/reflection/carbon.php")
+            .expect("carbon.php fixture missing");
+
+    // Build a wrapper that instantiates Carbon and triggers completion.
+    let wrapper = format!(
+        "{}\n$c = new \\Carbon\\Carbon();\n$c->\n",
+        carbon_src
+    );
+    // Find the cursor line: last line with `$c->`
+    let cursor_line = wrapper.lines().count() as u32 - 2;
+
+    c.bench_function("completion_carbon_class", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_carbon.php", &wrapper).await;
+                fire_completion(&backend, &uri, cursor_line, 4).await;
+            })
+        })
+    });
+}
+
+/// Yii ActiveRecord hierarchy: 10 files, ~5 500 lines total, deep
+/// inheritance chain with traits, interfaces, and `@property` annotations.
+/// PHPactor's `YiiBench` reflects the leaf `Record` class and iterates
+/// all members calling `inferredType()`.  We open all files and trigger
+/// completion on a `Record` instance.
+fn bench_completion_yii_hierarchy(c: &mut Criterion) {
+    let runtime = rt();
+
+    let yii_files: Vec<(&str, String)> = [
+        "BaseObject",
+        "Component",
+        "Model",
+        "BaseActiveRecord",
+        "ActiveRecord",
+        "Record",
+        "ActiveRecordInterface",
+        "Arrayable",
+        "ArrayableTrait",
+        "StaticInstanceInterface",
+        "StaticInstanceTrait",
+    ]
+    .iter()
+    .map(|name| {
+        let path = format!("benches/fixtures/yii/{name}.php");
+        let content =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let uri_name: &str = *name;
+        (uri_name, content)
+    })
+    .collect();
+
+    // Trigger file with completion on a Record instance.
+    let trigger = r#"<?php
+namespace Phpactor\WorseReflection\Tests\Workspace;
+$r = new Record();
+$r->
+"#;
+
+    c.bench_function("completion_yii_deep_hierarchy", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                // Open all Yii hierarchy files first.
+                for (name, content) in &yii_files {
+                    let uri = format!("file:///yii/{name}.php");
+                    open_file(&backend, &uri, content).await;
+                }
+                let uri = open_file(&backend, "file:///yii/trigger.php", trigger).await;
+                fire_completion(&backend, &uri, 3, 4).await;
+            })
+        })
+    });
+}
+
+/// Large-file completion: PHPactor's `Example1.php.test` — a 213-line
+/// class with 19 use-imports, 7 methods, and many local variables.
+/// Completion is triggered on an untyped `$foobar->` deep inside the class.
+/// This measures how completion scales with file complexity.
+fn bench_completion_large_file(c: &mut Criterion) {
+    let runtime = rt();
+    let content =
+        std::fs::read_to_string("benches/fixtures/completion/example1_long.php")
+            .expect("example1_long.php fixture missing");
+
+    // Cursor is on line 207 (0-based: 206), at `$foobar->` (col 24).
+    c.bench_function("completion_large_file", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri =
+                    open_file(&backend, "file:///bench_large.php", &content).await;
+                fire_completion(&backend, &uri, 206, 24).await;
+            })
+        })
+    });
+}
+
 // ─── Diagnostic benchmarks ─────────────────────────────────────────────────
 //
 // These use the exact same fixture files as PHPactor's `DiagnosticsBench`
@@ -626,6 +738,9 @@ criterion_group!(
     bench_hover,
     bench_definition,
     bench_reparse_after_edit,
+    bench_completion_carbon,
+    bench_completion_yii_hierarchy,
+    bench_completion_large_file,
     bench_diagnostics_phpactor_fixtures,
 );
 criterion_main!(benches);
