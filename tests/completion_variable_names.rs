@@ -2534,3 +2534,1222 @@ async fn test_completion_closure_this_visible_in_instance_method() {
         );
     }
 }
+
+// ─── Additional coverage tests ──────────────────────────────────────────────
+
+/// Closure inside an if-condition expression: the closure body should isolate scope.
+#[tokio::test]
+async fn test_completion_closure_inside_if_condition() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_if_cond.php").unwrap();
+    let text = concat!(
+        "<?php\n",                      // 0
+        "function test_if_cond() {\n",  // 1
+        "    $outer = 1;\n",            // 2
+        "    if ($fn = function() {\n", // 3
+        "        $inner = 2;\n",        // 4
+        "        $\n",                  // 5
+        "    }) {\n",                   // 6
+        "        echo 'yes';\n",        // 7
+        "    }\n",                      // 8
+        "}\n",                          // 9
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$inner"),
+        "$inner should be visible inside closure in if condition. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in if condition. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure defined inside a foreach body: the closure isolates scope.
+#[tokio::test]
+async fn test_completion_closure_inside_foreach_body() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_foreach.php").unwrap();
+    let text = concat!(
+        "<?php\n",                          // 0
+        "function test_foreach() {\n",      // 1
+        "    $outer = 1;\n",                // 2
+        "    foreach ([1,2] as $item) {\n", // 3
+        "        $cb = function() {\n",     // 4
+        "            $local = 'x';\n",      // 5
+        "            $\n",                  // 6
+        "        };\n",                     // 7
+        "    }\n",                          // 8
+        "}\n",                              // 9
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$local"),
+        "$local should be visible inside closure in foreach. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in foreach. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$item"),
+        "$item should NOT leak into closure in foreach. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a for-loop body: scope isolation.
+#[tokio::test]
+async fn test_completion_closure_inside_for_loop() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_for.php").unwrap();
+    let text = concat!(
+        "<?php\n",                             // 0
+        "function test_for() {\n",             // 1
+        "    $outer = 1;\n",                   // 2
+        "    for ($i = 0; $i < 10; $i++) {\n", // 3
+        "        $cb = function() {\n",        // 4
+        "            $inner = 99;\n",          // 5
+        "            $\n",                     // 6
+        "        };\n",                        // 7
+        "    }\n",                             // 8
+        "}\n",                                 // 9
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$inner"),
+        "$inner should be visible inside closure in for loop. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in for loop. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$i"),
+        "$i should NOT leak into closure in for loop. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a while-loop body: scope isolation.
+#[tokio::test]
+async fn test_completion_closure_inside_while_loop() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_while.php").unwrap();
+    let text = concat!(
+        "<?php\n",                      // 0
+        "function test_while() {\n",    // 1
+        "    $outer = 1;\n",            // 2
+        "    while (true) {\n",         // 3
+        "        $cb = function() {\n", // 4
+        "            $wvar = 'w';\n",   // 5
+        "            $\n",              // 6
+        "        };\n",                 // 7
+        "    }\n",                      // 8
+        "}\n",                          // 9
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$wvar"),
+        "$wvar should be visible inside closure in while. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in while. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a do-while body: scope isolation.
+#[tokio::test]
+async fn test_completion_closure_inside_do_while() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_dowhile.php").unwrap();
+    let text = concat!(
+        "<?php\n",                      // 0
+        "function test_dowhile() {\n",  // 1
+        "    $outer = 1;\n",            // 2
+        "    do {\n",                   // 3
+        "        $cb = function() {\n", // 4
+        "            $dwvar = 'd';\n",  // 5
+        "            $\n",              // 6
+        "        };\n",                 // 7
+        "    } while (true);\n",        // 8
+        "}\n",                          // 9
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$dwvar"),
+        "$dwvar should be visible inside closure in do-while. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in do-while. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a try block: scope isolation.
+#[tokio::test]
+async fn test_completion_closure_inside_try_block() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_try.php").unwrap();
+    let text = concat!(
+        "<?php\n",                          // 0
+        "function test_try() {\n",          // 1
+        "    $outer = 1;\n",                // 2
+        "    try {\n",                      // 3
+        "        $cb = function() {\n",     // 4
+        "            $tryvar = 't';\n",     // 5
+        "            $\n",                  // 6
+        "        };\n",                     // 7
+        "    } catch (\\Exception $e) {\n", // 8
+        "    }\n",                          // 9
+        "}\n",                              // 10
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$tryvar"),
+        "$tryvar should be visible inside closure in try. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in try. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a catch block: the catch variable ($e) should NOT be visible
+/// inside the closure (closure isolates scope).
+#[tokio::test]
+async fn test_completion_closure_inside_catch_block() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_catch.php").unwrap();
+    let text = concat!(
+        "<?php\n",                            // 0
+        "function test_catch() {\n",          // 1
+        "    $outer = 1;\n",                  // 2
+        "    try {\n",                        // 3
+        "        throw new \\Exception();\n", // 4
+        "    } catch (\\Exception $e) {\n",   // 5
+        "        $cb = function() {\n",       // 6
+        "            $catchvar = 'c';\n",     // 7
+        "            $\n",                    // 8
+        "        };\n",                       // 9
+        "    }\n",                            // 10
+        "}\n",                                // 11
+    );
+
+    let items = complete_at(&backend, &uri, text, 8, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$catchvar"),
+        "$catchvar should be visible inside closure in catch. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$e"),
+        "Catch variable $e should NOT leak into closure. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in catch. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a finally block: scope isolation.
+#[tokio::test]
+async fn test_completion_closure_inside_finally_block() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_finally.php").unwrap();
+    let text = concat!(
+        "<?php\n",                          // 0
+        "function test_finally() {\n",      // 1
+        "    $outer = 1;\n",                // 2
+        "    try {\n",                      // 3
+        "        echo 'try';\n",            // 4
+        "    } catch (\\Exception $e) {\n", // 5
+        "        echo 'catch';\n",          // 6
+        "    } finally {\n",                // 7
+        "        $cb = function() {\n",     // 8
+        "            $finvar = 'f';\n",     // 9
+        "            $\n",                  // 10
+        "        };\n",                     // 11
+        "    }\n",                          // 12
+        "}\n",                              // 13
+    );
+
+    let items = complete_at(&backend, &uri, text, 10, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$finvar"),
+        "$finvar should be visible inside closure in finally. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in finally. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a switch case: scope isolation.
+#[tokio::test]
+async fn test_completion_closure_inside_switch_case() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_switch.php").unwrap();
+    let text = concat!(
+        "<?php\n",                          // 0
+        "function test_switch() {\n",       // 1
+        "    $outer = 1;\n",                // 2
+        "    switch ($outer) {\n",          // 3
+        "        case 1:\n",                // 4
+        "            $cb = function() {\n", // 5
+        "                $swvar = 's';\n",  // 6
+        "                $\n",              // 7
+        "            };\n",                 // 8
+        "            break;\n",             // 9
+        "    }\n",                          // 10
+        "}\n",                              // 11
+    );
+
+    let items = complete_at(&backend, &uri, text, 7, 17).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$swvar"),
+        "$swvar should be visible inside closure in switch. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in switch. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside a return statement: `return function() { $| };`
+#[tokio::test]
+async fn test_completion_closure_inside_return_statement() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_return.php").unwrap();
+    let text = concat!(
+        "<?php\n",                    // 0
+        "function test_return() {\n", // 1
+        "    $outer = 1;\n",          // 2
+        "    return function() {\n",  // 3
+        "        $retvar = 'r';\n",   // 4
+        "        $\n",                // 5
+        "    };\n",                   // 6
+        "}\n",                        // 7
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$retvar"),
+        "$retvar should be visible inside closure in return. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in return. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure inside an echo statement: `echo (function() { $| })();`
+#[tokio::test]
+async fn test_completion_closure_inside_echo() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_echo.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                // 0
+        "function test_echo() {\n",               // 1
+        "    $outer = 1;\n",                      // 2
+        "    echo call_user_func(function() {\n", // 3
+        "        $echovar = 'e';\n",              // 4
+        "        $\n",                            // 5
+        "    });\n",                              // 6
+        "}\n",                                    // 7
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$echovar"),
+        "$echovar should be visible inside closure in echo. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in echo. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in an array value: `$arr = [function() { $| }];`
+#[tokio::test]
+async fn test_completion_closure_in_array_value() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_array.php").unwrap();
+    let text = concat!(
+        "<?php\n",                    // 0
+        "function test_array() {\n",  // 1
+        "    $outer = 1;\n",          // 2
+        "    $arr = [function() {\n", // 3
+        "        $arrvar = 'a';\n",   // 4
+        "        $\n",                // 5
+        "    }];\n",                  // 6
+        "}\n",                        // 7
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$arrvar"),
+        "$arrvar should be visible inside closure in array. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in array. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in a legacy array(): `$arr = array(function() { $| });`
+#[tokio::test]
+async fn test_completion_closure_in_legacy_array() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_legacy_array.php").unwrap();
+    let text = concat!(
+        "<?php\n",                          // 0
+        "function test_legacy_array() {\n", // 1
+        "    $outer = 1;\n",                // 2
+        "    $arr = array(function() {\n",  // 3
+        "        $legvar = 'l';\n",         // 4
+        "        $\n",                      // 5
+        "    });\n",                        // 6
+        "}\n",                              // 7
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$legvar"),
+        "$legvar should be visible inside closure in legacy array. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in legacy array. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in a binary expression: `$x = true && (function() { $| })()`.
+#[tokio::test]
+async fn test_completion_closure_in_binary_expression() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_binary.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                      // 0
+        "function test_binary() {\n",                   // 1
+        "    $outer = 1;\n",                            // 2
+        "    $flag = true;\n",                          // 3
+        "    $result = $flag && ($fn = function() {\n", // 4
+        "        $binvar = 'b';\n",                     // 5
+        "        $\n",                                  // 6
+        "    });\n",                                    // 7
+        "}\n",                                          // 8
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$binvar"),
+        "$binvar should be visible inside closure in binary expr. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in binary expr. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in a conditional/ternary expression: `$x ? function() { $| } : null`.
+#[tokio::test]
+async fn test_completion_closure_in_ternary() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_ternary.php").unwrap();
+    let text = concat!(
+        "<?php\n",                        // 0
+        "function test_ternary() {\n",    // 1
+        "    $outer = 1;\n",              // 2
+        "    $x = true ? function() {\n", // 3
+        "        $ternvar = 't';\n",      // 4
+        "        $\n",                    // 5
+        "    } : null;\n",                // 6
+        "}\n",                            // 7
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$ternvar"),
+        "$ternvar should be visible inside closure in ternary. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in ternary. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in a parenthesized expression: `(function() { $| })()`.
+#[tokio::test]
+async fn test_completion_closure_in_parenthesized_expr() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_paren.php").unwrap();
+    let text = concat!(
+        "<?php\n",                    // 0
+        "function test_paren() {\n",  // 1
+        "    $outer = 1;\n",          // 2
+        "    $fn = (function() {\n",  // 3
+        "        $parenvar = 'p';\n", // 4
+        "        $\n",                // 5
+        "    });\n",                  // 6
+        "}\n",                        // 7
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$parenvar"),
+        "$parenvar should be visible inside closure in parens. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in parens. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in a method call argument: `$obj->method(function() { $| })`.
+#[tokio::test]
+async fn test_completion_closure_in_method_call_arg() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_method_arg.php").unwrap();
+    let text = concat!(
+        "<?php\n",                              // 0
+        "function test_method_arg() {\n",       // 1
+        "    $outer = 1;\n",                    // 2
+        "    $obj = new \\stdClass();\n",       // 3
+        "    $obj->doSomething(function() {\n", // 4
+        "        $methvar = 'm';\n",            // 5
+        "        $\n",                          // 6
+        "    });\n",                            // 7
+        "}\n",                                  // 8
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$methvar"),
+        "$methvar should be visible inside closure in method arg. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in method arg. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in a null-safe method call argument: `$obj?->method(function() { $| })`.
+#[tokio::test]
+async fn test_completion_closure_in_nullsafe_method_call_arg() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_nullsafe.php").unwrap();
+    let text = concat!(
+        "<?php\n",                               // 0
+        "function test_nullsafe() {\n",          // 1
+        "    $outer = 1;\n",                     // 2
+        "    $obj = new \\stdClass();\n",        // 3
+        "    $obj?->doSomething(function() {\n", // 4
+        "        $nsvar = 'n';\n",               // 5
+        "        $\n",                           // 6
+        "    });\n",                             // 7
+        "}\n",                                   // 8
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$nsvar"),
+        "$nsvar should be visible inside closure in nullsafe method arg. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in nullsafe method arg. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure in a static method call argument: `Foo::method(function() { $| })`.
+#[tokio::test]
+async fn test_completion_closure_in_static_method_call_arg() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_static_call.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                 // 0
+        "class StaticHost {\n",                                    // 1
+        "    public static function run(callable $cb): void {}\n", // 2
+        "}\n",                                                     // 3
+        "function test_static_call() {\n",                         // 4
+        "    $outer = 1;\n",                                       // 5
+        "    StaticHost::run(function() {\n",                      // 6
+        "        $stvar = 'st';\n",                                // 7
+        "        $\n",                                             // 8
+        "    });\n",                                               // 9
+        "}\n",                                                     // 10
+    );
+
+    let items = complete_at(&backend, &uri, text, 8, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$stvar"),
+        "$stvar should be visible inside closure in static call arg. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure in static call arg. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Arrow function in a call argument: `array_map(fn($x) => $x|, $arr)` — $x visible.
+#[tokio::test]
+async fn test_completion_arrow_fn_param_in_call_arg() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///arrow_fn_call_arg.php").unwrap();
+    let text = concat!(
+        "<?php\n",                            // 0
+        "function test_arrow_call() {\n",     // 1
+        "    $arr = [1, 2, 3];\n",            // 2
+        "    array_map(fn($item) => $item\n", // 3
+        "    , $arr);\n",                     // 4
+        "}\n",                                // 5
+    );
+
+    // Cursor at end of `$item` on line 3, character 32 (after the 'm')
+    // Prefix is "$item" which matches the arrow fn parameter.
+    let items = complete_at(&backend, &uri, text, 3, 32).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$item"),
+        "Arrow fn parameter $item should be visible in body. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Variable from `global` statement: `function f() { global $g; $| }` — $g visible.
+#[tokio::test]
+async fn test_completion_global_statement_variable() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///global_stmt.php").unwrap();
+    let text = concat!(
+        "<?php\n",                    // 0
+        "function test_global() {\n", // 1
+        "    global $globalVar;\n",   // 2
+        "    $\n",                    // 3
+        "}\n",                        // 4
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 5).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$globalVar"),
+        "$globalVar from global statement should be visible. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Variable from `static` statement: `function f() { static $s = 0; $| }` — $s visible.
+#[tokio::test]
+async fn test_completion_static_statement_variable() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///static_stmt.php").unwrap();
+    let text = concat!(
+        "<?php\n",                    // 0
+        "function test_static() {\n", // 1
+        "    static $counter = 0;\n", // 2
+        "    $\n",                    // 3
+        "}\n",                        // 4
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 5).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$counter"),
+        "$counter from static statement should be visible. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Variable from `@var` docblock: `/** @var Type $foo */ $|` — $foo visible.
+#[tokio::test]
+async fn test_completion_var_docblock_standalone() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///var_docblock_standalone.php").unwrap();
+    let text = concat!(
+        "<?php\n",                              // 0
+        "function test_var_docblock() {\n",     // 1
+        "    /** @var \\DateTime $myDate */\n", // 2
+        "    $myDate = null;\n",                // 3
+        "    $\n",                              // 4
+        "}\n",                                  // 5
+    );
+
+    let items = complete_at(&backend, &uri, text, 4, 5).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$myDate"),
+        "$myDate from @var docblock should be visible. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Interface scope: no `$this` visible since interfaces cannot have method bodies
+/// (cursor is inside the interface braces but not in a method).
+#[tokio::test]
+async fn test_completion_interface_scope_no_this() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///iface_scope.php").unwrap();
+    // Interfaces can't have concrete methods in PHP, but the parser might
+    // still accept code there. We place the cursor inside the interface body
+    // outside any method to check that $this is absent and the scope is handled.
+    let text = concat!(
+        "<?php\n",                                // 0
+        "interface MyInterface {\n",              // 1
+        "    public function doStuff(): void;\n", // 2
+        "    // $\n",                             // 3
+        "}\n",                                    // 4
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 7).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        !var_labels.contains(&"$this"),
+        "$this should NOT be visible in interface scope. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Enum scope: `$this` visible inside a non-static method.
+#[tokio::test]
+async fn test_completion_enum_scope_this_visible() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///enum_scope.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                 // 0
+        "enum Color {\n",                          // 1
+        "    case Red;\n",                         // 2
+        "    case Blue;\n",                        // 3
+        "    public function label(): string {\n", // 4
+        "        $\n",                             // 5
+        "    }\n",                                 // 6
+        "}\n",                                     // 7
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$this"),
+        "$this should be visible in enum non-static method. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Trait method scope: `$this` visible inside a non-static trait method.
+#[tokio::test]
+async fn test_completion_trait_scope_this_visible() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///trait_scope.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                // 0
+        "trait MyTrait {\n",                      // 1
+        "    public function doWork(): void {\n", // 2
+        "        $traitLocal = 1;\n",             // 3
+        "        $\n",                            // 4
+        "    }\n",                                // 5
+        "}\n",                                    // 6
+    );
+
+    let items = complete_at(&backend, &uri, text, 4, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$this"),
+        "$this should be visible in trait non-static method. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        var_labels.contains(&"$traitLocal"),
+        "$traitLocal should be visible in trait method. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Variable assigned in switch case should be visible after the switch.
+#[tokio::test]
+async fn test_completion_switch_body_variable_visible() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///switch_var.php").unwrap();
+    let text = concat!(
+        "<?php\n",                        // 0
+        "function test_switch_var() {\n", // 1
+        "    $val = 1;\n",                // 2
+        "    switch ($val) {\n",          // 3
+        "        case 1:\n",              // 4
+        "            $result = 'one';\n", // 5
+        "            break;\n",           // 6
+        "        case 2:\n",              // 7
+        "            $other = 'two';\n",  // 8
+        "            break;\n",           // 9
+        "    }\n",                        // 10
+        "    $\n",                        // 11
+        "}\n",                            // 12
+    );
+
+    let items = complete_at(&backend, &uri, text, 11, 5).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$result"),
+        "$result from switch case should be visible after switch. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        var_labels.contains(&"$other"),
+        "$other from switch case should be visible after switch. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        var_labels.contains(&"$val"),
+        "$val should still be visible after switch. Got: {:?}",
+        var_labels
+    );
+}
+
+/// `unset($x)` removes the variable from scope: `$x` should NOT be visible after unset.
+#[tokio::test]
+async fn test_completion_unset_removes_variable() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///unset_var.php").unwrap();
+    let text = concat!(
+        "<?php\n",                   // 0
+        "function test_unset() {\n", // 1
+        "    $keep = 1;\n",          // 2
+        "    $remove = 2;\n",        // 3
+        "    unset($remove);\n",     // 4
+        "    $\n",                   // 5
+        "}\n",                       // 6
+    );
+
+    let items = complete_at(&backend, &uri, text, 5, 5).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$keep"),
+        "$keep should still be visible after unset of another var. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$remove"),
+        "$remove should NOT be visible after unset($remove). Got: {:?}",
+        var_labels
+    );
+}
+
+/// For loop initialization: `for ($i = 0; ...) { $| }` — $i visible.
+#[tokio::test]
+async fn test_completion_for_loop_init_variable() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///for_init.php").unwrap();
+    let text = concat!(
+        "<?php\n",                             // 0
+        "function test_for_init() {\n",        // 1
+        "    for ($i = 0; $i < 10; $i++) {\n", // 2
+        "        $\n",                         // 3
+        "    }\n",                             // 4
+        "}\n",                                 // 5
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$i"),
+        "$i from for-loop init should be visible inside loop. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Colon-delimited if: `if (): ... endif;` — variables assigned inside visible.
+#[tokio::test]
+async fn test_completion_colon_delimited_if() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///colon_if.php").unwrap();
+    let text = concat!(
+        "<?php\n",            // 0
+        "$colbefore = 1;\n",  // 1
+        "if (true):\n",       // 2
+        "    $colvar = 1;\n", // 3
+        "endif;\n",           // 4
+        "$\n",                // 5
+    );
+
+    // Cursor after endif; — the if statement (colon-delimited) is processed
+    // and variables from before the if should be visible.
+    let items = complete_at(&backend, &uri, text, 5, 1).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$colbefore"),
+        "$colbefore should be visible after colon-delimited if. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Colon-delimited for: `for (): ... endfor;` — variables visible.
+#[tokio::test]
+async fn test_completion_colon_delimited_for() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///colon_for.php").unwrap();
+    let text = concat!(
+        "<?php\n",                       // 0
+        "$forbefore = 1;\n",             // 1
+        "for ($j = 0; $j < 5; $j++):\n", // 2
+        "    $forvar = 'f';\n",          // 3
+        "endfor;\n",                     // 4
+        "$\n",                           // 5
+    );
+
+    // Cursor after endfor; — the for statement (colon-delimited) is processed.
+    let items = complete_at(&backend, &uri, text, 5, 1).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$forbefore"),
+        "$forbefore should be visible after colon-delimited for. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Colon-delimited while: `while (): ... endwhile;` — variables visible.
+#[tokio::test]
+async fn test_completion_colon_delimited_while() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///colon_while.php").unwrap();
+    let text = concat!(
+        "<?php\n",                // 0
+        "$wbefore = 1;\n",        // 1
+        "while (true):\n",        // 2
+        "    $whilevar = 'w';\n", // 3
+        "endwhile;\n",            // 4
+        "$\n",                    // 5
+    );
+
+    // Cursor after endwhile; — the while statement (colon-delimited) is processed.
+    let items = complete_at(&backend, &uri, text, 5, 1).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$wbefore"),
+        "$wbefore should be visible after colon-delimited while. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Block statement: `{ $x = 1; $| }` — $x visible inside block.
+#[tokio::test]
+async fn test_completion_block_statement() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///block_stmt.php").unwrap();
+    let text = concat!(
+        "<?php\n",                   // 0
+        "function test_block() {\n", // 1
+        "    {\n",                   // 2
+        "        $blockvar = 1;\n",  // 3
+        "        $\n",               // 4
+        "    }\n",                   // 5
+        "}\n",                       // 6
+    );
+
+    let items = complete_at(&backend, &uri, text, 4, 9).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$blockvar"),
+        "$blockvar should be visible inside block statement. Got: {:?}",
+        var_labels
+    );
+}
+
+/// Closure $this carried from outer scope: closure inside instance method,
+/// $this visible in closure body even without use clause.
+/// This is the complementary test to `test_completion_closure_this_visible_in_instance_method`
+/// but using a plain closure (not in a call argument).
+#[tokio::test]
+async fn test_completion_closure_this_carried_from_outer_scope() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///closure_this_carry.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                // 0
+        "class MyService {\n",                    // 1
+        "    public function handle(): void {\n", // 2
+        "        $outer = 'x';\n",                // 3
+        "        $fn = function() {\n",           // 4
+        "            $inner = 'y';\n",            // 5
+        "            $\n",                        // 6
+        "        };\n",                           // 7
+        "    }\n",                                // 8
+        "}\n",                                    // 9
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 13).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$this"),
+        "$this should be carried into closure from instance method scope. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        var_labels.contains(&"$inner"),
+        "$inner should be visible inside closure body. Got: {:?}",
+        var_labels
+    );
+    assert!(
+        !var_labels.contains(&"$outer"),
+        "$outer should NOT leak into closure (no use clause). Got: {:?}",
+        var_labels
+    );
+}
+
+/// Namespace scope (implicit/unbraced): cursor after `namespace Foo;` at EOF
+/// should still see variables defined in that namespace scope.
+#[tokio::test]
+async fn test_completion_namespace_scope_implicit() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///ns_implicit.php").unwrap();
+    let text = concat!(
+        "<?php\n",          // 0
+        "namespace App;\n", // 1
+        "$nsvar = 1;\n",    // 2
+        "$\n",              // 3
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 1).await;
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$nsvar"),
+        "$nsvar should be visible in implicit namespace scope. Got: {:?}",
+        var_labels
+    );
+}
