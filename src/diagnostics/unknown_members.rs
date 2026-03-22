@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::parser::with_parse_cache;
+use super::unresolved_member_access::UNRESOLVED_MEMBER_ACCESS_CODE;
 
 use tower_lsp::lsp_types::*;
 
@@ -361,8 +362,37 @@ impl Backend {
                 }
 
                 SubjectOutcome::Untyped => {
-                    // No diagnostic — the opt-in `unresolved-member-access`
-                    // provider covers this case.
+                    // When the opt-in `unresolved-member-access` diagnostic
+                    // is enabled, emit it here instead of in a separate
+                    // collector pass.  This avoids a second full walk of
+                    // the same symbol spans with duplicate type resolution.
+                    if self.config().diagnostics.unresolved_member_access_enabled() {
+                        // Skip call-expression subjects — the failure is
+                        // usually because the symbol map's subject_text
+                        // doesn't preserve full argument text, not because
+                        // the user is missing a type annotation.
+                        if !subject_text.contains('(') {
+                            let range = match offset_range_to_lsp_range(
+                                content,
+                                span.start as usize,
+                                span.end as usize,
+                            ) {
+                                Some(r) => r,
+                                None => continue,
+                            };
+                            let subject_display = subject_text.trim();
+                            let message = format!(
+                                "Cannot resolve type of '{}'. Add a type annotation or PHPDoc tag to enable full IDE support.",
+                                subject_display,
+                            );
+                            out.push(make_diagnostic(
+                                range,
+                                DiagnosticSeverity::HINT,
+                                UNRESOLVED_MEMBER_ACCESS_CODE,
+                                message,
+                            ));
+                        }
+                    }
                 }
 
                 SubjectOutcome::Resolved(ref base_classes) => {

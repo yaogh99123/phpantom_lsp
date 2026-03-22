@@ -25,6 +25,8 @@
 ///   parent chain).
 /// - [`super::conditional_resolution`]: PHPStan conditional return type
 ///   resolution at call sites.
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::Backend;
@@ -148,6 +150,59 @@ impl<'a> VarResolutionCtx<'a> {
     }
 }
 
+/// Thread-local cache for `resolve_target_classes` results.
+/// Active during a diagnostic pass so that multiple collectors
+/// (unknown_member, argument_count) share results instead of
+/// re-resolving the same subjects independently.
+///
+/// The cache key is `(subject_text, access_kind)`.  Scope-sensitive
+/// keys (like which class $this refers to) are implicit in the
+/// subject_text: `$this` is only used inside a class body, and
+/// multiple classes in one file produce distinct `cursor_offset`
+/// values that yield different `current_class` lookups before
+/// calling `resolve_target_classes`.
+///
+/// NOTE: We deliberately do NOT include `cursor_offset` in the key.
+/// The point of this cache is cross-collector reuse, and the same
+/// subject at different call sites within the same scope resolves
+/// identically.
+type DiagSubjectCache = HashMap<(String, AccessKind), Vec<Arc<ClassInfo>>>;
+
+thread_local! {
+    static DIAG_SUBJECT_CACHE: RefCell<Option<DiagSubjectCache>> = const { RefCell::new(None) };
+}
+
+/// Guard that owns the diagnostic subject cache lifetime.
+/// Created by [`with_diagnostic_subject_cache`].
+pub(crate) struct DiagSubjectCacheGuard {
+    owns_cache: bool,
+}
+
+impl Drop for DiagSubjectCacheGuard {
+    fn drop(&mut self) {
+        if self.owns_cache {
+            DIAG_SUBJECT_CACHE.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
+    }
+}
+
+/// Activate the diagnostic subject cache for the current thread.
+///
+/// While the returned guard is alive, `resolve_target_classes` will
+/// check and populate the cache.  Nested calls return a no-op guard.
+pub(crate) fn with_diagnostic_subject_cache() -> DiagSubjectCacheGuard {
+    let already_active = DIAG_SUBJECT_CACHE.with(|cell| cell.borrow().is_some());
+    if already_active {
+        return DiagSubjectCacheGuard { owns_cache: false };
+    }
+    DIAG_SUBJECT_CACHE.with(|cell| {
+        *cell.borrow_mut() = Some(HashMap::new());
+    });
+    DiagSubjectCacheGuard { owns_cache: true }
+}
+
 /// Resolve a completion subject to all candidate class types.
 ///
 /// When a variable is assigned different types in conditional branches
@@ -161,8 +216,28 @@ pub(crate) fn resolve_target_classes(
     access_kind: AccessKind,
     ctx: &ResolutionCtx<'_>,
 ) -> Vec<Arc<ClassInfo>> {
+    // ── Fast path: check the thread-local diagnostic cache ──────
+    let cache_key = (subject.to_string(), access_kind);
+    let cached = DIAG_SUBJECT_CACHE.with(|cell| {
+        let borrow = cell.borrow();
+        borrow.as_ref().and_then(|map| map.get(&cache_key).cloned())
+    });
+    if let Some(result) = cached {
+        return result;
+    }
+
     let expr = SubjectExpr::parse(subject);
-    resolve_target_classes_expr(&expr, access_kind, ctx)
+    let result = resolve_target_classes_expr(&expr, access_kind, ctx);
+
+    // ── Populate the cache if active ────────────────────────────
+    DIAG_SUBJECT_CACHE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        if let Some(map) = borrow.as_mut() {
+            map.insert(cache_key, result.clone());
+        }
+    });
+
+    result
 }
 
 /// Core dispatch for [`resolve_target_classes`], operating on a

@@ -140,6 +140,11 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     // ── Phase 1: Parse all files (parallel) ─────────────────────────
     // Read each file from disk and call `update_ast`.  Store the
     // (uri, content) pairs so Phase 2 can reuse them without re-reading.
+    //
+    // The progress bar spans both phases: 0→total for parsing, then
+    // total→total*2 for diagnosing, so the user sees continuous
+    // progress instead of hitting 100 % and then stalling.
+    let total_steps = file_count * 2;
     let next_idx = AtomicUsize::new(0);
 
     let file_data: Vec<Option<(String, String)>> = std::thread::scope(|s| {
@@ -156,7 +161,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                             break;
                         }
                         if use_colour && i.is_multiple_of(20) {
-                            eprint!("\r\x1b[2K {}", progress_bar(i + 1, file_count));
+                            eprint!("\r\x1b[2K {}", progress_bar(i + 1, total_steps));
                         }
 
                         let file_path = &files[i];
@@ -185,10 +190,6 @@ pub async fn run(options: AnalyseOptions) -> i32 {
         indexed
     });
 
-    if use_colour {
-        eprint!("\r\x1b[2K {}\n", progress_bar(file_count, file_count));
-    }
-
     // ── Phase 2: Collect diagnostics (parallel) ─────────────────────
     // Call individual collectors directly (instead of the grouped
     // collect_slow_diagnostics) so we can time each one independently.
@@ -208,6 +209,12 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         if i >= file_count {
                             break;
                         }
+                        if use_colour && i.is_multiple_of(20) {
+                            eprint!(
+                                "\r\x1b[2K {}",
+                                progress_bar(file_count + i + 1, total_steps),
+                            );
+                        }
 
                         let (uri, content) = match &file_data[i] {
                             Some(pair) => (&pair.0, &pair.1),
@@ -222,18 +229,48 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         let _cache_guard = with_active_resolved_class_cache(
                             &backend.resolved_class_cache,
                         );
+                        let _subj_guard =
+                            crate::completion::resolver::with_diagnostic_subject_cache();
 
                         let mut raw = Vec::new();
-                        backend.collect_fast_diagnostics(uri, content, &mut raw);
-                        backend.collect_unknown_class_diagnostics(uri, content, &mut raw);
-                        backend.collect_unknown_member_diagnostics(uri, content, &mut raw);
-                        backend.collect_unknown_function_diagnostics(uri, content, &mut raw);
-                        backend.collect_unresolved_member_access_diagnostics(
-                            uri, content, &mut raw,
-                        );
-                        backend.collect_argument_count_diagnostics(uri, content, &mut raw);
-                        backend.collect_implementation_error_diagnostics(uri, content, &mut raw);
-                        backend.collect_deprecated_diagnostics(uri, content, &mut raw);
+                        let file_start = std::time::Instant::now();
+
+                        macro_rules! timed_collect {
+                            ($name:expr, $call:expr) => {{
+                                let t0 = std::time::Instant::now();
+                                $call;
+                                (t0.elapsed(), $name)
+                            }};
+                        }
+
+                        let timings = [
+                            timed_collect!("fast", backend.collect_fast_diagnostics(uri, content, &mut raw)),
+                            timed_collect!("unknown_class", backend.collect_unknown_class_diagnostics(uri, content, &mut raw)),
+                            timed_collect!("unknown_member", backend.collect_unknown_member_diagnostics(uri, content, &mut raw)),
+                            timed_collect!("unknown_function", backend.collect_unknown_function_diagnostics(uri, content, &mut raw)),
+                            timed_collect!("argument_count", backend.collect_argument_count_diagnostics(uri, content, &mut raw)),
+                            timed_collect!("implementation", backend.collect_implementation_error_diagnostics(uri, content, &mut raw)),
+                            timed_collect!("deprecated", backend.collect_deprecated_diagnostics(uri, content, &mut raw)),
+                        ];
+
+                        let file_elapsed = file_start.elapsed();
+                        if file_elapsed.as_secs() >= 5 {
+                            let display = files[i]
+                                .strip_prefix(root)
+                                .unwrap_or(&files[i])
+                                .display();
+                            let breakdown: Vec<String> = timings
+                                .iter()
+                                .filter(|(d, _)| d.as_millis() > 0)
+                                .map(|(d, name)| format!("{}={:.1}s", name, d.as_secs_f64()))
+                                .collect();
+                            eprintln!(
+                                "\n  ⚠ slow file ({:.1}s): {}\n    {}",
+                                file_elapsed.as_secs_f64(),
+                                display,
+                                breakdown.join(", "),
+                            );
+                        }
 
                         let filtered: Vec<FileDiagnostic> = raw
                             .into_iter()
@@ -274,6 +311,10 @@ pub async fn run(options: AnalyseOptions) -> i32 {
         }
         merged
     });
+
+    if use_colour {
+        eprint!("\r\x1b[2K {}\n", progress_bar(total_steps, total_steps));
+    }
 
     // Sort by path so output order is deterministic.
     all_file_diagnostics.sort_by(|a, b| a.0.cmp(&b.0));

@@ -153,7 +153,9 @@ impl Backend {
         self.collect_unknown_class_diagnostics(uri_str, content, out);
         self.collect_unknown_member_diagnostics(uri_str, content, out);
         self.collect_unknown_function_diagnostics(uri_str, content, out);
-        self.collect_unresolved_member_access_diagnostics(uri_str, content, out);
+        // NOTE: unresolved_member_access diagnostics are now emitted
+        // inside collect_unknown_member_diagnostics (in the Untyped arm)
+        // to avoid a second full walk with duplicate type resolution.
         self.collect_argument_count_diagnostics(uri_str, content, out);
         self.collect_implementation_error_diagnostics(uri_str, content, out);
         self.collect_deprecated_diagnostics(uri_str, content, out);
@@ -563,6 +565,12 @@ impl Backend {
             let _cache_guard = crate::virtual_members::with_active_resolved_class_cache(
                 &self.resolved_class_cache,
             );
+            // Activate the diagnostic subject cache so that
+            // collect_unknown_member_diagnostics and
+            // collect_argument_count_diagnostics share resolved
+            // subjects instead of re-resolving them independently.
+            let _subj_guard =
+                crate::completion::resolver::with_diagnostic_subject_cache();
             self.collect_slow_diagnostics(uri_str, content, &mut slow_diagnostics);
         }
 
