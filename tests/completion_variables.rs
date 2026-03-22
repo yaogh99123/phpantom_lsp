@@ -16637,3 +16637,155 @@ async fn test_completion_param_inside_top_level_function() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Null-safe method call chain variable assignment ────────────────────────
+
+/// When a variable is assigned from a null-safe method call chain like
+/// `$x = $obj?->getItems()->last()`, the type engine should resolve
+/// through the `?->` call the same way it resolves through `->`.
+#[tokio::test]
+async fn test_completion_nullsafe_method_chain_assignment() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nullsafe_assign.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class NsEngine {\n",
+        "    public function horsepower(): int { return 100; }\n",
+        "    public function rev(): NsEngine { return $this; }\n",
+        "}\n",
+        "class NsCarFactory {\n",
+        "    public function buildEngine(): NsEngine { return new NsEngine(); }\n",
+        "}\n",
+        "class NsGarage {\n",
+        "    private ?NsCarFactory $factory;\n",
+        "    public function test(): void {\n",
+        "        $engine = $this->factory?->buildEngine();\n",
+        "        $engine->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: 12,
+                    character: 17,
+                },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Completion should return results for $engine-> after null-safe chain assignment"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"horsepower"),
+                "Should include 'horsepower' from NsEngine, got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"rev"),
+                "Should include 'rev' from NsEngine, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Deeper chain: `$x = $a?->b()?->c()` — null-safe in the middle of a chain.
+#[tokio::test]
+async fn test_completion_nullsafe_mid_chain_assignment() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nullsafe_mid_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class NsMcPart {\n",
+        "    public function weight(): int { return 5; }\n",
+        "}\n",
+        "class NsMcAssembly {\n",
+        "    public function mainPart(): NsMcPart { return new NsMcPart(); }\n",
+        "}\n",
+        "class NsMcMachine {\n",
+        "    public function getAssembly(): ?NsMcAssembly { return null; }\n",
+        "}\n",
+        "function testNsMc(NsMcMachine $m): void {\n",
+        "    $part = $m->getAssembly()?->mainPart();\n",
+        "    $part->\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: 12,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Completion should return results for $part-> after ?-> mid-chain"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"weight"),
+                "Should include 'weight' from NsMcPart, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

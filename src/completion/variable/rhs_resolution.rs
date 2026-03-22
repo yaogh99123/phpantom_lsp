@@ -824,9 +824,19 @@ fn resolve_rhs_call<'b>(
 ) -> Vec<ClassInfo> {
     match call {
         Call::Function(func_call) => resolve_rhs_function_call(func_call, expr, ctx),
-        Call::Method(method_call) => resolve_rhs_method_call(method_call, expr, ctx),
+        Call::Method(method_call) => resolve_rhs_method_call_inner(
+            method_call.object,
+            &method_call.method,
+            &method_call.argument_list,
+            ctx,
+        ),
+        Call::NullSafeMethod(method_call) => resolve_rhs_method_call_inner(
+            method_call.object,
+            &method_call.method,
+            &method_call.argument_list,
+            ctx,
+        ),
         Call::StaticMethod(static_call) => resolve_rhs_static_call(static_call, ctx),
-        _ => vec![],
     }
 }
 
@@ -1078,19 +1088,25 @@ fn resolve_rhs_function_call<'b>(
 
 /// Resolve an instance method call: `$this->method()`, `$var->method()`,
 /// chained calls, and other object expressions via AST-based resolution.
-fn resolve_rhs_method_call<'b>(
-    method_call: &'b MethodCall<'b>,
-    _expr: &'b Expression<'b>,
+/// Resolve a method call (regular or null-safe) from its constituent parts.
+///
+/// Both `$obj->method()` and `$obj?->method()` share the same resolution
+/// logic — the null-safe operator only affects whether `null` propagates
+/// at runtime, not which class the method belongs to.
+fn resolve_rhs_method_call_inner<'b>(
+    object: &'b Expression<'b>,
+    method: &'b ClassLikeMemberSelector<'b>,
+    argument_list: &'b ArgumentList<'b>,
     ctx: &VarResolutionCtx<'_>,
 ) -> Vec<ClassInfo> {
-    let method_name = match &method_call.method {
+    let method_name = match method {
         ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
         // Variable method name (`$obj->$method()`) — can't resolve statically.
         _ => return vec![],
     };
     // Resolve the object expression to candidate owner classes.
     let owner_classes: Vec<ClassInfo> = if let Expression::Variable(Variable::Direct(dv)) =
-        method_call.object
+        object
         && dv.name == "$this"
     {
         ctx.all_classes
@@ -1099,7 +1115,7 @@ fn resolve_rhs_method_call<'b>(
             .map(|c| ClassInfo::clone(c))
             .into_iter()
             .collect()
-    } else if let Expression::Variable(Variable::Direct(dv)) = method_call.object {
+    } else if let Expression::Variable(Variable::Direct(dv)) = object {
         let var = dv.name.to_string();
         crate::completion::resolver::resolve_target_classes(
             &var,
@@ -1113,11 +1129,11 @@ fn resolve_rhs_method_call<'b>(
         // Handle non-variable object expressions like
         // `(new Factory())->create()`, `getService()->method()`,
         // or chained calls by recursively resolving the expression.
-        resolve_rhs_expression(method_call.object, ctx)
+        resolve_rhs_expression(object, ctx)
     };
 
     let text_args =
-        super::raw_type_inference::extract_argument_text(&method_call.argument_list, ctx.content);
+        super::raw_type_inference::extract_argument_text(argument_list, ctx.content);
     let rctx = ctx.as_resolution_ctx();
     let var_resolver = build_var_resolver_from_ctx(ctx);
 
