@@ -21,7 +21,7 @@
 ///   version counter; the worker waits for a quiet period before
 ///   publishing.
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -38,6 +38,7 @@ use crate::classmap_scanner::{self, WorkspaceScanResult};
 use crate::composer;
 use crate::config::IndexingStrategy;
 use crate::formatting;
+use crate::phar;
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
@@ -1365,8 +1366,19 @@ impl Backend {
                     }
                 }
 
-                // Follow require_once statements to discover more files.
                 let content_str = String::from_utf8_lossy(&content);
+
+                // ── Phar detection ──────────────────────────────────
+                // If this autoload file references a .phar archive,
+                // parse the phar and scan its PHP files for classes.
+                if let Some(file_dir) = canonical.parent() {
+                    let phar_paths = composer::detect_phar_references(&content_str, file_dir);
+                    for phar_path in phar_paths {
+                        self.scan_phar_archive(&phar_path);
+                    }
+                }
+
+                // Follow require_once statements to discover more files.
                 let require_paths = composer::extract_require_once_paths(&content_str);
                 if let Some(file_dir) = canonical.parent() {
                     for rel_path in require_paths {
@@ -1387,6 +1399,102 @@ impl Backend {
         }
 
         autoload_count
+    }
+
+    /// Parse a `.phar` archive and register its PHP classes in the
+    /// classmap and class index for lazy loading.
+    ///
+    /// The phar's raw bytes are read from disk, parsed by
+    /// [`phar::PharArchive`], and stored in
+    /// [`phar_archives`](crate::Backend::phar_archives).  Each `.php`
+    /// file inside the archive is scanned with the lightweight
+    /// [`find_classes`](classmap_scanner::find_classes) byte scanner,
+    /// and discovered classes are registered in:
+    ///
+    /// - `classmap` — with a sentinel path like
+    ///   `/path/to/phpstan.phar!src/Type/Type.php` (the `!` separator
+    ///   tells [`parse_and_cache_file`](crate::Backend::parse_and_cache_file)
+    ///   to extract content from the phar instead of reading from disk)
+    /// - `class_index` — with a `phar://` URI for completions and
+    ///   workspace symbols
+    fn scan_phar_archive(&self, phar_path: &Path) {
+        // Avoid scanning the same phar twice.
+        if self.phar_archives.read().contains_key(phar_path) {
+            return;
+        }
+
+        let data = match std::fs::read(phar_path) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        let archive = match phar::PharArchive::parse(data) {
+            Some(a) => a,
+            None => {
+                tracing::warn!("failed to parse phar archive: {}", phar_path.display());
+                return;
+            }
+        };
+
+        // Collect PHP file paths first so we can iterate while
+        // holding the archive reference.
+        let php_files: Vec<String> = archive
+            .file_paths()
+            .filter(|p| p.ends_with(".php"))
+            .map(String::from)
+            .collect();
+
+        let mut classmap_entries: Vec<(String, PathBuf)> = Vec::new();
+        let mut class_index_entries: Vec<(String, String)> = Vec::new();
+
+        for internal_path in &php_files {
+            if let Some(content) = archive.read_file(internal_path) {
+                let classes = classmap_scanner::find_classes(content);
+                for fqn in classes {
+                    // Sentinel path: "archive.phar!internal/path.php"
+                    let sentinel =
+                        PathBuf::from(format!("{}!{}", phar_path.display(), internal_path));
+                    let phar_uri = format!("phar://{}/{}", phar_path.display(), internal_path);
+                    classmap_entries.push((fqn.clone(), sentinel));
+                    class_index_entries.push((fqn, phar_uri));
+                }
+            }
+        }
+
+        let class_count = classmap_entries.len();
+
+        // Register classes in the classmap and class_index.
+        {
+            let mut cm = self.classmap.write();
+            for (fqn, path) in classmap_entries {
+                cm.entry(fqn).or_insert(path);
+            }
+        }
+        {
+            let mut idx = self.class_index.write();
+            for (fqn, uri) in class_index_entries {
+                idx.entry(fqn).or_insert(uri);
+            }
+        }
+
+        // Clear the negative class cache so that classes previously
+        // looked up (and cached as "not found") before the phar was
+        // scanned can now be resolved.
+        if class_count > 0 {
+            self.class_not_found_cache.write().clear();
+        }
+
+        tracing::info!(
+            "scanned phar {}: {} PHP files, {} classes",
+            phar_path.display(),
+            php_files.len(),
+            class_count,
+        );
+
+        // Store the parsed archive for lazy content extraction.
+        self.phar_archives
+            .write()
+            .insert(phar_path.to_owned(), archive);
     }
 
     /// Build a workspace scan by self-scanning a Composer project's

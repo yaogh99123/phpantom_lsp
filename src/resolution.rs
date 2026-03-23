@@ -174,14 +174,39 @@ impl Backend {
         None
     }
 
-    /// Parse a PHP file from disk, cache the results, and return the
-    /// extracted classes.
+    /// Parse a PHP file from disk (or from a phar archive), cache the
+    /// results, and return the extracted classes.
     ///
     /// Convenience wrapper around [`parse_and_cache_content`] that reads
-    /// the file and derives a `file://` URI from the path.  Used by
+    /// the file and derives a URI from the path.  Used by
     /// [`find_or_load_class`] (Phases 1.5 and 2) and by the
     /// go-to-implementation scanner.
+    ///
+    /// **Phar support:** when `file_path` contains a `!` separator
+    /// (e.g. `/path/to/phpstan.phar!src/Type/Type.php`), the left side
+    /// is the phar archive path and the right side is the internal file
+    /// path.  The content is extracted from the in-memory
+    /// [`phar_archives`](crate::Backend::phar_archives) cache instead
+    /// of reading from disk.  The URI uses a `phar://` scheme so that
+    /// go-to-definition can distinguish phar-sourced classes.
     pub(crate) fn parse_and_cache_file(&self, file_path: &Path) -> Option<Vec<Arc<ClassInfo>>> {
+        let path_str = file_path.to_str().unwrap_or_default();
+
+        // ── Phar path: "archive.phar!internal/path.php" ─────────
+        if let Some(sep) = path_str.find('!') {
+            let phar_path = Path::new(&path_str[..sep]);
+            let internal_path = &path_str[sep + 1..];
+
+            let archives = self.phar_archives.read();
+            let archive = archives.get(phar_path)?;
+            let bytes = archive.read_file(internal_path)?;
+            let content = std::str::from_utf8(bytes).ok()?;
+
+            let uri = format!("phar://{}/{}", phar_path.display(), internal_path);
+            return self.parse_and_cache_content(content, &uri);
+        }
+
+        // ── Regular file path ───────────────────────────────────
         let content = std::fs::read_to_string(file_path).ok()?;
         let uri = crate::util::path_to_uri(file_path);
         self.parse_and_cache_content(&content, &uri)

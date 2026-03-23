@@ -109,6 +109,7 @@ mod hover;
 pub(crate) mod inheritance;
 mod inlay_hints;
 mod parser;
+pub(crate) mod phar;
 mod phpstan;
 mod references;
 mod rename;
@@ -303,6 +304,15 @@ pub struct Backend {
     /// Consulted by `find_or_load_class` as a resolution step between
     /// the ast_map scan (Phase 1) and PSR-4 resolution (Phase 2).
     pub(crate) classmap: Arc<RwLock<HashMap<String, PathBuf>>>,
+    /// Parsed phar archives keyed by the phar file's absolute path.
+    ///
+    /// Populated during Composer autoload scanning when a bootstrap file
+    /// references a `.phar` archive (e.g. PHPStan's `bootstrap.php`).
+    /// Used by [`parse_and_cache_file`](Self::parse_and_cache_file) to
+    /// extract PHP source files from inside the archive when the
+    /// classmap contains a phar-based path (detected by a `!` separator,
+    /// e.g. `/path/to/phpstan.phar!src/Type/Type.php`).
+    pub(crate) phar_archives: Arc<RwLock<HashMap<PathBuf, phar::PharArchive>>>,
     /// Embedded PHP stubs for built-in classes/interfaces (e.g. `UnitEnum`,
     /// `BackedEnum`, `Iterator`, `Countable`, …).
     /// Maps class short name → raw PHP source code.
@@ -511,6 +521,7 @@ impl Backend {
             fqn_index: Arc::new(RwLock::new(HashMap::new())),
             class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
             classmap: Arc::new(RwLock::new(HashMap::new())),
+            phar_archives: Arc::new(RwLock::new(HashMap::new())),
             stub_index: stubs::build_stub_class_index(),
             stub_function_index: stubs::build_stub_function_index(),
             stub_constant_index: stubs::build_stub_constant_index(),
@@ -712,6 +723,7 @@ impl Backend {
             class_index: Arc::clone(&self.class_index),
             fqn_index: Arc::clone(&self.fqn_index),
             classmap: Arc::clone(&self.classmap),
+            phar_archives: Arc::clone(&self.phar_archives),
             class_not_found_cache: Arc::clone(&self.class_not_found_cache),
             stub_index: self.stub_index.clone(),
             resolved_class_cache: Arc::clone(&self.resolved_class_cache),

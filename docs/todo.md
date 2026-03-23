@@ -208,7 +208,6 @@ unlikely to move the needle for most users.
 | X2  | Parallel file processing — remaining work                                                                                                                    | Low-Medium | Medium      |
 | X5  | Granular progress reporting for indexing, GTI, and Find References                                                                                           | Low-Medium | Medium      |
 | X4  | Full background indexing (`strategy = "full"`)                                                                                                               | Medium     | High        |
-| X8  | [Phar archive class resolution](todo/indexing.md#x8-phar-archive-class-resolution)                                                                           | Medium     | Medium      |
 | X6  | Disk cache (evaluate later)                                                                                                                                  | Medium     | High        |
 |     | **[Inline Completion](todo/inline-completion.md)**                                                                                                           |            |             |
 | N1  | Template engine (type-aware snippets)                                                                                                                        | Medium     | High        |

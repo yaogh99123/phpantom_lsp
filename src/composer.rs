@@ -433,6 +433,72 @@ pub fn extract_require_once_paths(content: &str) -> Vec<String> {
     paths
 }
 
+/// Detect `.phar` archive references in a PHP bootstrap file.
+///
+/// Scans the file content for patterns like:
+///
+/// ```text
+/// require 'phar://' . __DIR__ . '/phpstan.phar/vendor/autoload.php';
+/// $filepath = 'phar://' . __DIR__ . '/phpstan.phar/src/' . $filename . '.php';
+/// ```
+///
+/// Returns the absolute paths of all `.phar` files referenced in the
+/// content, resolved relative to `file_dir` (the directory containing
+/// the bootstrap file).
+///
+/// This is intentionally lenient: it looks for any `__DIR__` + string
+/// concatenation that mentions a `.phar` file, regardless of the
+/// surrounding PHP structure.  False positives are harmless (the phar
+/// parser will reject non-phar files), and false negatives are
+/// acceptable (users can always extract the phar manually).
+pub fn detect_phar_references(content: &str, file_dir: &Path) -> Vec<PathBuf> {
+    let mut phars = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in content.lines() {
+        // Look for lines containing both `__DIR__` and `.phar`.
+        if !line.contains("__DIR__") || !line.contains(".phar") {
+            continue;
+        }
+
+        // Extract the phar filename from string fragments like:
+        //   '/phpstan.phar/vendor/autoload.php'
+        //   '/phpstan.phar/src/'
+        // We look for quoted strings containing `.phar` and extract
+        // the path up to (and including) the `.phar` extension.
+        for quote in [b'\'', b'"'] {
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == quote {
+                    // Find the closing quote.
+                    if let Some(end) = bytes[i + 1..].iter().position(|&b| b == quote) {
+                        let fragment = &line[i + 1..i + 1 + end];
+                        if let Some(phar_end) = fragment.find(".phar") {
+                            // Extract the relative path: e.g. "/phpstan.phar"
+                            let rel = &fragment[..phar_end + 5]; // +5 for ".phar"
+                            let rel = rel.trim_start_matches('/');
+                            if !rel.is_empty() {
+                                let phar_path = file_dir.join(rel);
+                                if phar_path.is_file() && seen.insert(phar_path.clone()) {
+                                    phars.push(phar_path);
+                                }
+                            }
+                        }
+                        i += 1 + end + 1;
+                    } else {
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    phars
+}
+
 /// Discover PHP subproject roots inside a workspace directory.
 ///
 /// When the workspace root itself has no `composer.json`, this function
