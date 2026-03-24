@@ -1055,6 +1055,7 @@ fn test_find_cross_file_propagated_throws_function_call() {
         template_params: Vec::new(),
         template_bindings: Vec::new(),
         throws: vec!["DatabaseException".to_string()],
+        is_polyfill: false,
     };
 
     let class_loader = |_name: &str| -> Option<Arc<ClassInfo>> { None };
@@ -1174,6 +1175,7 @@ fn test_find_cross_file_propagated_throws_mixed_patterns() {
         template_params: Vec::new(),
         template_bindings: Vec::new(),
         throws: vec!["HelperException".to_string()],
+        is_polyfill: false,
     };
 
     let function_loader = move |name: &str| -> Option<FunctionInfo> {

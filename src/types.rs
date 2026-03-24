@@ -971,6 +971,16 @@ pub struct FunctionInfo {
     /// the cross-file throws analysis to propagate exceptions from
     /// standalone function calls.
     pub throws: Vec<String>,
+    /// Whether this function was extracted from inside a
+    /// `if (! function_exists('name'))` guard.
+    ///
+    /// Such functions are polyfills for native PHP functions introduced
+    /// in newer versions.  When the configured PHP version already
+    /// provides the native function (i.e. a stub exists in
+    /// `stub_function_index`), the polyfill is dead code and should
+    /// not shadow the stub's signature, deprecation status, or other
+    /// metadata.
+    pub is_polyfill: bool,
 }
 
 // ─── PHPStan Type Assertions ────────────────────────────────────────────────

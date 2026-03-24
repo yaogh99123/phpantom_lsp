@@ -1,6 +1,6 @@
 mod common;
 
-use common::create_test_backend;
+use common::{create_test_backend, create_test_backend_with_function_stubs};
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -2128,6 +2128,7 @@ fn replace_deprecated_function_call_action_offered() {
                     template_params: vec![],
                     template_bindings: vec![],
                     throws: vec![],
+                    is_polyfill: false,
                 },
             ),
         );
@@ -2679,6 +2680,84 @@ class App {
             && d.message.contains("See:")
             && d.message.contains("Features::NEW_FLAG")),
         "Expected @see reference in deprecated constant diagnostic, got: {:?}",
+        deprecated
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Polyfill false-positive suppression
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A deprecated polyfill function (e.g. Laravel's `str_contains` wrapped in
+/// `if (! function_exists('str_contains'))`) should NOT produce a deprecation
+/// diagnostic when a native stub for the same function exists and the stub
+/// is not deprecated.  On PHP 8.0+ the guard is never entered, so the
+/// polyfill is dead code and the native version is what actually runs.
+#[test]
+fn polyfill_deprecated_function_suppressed_when_native_stub_exists() {
+    let backend = create_test_backend_with_function_stubs();
+
+    // Simulate Laravel's helpers.php: a deprecated polyfill inside a
+    // function_exists guard.
+    let helpers_uri = "file:///vendor/laravel/helpers/src/helpers.php";
+    let helpers_text = r#"<?php
+if (! function_exists('str_contains')) {
+    /**
+     * @deprecated A native function with the same name was introduced in PHP 8.0.
+     * @param string $haystack
+     * @param string|array $needles
+     * @return bool
+     */
+    function str_contains($haystack, $needles)
+    {
+        return false;
+    }
+}
+"#;
+    backend.update_ast(helpers_uri, helpers_text);
+
+    // Now open a user file that calls str_contains.
+    let uri = "file:///app/test.php";
+    let text = r#"<?php
+class Membership {
+    public function check(): bool {
+        return str_contains('hello world', 'world');
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated.is_empty(),
+        "Polyfill str_contains should NOT produce a deprecation diagnostic \
+         when a native stub exists without @deprecated. Got: {:?}",
+        deprecated
+    );
+}
+
+/// When a user-defined function is deprecated and NO native stub exists,
+/// the deprecation diagnostic should still be emitted as usual.
+#[test]
+fn deprecated_function_without_native_stub_still_flagged() {
+    let backend = create_test_backend_with_function_stubs();
+
+    let uri = "file:///test_no_stub.php";
+    let text = r#"<?php
+/** @deprecated Use newHelper() instead. */
+function oldHelper(): void {}
+
+oldHelper();
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert_eq!(
+        deprecated.len(),
+        1,
+        "Deprecated function without a native stub should still produce a diagnostic, got: {:?}",
         deprecated
     );
 }

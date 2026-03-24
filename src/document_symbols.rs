@@ -692,6 +692,7 @@ mod tests {
             template_params: vec![],
             template_bindings: vec![],
             throws: Vec::new(),
+            is_polyfill: false,
         };
         let detail = build_function_detail(&func);
         assert_eq!(detail, Some("()".to_string()));

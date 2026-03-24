@@ -15,6 +15,64 @@ use super::{
     merge_deprecation_info,
 };
 
+/// Try to extract the guarded function name from a
+/// `if (! function_exists('name'))` condition.
+///
+/// Recognises both `! function_exists('name')` and
+/// `! function_exists("name")` (with optional parenthesised wrapping).
+/// Returns `Some("name")` when the pattern matches, `None` otherwise.
+fn try_extract_function_exists_guard<'a>(condition: &'a Expression<'a>) -> Option<&'a str> {
+    // Peel parentheses and a single `!` prefix.
+    let inner = match condition {
+        Expression::UnaryPrefix(prefix) if prefix.operator.is_not() => prefix.operand,
+        Expression::Parenthesized(p) => match p.expression {
+            Expression::UnaryPrefix(prefix) if prefix.operator.is_not() => prefix.operand,
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    // Peel one more layer of parentheses (e.g. `!(function_exists(…))`)
+    let inner = match inner {
+        Expression::Parenthesized(p) => p.expression,
+        other => other,
+    };
+
+    // Must be a function call to `function_exists`.
+    let func_call = match inner {
+        Expression::Call(Call::Function(fc)) => fc,
+        _ => return None,
+    };
+    let func_name = match func_call.function {
+        Expression::Identifier(ident) => ident.value(),
+        _ => return None,
+    };
+    if func_name != "function_exists" {
+        return None;
+    }
+
+    // First argument must be a string literal.
+    let first_arg = func_call.argument_list.arguments.iter().next()?;
+    let first_expr = match first_arg {
+        Argument::Positional(pos) => pos.value,
+        Argument::Named(named) => named.value,
+    };
+    if let Expression::Literal(Literal::String(lit_str)) = first_expr {
+        // `value` is the unquoted content; fall back to stripping quotes
+        // from `raw`.
+        let name = lit_str.value.or_else(|| {
+            let raw = lit_str.raw;
+            raw.strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+                .or_else(|| raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+        })?;
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
 impl Backend {
     /// Extract standalone function definitions from a sequence of statements.
     ///
@@ -271,6 +329,7 @@ impl Backend {
                         template_params: func_template_params,
                         template_bindings: func_template_bindings,
                         throws,
+                        is_polyfill: false,
                     });
                 }
                 Statement::Namespace(namespace) => {
@@ -306,13 +365,26 @@ impl Backend {
                 //   if (! function_exists('session')) {
                 //       function session(...) { ... }
                 //   }
+                // When the condition matches the
+                // `! function_exists('name')` pattern, all functions
+                // extracted from the body are marked as polyfills so
+                // that callers can prefer native stubs when available.
                 Statement::If(if_stmt) => {
+                    let guard_name = try_extract_function_exists_guard(if_stmt.condition);
+                    let before = functions.len();
                     Self::extract_functions_from_if_body(
                         &if_stmt.body,
                         functions,
                         current_namespace,
                         doc_ctx,
                     );
+                    // Mark newly extracted functions as polyfills when
+                    // inside a function_exists guard.
+                    if guard_name.is_some() {
+                        for func in &mut functions[before..] {
+                            func.is_polyfill = true;
+                        }
+                    }
                 }
                 _ => {}
             }

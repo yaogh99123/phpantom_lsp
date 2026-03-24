@@ -264,6 +264,21 @@ impl Backend {
                     func_info.name.clone()
                 };
 
+                // Skip polyfill functions when a native stub exists.
+                // Libraries like Laravel wrap helpers such as
+                // `str_contains` in `if (! function_exists('…'))` guards
+                // and mark them `@deprecated`.  On the configured PHP
+                // version the native function exists, so the guard is
+                // never entered and the polyfill is dead code.  Letting
+                // the stub win ensures the correct signature, return
+                // type, and deprecation status are used everywhere
+                // (hover, completion, diagnostics).
+                if func_info.is_polyfill
+                    && self.stub_function_index.contains_key(fqn.as_str())
+                {
+                    continue;
+                }
+
                 // Insert under the FQN only.  For namespaced functions
                 // the FQN is `Namespace\name`; for global functions it
                 // is just the bare name.  `resolve_function_name` already

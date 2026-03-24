@@ -2427,6 +2427,7 @@ async fn test_use_import_excludes_constants_and_functions() {
                     template_params: vec![],
                     template_bindings: vec![],
                     throws: vec![],
+                    is_polyfill: false,
                 },
             ),
         );
@@ -2558,6 +2559,7 @@ async fn test_use_function_shows_only_functions() {
                     template_params: vec![],
                     template_bindings: vec![],
                     throws: vec![],
+                    is_polyfill: false,
                 },
             ),
         );

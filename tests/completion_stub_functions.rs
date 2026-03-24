@@ -356,6 +356,7 @@ async fn test_user_function_takes_precedence_over_stub() {
         template_params: vec![],
         template_bindings: vec![],
         throws: vec![],
+        is_polyfill: false,
     };
 
     {

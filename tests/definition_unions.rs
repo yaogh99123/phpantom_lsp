@@ -177,6 +177,7 @@ async fn test_goto_definition_union_return_type_standalone_function() {
                     template_params: vec![],
                     template_bindings: vec![],
                     throws: vec![],
+                    is_polyfill: false,
                 },
             ),
         );
