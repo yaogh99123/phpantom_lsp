@@ -552,6 +552,74 @@ fn enum_declaration_produces_declaration() {
 }
 
 #[test]
+fn enum_case_produces_member_declaration() {
+    let php = "<?php\nenum Color { case Red; case Blue; }\n";
+    let map = parse_and_extract(php);
+
+    // Unit enum case `Red`
+    let red_offset = php.find("Red").unwrap() as u32;
+    let hit = map.lookup(red_offset);
+    assert!(hit.is_some(), "Expected a symbol span for enum case Red");
+    if let SymbolKind::MemberDeclaration {
+        ref name,
+        is_static,
+    } = hit.unwrap().kind
+    {
+        assert_eq!(name, "Red");
+        assert!(is_static, "Enum cases are accessed statically");
+    } else {
+        panic!(
+            "Expected MemberDeclaration for enum case Red, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+
+    // Unit enum case `Blue`
+    let blue_offset = php.find("Blue").unwrap() as u32;
+    let hit = map.lookup(blue_offset);
+    assert!(hit.is_some(), "Expected a symbol span for enum case Blue");
+    if let SymbolKind::MemberDeclaration {
+        ref name,
+        is_static,
+    } = hit.unwrap().kind
+    {
+        assert_eq!(name, "Blue");
+        assert!(is_static, "Enum cases are accessed statically");
+    } else {
+        panic!(
+            "Expected MemberDeclaration for enum case Blue, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn backed_enum_case_produces_member_declaration() {
+    let php = "<?php\nenum TaskType: int { case Task = 1; case Issue = 2; }\n";
+    let map = parse_and_extract(php);
+
+    let issue_offset = php.find("Issue").unwrap() as u32;
+    let hit = map.lookup(issue_offset);
+    assert!(
+        hit.is_some(),
+        "Expected a symbol span for backed enum case Issue"
+    );
+    if let SymbolKind::MemberDeclaration {
+        ref name,
+        is_static,
+    } = hit.unwrap().kind
+    {
+        assert_eq!(name, "Issue");
+        assert!(is_static, "Enum cases are accessed statically");
+    } else {
+        panic!(
+            "Expected MemberDeclaration for backed enum case Issue, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
 fn closure_param_type_hint() {
     let php = "<?php\n$f = function(Foo $x): Bar {};\n";
     let map = parse_and_extract(php);

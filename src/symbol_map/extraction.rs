@@ -751,6 +751,19 @@ fn extract_from_class_member<'a>(member: &'a ClassLikeMember<'a>, ctx: &mut Extr
             }
         }
         ClassLikeMember::EnumCase(enum_case) => {
+            // Enum case name — declaration site span for find-references,
+            // rename, and document-highlights.  Enum cases are accessed
+            // statically (`self::Issue`, `TaskType::Issue`).
+            let case_name_ident = enum_case.item.name();
+            ctx.spans.push(SymbolSpan {
+                start: case_name_ident.span.start.offset,
+                end: case_name_ident.span.end.offset,
+                kind: SymbolKind::MemberDeclaration {
+                    name: case_name_ident.value.to_string(),
+                    is_static: true,
+                },
+            });
+
             // Enum case values (backed enums).
             if let EnumCaseItem::Backed(backed) = &enum_case.item {
                 extract_from_expression(backed.value, ctx, 0);

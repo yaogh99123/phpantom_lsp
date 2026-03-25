@@ -1667,3 +1667,265 @@ async fn rename_class_no_file_rename_for_non_namespaced() {
     let rf = rf.unwrap();
     assert_eq!(rf.new_uri.to_string(), "file:///src/Gadget.php");
 }
+
+// ─── Enum Case Rename ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn prepare_rename_enum_case_at_declaration() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                    // 0
+        "enum TaskType: int {\n",                     // 1
+        "    case Task  = 1;\n",                      // 2
+        "    case Issue = 2;\n",                      // 3
+        "    public function isIssue(): bool {\n",    // 4
+        "        return $this === self::Issue;\n",    // 5
+        "    }\n",                                    // 6
+        "}\n",                                        // 7
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    // Cursor on `Issue` in `case Issue = 2;` (line 3, col 9)
+    let result = prepare_rename(&backend, &uri, 3, 9).await;
+    assert!(
+        result.is_some(),
+        "prepare_rename should succeed on enum case declaration"
+    );
+
+    if let Some(PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. }) = result {
+        assert_eq!(placeholder, "Issue", "Placeholder should be the enum case name");
+    } else {
+        panic!("Expected RangeWithPlaceholder, got {:?}", result);
+    }
+}
+
+#[tokio::test]
+async fn prepare_rename_enum_case_at_reference() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                    // 0
+        "enum TaskType: int {\n",                     // 1
+        "    case Task  = 1;\n",                      // 2
+        "    case Issue = 2;\n",                      // 3
+        "    public function isIssue(): bool {\n",    // 4
+        "        return $this === self::Issue;\n",    // 5
+        "    }\n",                                    // 6
+        "}\n",                                        // 7
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    // Cursor on `Issue` in `self::Issue` (line 5, col 36)
+    let result = prepare_rename(&backend, &uri, 5, 36).await;
+    assert!(
+        result.is_some(),
+        "prepare_rename should succeed on enum case reference"
+    );
+
+    if let Some(PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. }) = result {
+        assert_eq!(placeholder, "Issue", "Placeholder should be the enum case name");
+    } else {
+        panic!("Expected RangeWithPlaceholder, got {:?}", result);
+    }
+}
+
+#[tokio::test]
+async fn rename_enum_case_from_declaration() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                    // 0
+        "enum TaskType: int {\n",                     // 1
+        "    case Task  = 1;\n",                      // 2
+        "    case Issue = 2;\n",                      // 3
+        "    public function isIssue(): bool {\n",    // 4
+        "        return $this === self::Issue;\n",    // 5
+        "    }\n",                                    // 6
+        "}\n",                                        // 7
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    // Rename `Issue` from its declaration site (line 3, col 9)
+    let edit = rename(&backend, &uri, 3, 9, "Ticket").await;
+    assert!(
+        edit.is_some(),
+        "Expected a workspace edit for enum case rename from declaration"
+    );
+
+    let file_edits = edits_for_uri(&edit.unwrap(), &uri);
+    // Should have at least 2 edits: the declaration + the self::Issue reference
+    assert!(
+        file_edits.len() >= 2,
+        "Expected at least 2 edits for Issue → Ticket, got {}",
+        file_edits.len()
+    );
+
+    for te in &file_edits {
+        assert_eq!(te.new_text, "Ticket");
+    }
+
+    let result = apply_edits(text, &file_edits);
+    assert!(
+        result.contains("case Ticket"),
+        "Declaration should be renamed: {}",
+        result
+    );
+    assert!(
+        result.contains("self::Ticket"),
+        "Reference should be renamed: {}",
+        result
+    );
+    assert!(
+        !result.contains("case Issue"),
+        "Old declaration should not remain: {}",
+        result
+    );
+    assert!(
+        !result.contains("self::Issue"),
+        "Old reference should not remain: {}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn rename_enum_case_from_reference() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                    // 0
+        "enum TaskType: int {\n",                     // 1
+        "    case Task  = 1;\n",                      // 2
+        "    case Issue = 2;\n",                      // 3
+        "    public function isIssue(): bool {\n",    // 4
+        "        return $this === self::Issue;\n",    // 5
+        "    }\n",                                    // 6
+        "}\n",                                        // 7
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    // Rename `Issue` from a reference site: `self::Issue` (line 5, col 36)
+    let edit = rename(&backend, &uri, 5, 36, "Ticket").await;
+    assert!(
+        edit.is_some(),
+        "Expected a workspace edit for enum case rename from reference"
+    );
+
+    let file_edits = edits_for_uri(&edit.unwrap(), &uri);
+    assert!(
+        file_edits.len() >= 2,
+        "Expected at least 2 edits for Issue → Ticket, got {}",
+        file_edits.len()
+    );
+
+    for te in &file_edits {
+        assert_eq!(te.new_text, "Ticket");
+    }
+
+    let result = apply_edits(text, &file_edits);
+    assert!(
+        result.contains("case Ticket"),
+        "Declaration should be renamed: {}",
+        result
+    );
+    assert!(
+        result.contains("self::Ticket"),
+        "Reference should be renamed: {}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn rename_enum_case_does_not_affect_other_cases() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                    // 0
+        "enum TaskType: int {\n",                     // 1
+        "    case Task  = 1;\n",                      // 2
+        "    case Issue = 2;\n",                      // 3
+        "    public function isIssue(): bool {\n",    // 4
+        "        return $this === self::Issue;\n",    // 5
+        "    }\n",                                    // 6
+        "    public function isTask(): bool {\n",     // 7
+        "        return $this === self::Task;\n",     // 8
+        "    }\n",                                    // 9
+        "}\n",                                        // 10
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    // Rename `Issue` from declaration (line 3, col 9)
+    let edit = rename(&backend, &uri, 3, 9, "Ticket").await;
+    assert!(
+        edit.is_some(),
+        "Expected a workspace edit for enum case rename"
+    );
+
+    let file_edits = edits_for_uri(&edit.unwrap(), &uri);
+    let result = apply_edits(text, &file_edits);
+
+    // `Task` case should remain untouched
+    assert!(
+        result.contains("case Task"),
+        "Other enum case 'Task' should not be affected: {}",
+        result
+    );
+    assert!(
+        result.contains("self::Task"),
+        "Other enum case reference 'self::Task' should not be affected: {}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn rename_unit_enum_case() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                              // 0
+        "enum Color {\n",                       // 1
+        "    case Red;\n",                      // 2
+        "    case Blue;\n",                     // 3
+        "}\n",                                  // 4
+        "function demo(): void {\n",            // 5
+        "    $c = Color::Red;\n",               // 6
+        "}\n",                                  // 7
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    // Rename `Red` from declaration (line 2, col 9)
+    let edit = rename(&backend, &uri, 2, 9, "Crimson").await;
+    assert!(
+        edit.is_some(),
+        "Expected a workspace edit for unit enum case rename"
+    );
+
+    let file_edits = edits_for_uri(&edit.unwrap(), &uri);
+    assert!(
+        file_edits.len() >= 2,
+        "Expected at least 2 edits for Red → Crimson, got {}",
+        file_edits.len()
+    );
+
+    for te in &file_edits {
+        assert_eq!(te.new_text, "Crimson");
+    }
+
+    let result = apply_edits(text, &file_edits);
+    assert!(
+        result.contains("case Crimson"),
+        "Declaration should be renamed: {}",
+        result
+    );
+    assert!(
+        result.contains("Color::Crimson"),
+        "Reference should be renamed: {}",
+        result
+    );
+}
