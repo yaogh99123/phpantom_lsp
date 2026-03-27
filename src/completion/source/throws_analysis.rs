@@ -474,14 +474,10 @@ pub(crate) fn find_method_return_type(file_content: &str, method_name: &str) -> 
             && let Some(doc_start) = before.rfind("/**")
         {
             let docblock = &before[doc_start..];
-            for line in docblock.lines() {
-                let trimmed = line
-                    .trim()
-                    .trim_start_matches('/')
-                    .trim_start_matches('*')
-                    .trim();
-                if let Some(rest) = trimmed.strip_prefix("@return") {
-                    let rest = rest.trim();
+            if let Some(info) = crate::docblock::parser::parse_docblock_for_tags(docblock) {
+                use mago_docblock::document::TagKind;
+                if let Some(tag) = info.first_tag_by_kind(TagKind::Return) {
+                    let rest = tag.description.trim();
                     if let Some(type_str) = rest.split_whitespace().next() {
                         let clean = type_str.trim_start_matches('\\').trim_start_matches('?');
                         let short = short_name(clean);

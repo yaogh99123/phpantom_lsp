@@ -13,16 +13,17 @@ long-term maintenance burden.
 
 ## Crates to adopt
 
-| Crate              | Replaces                                               | Effort      |
-| ------------------ | ------------------------------------------------------ | ----------- |
-| `mago-docblock`    | Manual docblock parsing scattered across the codebase   | Medium-High |
-| `mago-type-syntax` | `src/docblock/{type_strings,generics,shapes,callable_types,conditional}.rs` + string-based type pipeline | Very High |
-| `mago-names`       | `src/parser/use_statements.rs` + `use_map` resolution   | Medium-High |
+| Crate              | Replaces                                               | Effort      | Status |
+| ------------------ | ------------------------------------------------------ | ----------- | ------ |
+| `mago-docblock`    | Manual docblock parsing scattered across the codebase   | Medium-High | ✅ Done |
+| `mago-type-syntax` | `src/docblock/{type_strings,generics,shapes,callable_types,conditional}.rs` + string-based type pipeline | Very High | M4 |
+| `mago-names`       | `src/parser/use_statements.rs` + `use_map` resolution   | Medium-High | M3 |
 
-`mago-docblock` is already a dependency — the core `src/docblock/`
-module uses it for all tag extraction. The remaining work (M2) is
-migrating the **rest** of the codebase that still does hand-rolled
-docblock parsing.
+`mago-docblock` is fully integrated — all modules that benefit from
+structured parsing use `DocblockInfo` / `TagInfo`. The remaining
+raw-text docblock code in the codebase operates on individual lines
+for surgical text editing and is better served by direct string
+manipulation.
 
 A fifth crate, `mago-reporting`, comes in as a transitive dependency
 of `mago-semantics` and `mago-names`. It does not replace any
@@ -36,134 +37,6 @@ PHPantom code but will appear in `Cargo.toml`.
 | `mago-semantics`   | 12K false positives on Laravel; no way to inject our type context.       |
 | `mago-linter`      | Same problem; `Integration::Laravel` is surface-level only.              |
 | `mago-fingerprint` | Requires `mago-names` for limited value; `signature_eq` already works.   |
-
----
-
-## M2. Deeper `mago-docblock` integration
-
-**What it replaces:** Manual `/** */` stripping, `*`-prefix scanning,
-and `@tag`-matching code scattered across modules that have not yet
-adopted the centralised `DocblockInfo` / `parse_docblock_for_tags`
-infrastructure in `src/docblock/parser.rs`.
-
-**Why it matters:** The core `src/docblock/` module is fully migrated,
-and the majority of hand-rolled docblock parsers across the project
-have been replaced with structured `DocblockInfo` access. The remaining
-items are either high-effort (`symbol_map/docblock.rs`) or low-impact
-(position-finding code in `file_lookup.rs`).
-
-**Relationship to M3/M4:** Independent. Can be done before, after, or
-in parallel with either. Items are ordered by impact.
-
-### Remaining items
-
-1. **Migrate `symbol_map/docblock.rs` (~1,360 lines).**
-   Impact: **High**.  Effort: **High**.
-
-   The single largest manual docblock parser in the project. It
-   reimplements line-by-line tag scanning for ~26 tag names,
-   multi-line type joining with offset maps, tag position validation,
-   and a 423-line recursive type string decomposer (`emit_type_spans`)
-   — all to produce `SymbolSpan` entries with file-level byte offsets
-   for go-to-definition and semantic tokens within docblocks.
-
-   `TagInfo` now has `span` and `description_span` fields (added as
-   part of the prerequisites). This module could parse docblocks with
-   `parse_docblock()` (which already calls
-   `mago_docblock::parse_phpdoc_with_span`) and iterate the
-   structured `TagInfo` entries instead of scanning raw lines.
-   The `emit_type_spans` function would remain largely unchanged
-   (it parses type *strings*, which is an M4 concern), but the
-   ~400 lines of tag scanning, `is_tag_position`, and
-   `join_multiline_type` would be eliminated.
-
-2. **Consolidate docblock locators.**
-   Impact: **Medium**.  Effort: **Medium**.
-
-   There are **5 separate implementations** of "find the docblock
-   for this function/node":
-
-   1. `get_docblock_text_for_node` (`docblock/tags.rs`) — trivia-based, canonical
-   2. `find_docblock_start_for_node` (`code_actions/update_docblock.rs`) — duplicate of #1
-   3. `find_enclosing_docblock` (`code_actions/phpstan/add_throws.rs`) — raw-text backward scan
-   4. `find_docblock_above_line` (`code_actions/phpstan/remove_throws.rs`) — raw-text backward scan
-   5. `find_method_docblock` (`hover/variable_type.rs`) — raw-text backward scan
-
-   Variants #3–5 exist because their callers start from a byte
-   offset or diagnostic line rather than an AST node. A shared
-   utility that can work from either starting point would eliminate
-   this duplication.
-
-3. **Migrate `definition/member/file_lookup.rs` — `@property`/`@method` position lookup.**
-   Impact: **Low-Medium**.  Effort: **Low**.
-
-   Manual `trim_start_matches('*')` + `starts_with("@property-read")`
-   for finding member definition positions in docblocks. The line-scanning
-   serves a dual purpose (finding positions AND verifying tag type), so
-   the benefit from structured parsing is limited.
-
-4. **Migrate `code_actions/update_docblock.rs` — `parse_docblock_lines` and rebuild.**
-   Impact: **Low-Medium**.  Effort: **Medium**.
-
-   The `parse_doc_params`, `parse_doc_return`, and `parse_doc_throws`
-   functions have been migrated to `_from_info` variants. The remaining
-   hand-rolled code is `parse_docblock_lines` (~80 lines, categorises
-   lines into a `DocLine` enum for the rebuild pipeline) and
-   `find_docblock_start_for_node` (duplicate of the canonical
-   `get_docblock_text_for_node`). The rebuild pipeline operates on
-   raw text lines for surgical editing, so it benefits less from
-   structured parsing.
-
-5. **Migrate `code_actions/phpstan/remove_throws.rs` — `build_remove_throws_edit`.**
-   Impact: **Low-Medium**.  Effort: **Low**.
-
-   The `@throws` tag *detection* in `add_throws.rs` has been migrated.
-   The remaining code in `remove_throws.rs` does line-level text editing
-   (finding which raw line to delete, handling blank-line cleanup) which
-   inherently needs to work with raw text.
-
-### Not applicable
-
-- **Source-scanning functions** in `docblock/tags.rs`
-  (`find_var_raw_type_in_source`, `find_iterable_raw_type_in_source`)
-  — complexity is in scope-aware backward scanning, not content
-  parsing. Two already delegate to mago-docblock; the other two do
-  minimal content parsing.
-
-- **Cursor-position modules** (`completion/source/comment_position.rs`,
-  `completion/phpdoc/context.rs`) — classify cursor position relative
-  to comment boundaries; handle incomplete input during typing.
-
-- **Consumer-only modules** (`signature_help.rs`, `document_symbols.rs`,
-  `inlay_hints.rs`, `folding.rs`, `document_links.rs`,
-  `diagnostics/deprecated.rs`) — read pre-extracted data from
-  `ClassInfo`, `MethodInfo`, `ParameterInfo` etc. No direct docblock
-  parsing.
-
-### Effort estimate
-
-| Item | Lines eliminated (approx.) | Effort |
-| ---- | ------------------------- | ------ |
-| 1. `symbol_map/docblock.rs` | ~800 | High |
-| 2. Consolidate locators | ~150 | Medium |
-| 3. `file_lookup.rs` | ~20 | Low |
-| 4. `update_docblock.rs` rebuild | ~160 | Medium |
-| 5. `remove_throws.rs` edit | ~30 | Low |
-| **Total remaining** | **~1,160** | **Medium-High** |
-
-### Implementation notes
-
-- `collapse_newlines` in `parser.rs` normalises multi-line tag
-  descriptions (`\n` + surrounding indentation → single space),
-  skipping insertion next to structural delimiters `<>{}()`.
-- `@phpstan-extends`, `@phpstan-implements`, `@phpstan-use`, and
-  `@removed` are `TagKind::Other`; matched by `tag.name` fallback.
-- The `_from_info` API eliminates redundant parsing by sharing a
-  single `DocblockInfo` across multiple extractions from the same
-  docblock.
-- `parse_docblock_for_tags_lossy` appends `*/` and strips trailing
-  bare `@` to handle partial docblocks during completion. Used by
-  `completion/phpdoc/mod.rs` for existing-tag detection.
 
 ---
 
@@ -286,14 +159,6 @@ Requires restructuring how we store per-file name resolution data.
    simplify the current `unused_imports.rs` logic.
 
 9. **Run the full test suite.**
-
-### Interaction with M2
-
-M2 (deeper mago-docblock integration) and M3 (mago-names) are
-independent — neither depends on the other. They can be done in
-parallel or in either order. M2 items 1–3 (the highest-impact ones)
-are recommended before M3 since they reduce manual docblock code that
-M3's name-resolution changes would otherwise need to work around.
 
 ### Interaction with M4
 
@@ -440,8 +305,8 @@ Modules in recommended migration order (least dependencies first):
 
 5. **`src/symbol_map/docblock.rs`** — `emit_type_spans`. Replace the
    423-line recursive string decomposer with `PhpType` tree
-   traversal + span emission. (This depends on M2 item 1 for the
-   tag-level migration; the type-level migration is M4.)
+   traversal + span emission. (The tag-level migration is already
+   done; this is the type-level migration.)
 
 6. **`src/diagnostics/`** — Type compatibility checks. Pattern match
    on `PhpType` variants instead of string prefix checks.
@@ -493,14 +358,13 @@ Once all consumers read `_parsed` fields:
 
 ## Testing strategy
 
-Each migration step (M2, M3, M4) must pass the **full existing test
+Each migration step (M3, M4) must pass the **full existing test
 suite** before merging. This is the primary safety net.
 
 Additional testing per migration:
 
 | Migration | Extra tests |
 | --------- | ----------- |
-| M2 | Integration tests for each migrated module (code actions, completion, hover, diagnostics) to verify docblock tag extraction produces identical results. |
 | M3 | Snapshot tests comparing `use_map`-based resolution with `OwnedResolvedNames`-based resolution across the fixture corpus. |
 | M4 | Round-trip tests (`PhpType::parse(s).to_string() == s`) for every type string in the test suite. Per-module migration tests comparing old string-based output with new `PhpType`-based output. |
 
@@ -525,7 +389,7 @@ version.
 
 ## What this enables
 
-Once M2 + M3 + M4 are complete:
+Once M3 + M4 are complete:
 
 - **Structured types everywhere.** No more string surgery for type
   manipulation. Generic substitution, conditional evaluation, and

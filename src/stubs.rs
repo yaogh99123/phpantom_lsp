@@ -178,19 +178,19 @@ fn is_preceding_docblock_removed(
 
     let docblock = &source[doc_start..doc_end + 2];
 
-    for line in docblock.lines() {
-        let trimmed = line.trim().trim_start_matches('*').trim();
-        let rest = if let Some(r) = trimmed.strip_prefix("@removed ") {
-            r
-        } else if let Some(r) = trimmed.strip_prefix("@removed\t") {
-            r
-        } else {
-            continue;
-        };
-        if let Some(ver) = crate::types::PhpVersion::from_composer_constraint(rest.trim())
-            && php_version >= ver
-        {
-            return true;
+    if let Some(info) = crate::docblock::parser::parse_docblock_for_tags(docblock) {
+        use mago_docblock::document::TagKind;
+        // @removed is a non-standard tag, so mago-docblock classifies it as
+        // TagKind::Other with name == "removed".
+        for tag in info.tags_by_kind(TagKind::Other) {
+            if tag.name == "removed" {
+                let rest = tag.description.trim();
+                if let Some(ver) = crate::types::PhpVersion::from_composer_constraint(rest)
+                    && php_version >= ver
+                {
+                    return true;
+                }
+            }
         }
     }
 

@@ -187,17 +187,10 @@ fn find_function_with_docblock_from_context<'a>(
             ..
         } => {
             if let MemberContext::Method(method, _in_body) = member {
-                let span = method.span();
                 let body_start = method.body.span().start.offset;
-                if cursor_on_signature_or_docblock(
-                    cursor,
-                    span.start.offset,
-                    body_start,
-                    trivia,
-                    content,
-                ) {
+                if cursor_on_signature_or_docblock(cursor, method, body_start, trivia, content) {
                     return build_info_for_function_like(
-                        span.start.offset,
+                        method.span().start.offset,
                         &method.parameter_list,
                         method.return_type_hint.as_ref(),
                         trivia,
@@ -213,17 +206,12 @@ fn find_function_with_docblock_from_context<'a>(
             if matches!(member, MemberContext::None) {
                 for m in all_members.iter() {
                     if let ClassLikeMember::Method(method) = m {
-                        let span = method.span();
                         let body_start = method.body.span().start.offset;
                         if cursor_on_signature_or_docblock(
-                            cursor,
-                            span.start.offset,
-                            body_start,
-                            trivia,
-                            content,
+                            cursor, method, body_start, trivia, content,
                         ) {
                             return build_info_for_function_like(
-                                span.start.offset,
+                                method.span().start.offset,
                                 &method.parameter_list,
                                 method.return_type_hint.as_ref(),
                                 trivia,
@@ -236,17 +224,10 @@ fn find_function_with_docblock_from_context<'a>(
             None
         }
         CursorContext::InFunction(func, _in_body) => {
-            let span = func.span();
             let body_start = func.body.span().start.offset;
-            if cursor_on_signature_or_docblock(
-                cursor,
-                span.start.offset,
-                body_start,
-                trivia,
-                content,
-            ) {
+            if cursor_on_signature_or_docblock(cursor, func, body_start, trivia, content) {
                 return build_info_for_function_like(
-                    span.start.offset,
+                    func.span().start.offset,
                     &func.parameter_list,
                     func.return_type_hint.as_ref(),
                     trivia,
@@ -265,65 +246,26 @@ fn find_function_with_docblock_from_context<'a>(
 /// inside the preceding docblock.
 fn cursor_on_signature_or_docblock(
     cursor: u32,
-    node_start: u32,
+    node: &impl HasSpan,
     body_start: u32,
     trivia: &[Trivia<'_>],
     content: &str,
 ) -> bool {
+    let node_start = node.span().start.offset;
     // Cursor is on the signature (before the body).
     if cursor >= node_start && cursor < body_start {
         return true;
     }
     // Check if the cursor is inside the docblock that belongs to this node.
-    if let Some(db_start) = find_docblock_start_for_node(node_start, trivia, content)
+    // Uses the canonical trivia-based locator from symbol_map::docblock.
+    if let Some((_text, db_start)) =
+        crate::symbol_map::docblock::get_docblock_text_with_offset(trivia, content, node)
         && cursor >= db_start
         && cursor < node_start
     {
         return true;
     }
     false
-}
-
-/// Find the start offset of the docblock trivia immediately before a node,
-/// if one exists.
-fn find_docblock_start_for_node(
-    node_start: u32,
-    trivia: &[Trivia<'_>],
-    content: &str,
-) -> Option<u32> {
-    let candidate_idx = trivia.partition_point(|t| t.span.start.offset < node_start);
-    if candidate_idx == 0 {
-        return None;
-    }
-
-    let content_bytes = content.as_bytes();
-    let mut covered_from = node_start;
-
-    for i in (0..candidate_idx).rev() {
-        let t = &trivia[i];
-        let t_end = t.span.end.offset;
-
-        let gap = content_bytes
-            .get(t_end as usize..covered_from as usize)
-            .unwrap_or(&[]);
-        if !gap.iter().all(u8::is_ascii_whitespace) {
-            break;
-        }
-
-        match t.kind {
-            TriviaKind::DocBlockComment => {
-                return Some(t.span.start.offset);
-            }
-            TriviaKind::WhiteSpace
-            | TriviaKind::SingleLineComment
-            | TriviaKind::MultiLineComment
-            | TriviaKind::HashComment => {
-                covered_from = t.span.start.offset;
-            }
-        }
-    }
-
-    None
 }
 
 /// Extract the hint string from a type hint node.

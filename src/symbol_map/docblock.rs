@@ -4,10 +4,20 @@
 //! type references in supported tags (`@param`, `@return`, `@var`,
 //! `@template`, `@method`, etc.) and emit [`SymbolSpan`] entries with
 //! correct file-level byte offsets.
+//!
+//! Tag detection and iteration uses the structured [`DocblockInfo`] /
+//! [`TagInfo`] infrastructure from [`crate::docblock::parser`], which
+//! delegates to `mago-docblock` for parsing.  Type *string* decomposition
+//! (unions, intersections, generics, callables, conditionals) remains
+//! manual via [`emit_type_spans`] — that will move to `mago-type-syntax`
+//! in M4.
 
-use mago_span::HasSpan;
+use mago_database::file::FileId;
+use mago_docblock::document::TagKind;
+use mago_span::{HasSpan, Position, Span};
 use mago_syntax::ast::*;
 
+use crate::docblock::parser::parse_docblock;
 use crate::docblock::types::{split_intersection_depth0, split_type_token, split_union_depth0};
 use crate::types::TemplateVariance;
 
@@ -159,172 +169,186 @@ pub fn get_docblock_text_with_offset<'a>(
     None
 }
 
+// ─── Tag classification ─────────────────────────────────────────────────────
+
+/// `TagKind` values whose description starts with a type expression.
+const TYPE_FIRST_KINDS: &[TagKind] = &[
+    TagKind::Param,
+    TagKind::Return,
+    TagKind::Throws,
+    TagKind::Var,
+    TagKind::Property,
+    TagKind::PropertyRead,
+    TagKind::PropertyWrite,
+    TagKind::Mixin,
+    TagKind::Extends,
+    TagKind::Implements,
+    TagKind::Use,
+    TagKind::TemplateExtends,
+    TagKind::TemplateImplements,
+    TagKind::PhpstanReturn,
+    TagKind::PhpstanParam,
+    TagKind::PhpstanVar,
+    TagKind::PhpstanAssert,
+    TagKind::PhpstanAssertIfTrue,
+    TagKind::PhpstanAssertIfFalse,
+    TagKind::PsalmAssert,
+    TagKind::PsalmAssertIfTrue,
+    TagKind::PsalmAssertIfFalse,
+];
+
+/// Tag names (for `TagKind::Other`) whose description starts with a type.
+const TYPE_FIRST_OTHER_NAMES: &[&str] = &["psalm-return", "psalm-param", "psalm-var"];
+
+/// `TagKind` values for template declarations.
+const TEMPLATE_INVARIANT_KINDS: &[TagKind] = &[
+    TagKind::Template,
+    TagKind::PhpstanTemplate,
+    TagKind::PsalmTemplate,
+];
+
+const TEMPLATE_COVARIANT_KINDS: &[TagKind] = &[
+    TagKind::TemplateCovariant,
+    TagKind::PhpstanTemplateCovariant,
+    TagKind::PsalmTemplateCovariant,
+];
+
+const TEMPLATE_CONTRAVARIANT_KINDS: &[TagKind] = &[
+    TagKind::TemplateContravariant,
+    TagKind::PhpstanTemplateContravariant,
+    TagKind::PsalmTemplateContravariant,
+];
+
+/// Determine the template variance for a tag, if it is a template tag.
+fn template_variance_for_tag(tag: &TagKind) -> Option<TemplateVariance> {
+    if TEMPLATE_INVARIANT_KINDS.contains(tag) {
+        Some(TemplateVariance::Invariant)
+    } else if TEMPLATE_COVARIANT_KINDS.contains(tag) {
+        Some(TemplateVariance::Covariant)
+    } else if TEMPLATE_CONTRAVARIANT_KINDS.contains(tag) {
+        Some(TemplateVariance::Contravariant)
+    } else {
+        None
+    }
+}
+
+/// Returns `true` when the tag's description starts with a type expression.
+fn is_type_first_tag(kind: &TagKind, name: &str) -> bool {
+    TYPE_FIRST_KINDS.contains(kind)
+        || (*kind == TagKind::Other && TYPE_FIRST_OTHER_NAMES.contains(&name))
+}
+
 // ─── Docblock tag scanning ──────────────────────────────────────────────────
 
 /// Scan a docblock for type references in supported tags and emit
 /// `SymbolSpan` entries with file-level byte offsets.
 ///
 /// Returns a list of `@template` parameter definitions found in the
-/// docblock, each as `(name, byte_offset)`.
+/// docblock, each as `(name, byte_offset, optional_bound, variance)`.
 pub(super) fn extract_docblock_symbols(
     docblock: &str,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
 ) -> Vec<(String, u32, Option<String>, TemplateVariance)> {
-    // ── @see symbol references ──────────────────────────────────────
-    // Extracted before the main per-line loop because @see also appears
-    // in inline form `{@see ...}` which the tag-position check skips.
-    extract_see_tag_symbols(docblock, base_offset, spans);
+    // ── Inline `{@see ...}` references ──────────────────────────────
+    // These appear in free-text, not as top-level tags, so we scan the
+    // raw docblock text for them.
+    extract_inline_see_symbols(docblock, base_offset, spans);
 
-    // Tags whose immediate next token is a type.
-    const TYPE_FIRST_TAGS: &[&str] = &[
-        "@param",
-        "@return",
-        "@throws",
-        "@var",
-        "@property",
-        "@property-read",
-        "@property-write",
-        "@mixin",
-        "@extends",
-        "@implements",
-        "@use",
-        "@template-extends",
-        "@template-implements",
-        "@phpstan-return",
-        "@phpstan-param",
-        "@psalm-return",
-        "@psalm-param",
-        "@phpstan-var",
-        "@psalm-var",
-        "@phpstan-assert",
-        "@phpstan-assert-if-true",
-        "@phpstan-assert-if-false",
-        "@psalm-assert",
-        "@psalm-assert-if-true",
-        "@psalm-assert-if-false",
-    ];
+    // ── Parse structured tags ───────────────────────────────────────
+    let base_span = Span::new(
+        FileId::zero(),
+        Position::new(base_offset),
+        Position::new(base_offset + docblock.len() as u32),
+    );
+    let Some(info) = parse_docblock(docblock, base_span) else {
+        return Vec::new();
+    };
 
-    let mut line_start: usize = 0;
     let mut template_params: Vec<(String, u32, Option<String>, TemplateVariance)> = Vec::new();
 
-    for line in docblock.split('\n') {
-        if let Some(at_pos) = line.find('@')
-            && is_tag_position(line, at_pos)
-        {
-            let tag_start_in_line = at_pos;
-            let after_at = &line[tag_start_in_line..];
+    for tag in &info.tags {
+        let desc_file_offset = tag.description_span.start.offset;
+        let desc_start_in_docblock = (desc_file_offset - base_offset) as usize;
 
-            let tag_end = after_at
-                .find(|c: char| c.is_whitespace())
-                .unwrap_or(after_at.len());
-            let tag = &after_at[..tag_end];
-            let tag_lower = tag.to_ascii_lowercase();
-
-            if tag_lower == "@see" {
-                // Handled by extract_see_tag_symbols above.
-                line_start += line.len() + 1;
-                continue;
-            }
-
-            if tag_lower == "@method" {
-                extract_method_tag_symbols(
-                    line,
-                    tag_start_in_line,
-                    tag_end,
-                    line_start,
-                    base_offset,
-                    spans,
-                );
-                line_start += line.len() + 1;
-                continue;
-            }
-
-            // @template tags: `@template T of BoundType`
-            // @template-covariant / @template-contravariant are variants.
-            // The first token after the tag is the parameter name (skip it),
-            // then if followed by `of`, the next token is the bound type.
-            let template_variance = if tag_lower == "@template"
-                || tag_lower == "@phpstan-template"
-                || tag_lower == "@psalm-template"
-            {
-                Some(TemplateVariance::Invariant)
-            } else if tag_lower == "@template-covariant"
-                || tag_lower == "@phpstan-template-covariant"
-                || tag_lower == "@psalm-template-covariant"
-            {
-                Some(TemplateVariance::Covariant)
-            } else if tag_lower == "@template-contravariant"
-                || tag_lower == "@phpstan-template-contravariant"
-                || tag_lower == "@psalm-template-contravariant"
-            {
-                Some(TemplateVariance::Contravariant)
-            } else {
-                None
-            };
-
-            if let Some(variance) = template_variance {
-                if let Some((name, offset, bound)) = extract_template_tag_symbols(
-                    after_at,
-                    tag_end,
-                    tag_start_in_line,
-                    line_start,
-                    base_offset,
-                    spans,
-                ) {
-                    template_params.push((name, offset, bound, variance));
-                }
-                line_start += line.len() + 1;
-                continue;
-            }
-
-            let is_type_first = TYPE_FIRST_TAGS.iter().any(|t| tag_lower == *t);
-
-            if is_type_first {
-                let after_tag = &after_at[tag_end..];
-                let after_tag_trimmed = after_tag.trim_start();
-                if !after_tag_trimmed.is_empty() {
-                    let type_start_in_line =
-                        tag_start_in_line + tag_end + (after_tag.len() - after_tag_trimmed.len());
-                    let type_start_in_docblock = line_start + type_start_in_line;
-
-                    // Build a (possibly multiline) type string and its
-                    // offset map so that `emit_type_spans` produces
-                    // correct file-level offsets even when the type
-                    // spans continuation lines.
-                    let (joined, offset_map) =
-                        join_multiline_type(docblock, type_start_in_docblock);
-
-                    let (type_token, _remainder) = split_type_token(&joined);
-                    if !type_token.is_empty() {
-                        let mut local_spans: Vec<SymbolSpan> = Vec::new();
-                        emit_type_spans(type_token, 0, &mut local_spans);
-                        // Remap offsets from the joined string back to
-                        // original docblock positions.
-                        for mut sp in local_spans {
-                            sp.start = base_offset
-                                + offset_map
-                                    .get(sp.start as usize)
-                                    .copied()
-                                    .unwrap_or(sp.start as usize)
-                                    as u32;
-                            sp.end = base_offset
-                                + offset_map
-                                    .get(sp.end as usize)
-                                    .copied()
-                                    .unwrap_or(sp.end as usize)
-                                    as u32;
-                            spans.push(sp);
-                        }
-                    }
-                }
-            }
+        // ── @see ────────────────────────────────────────────────────
+        if tag.kind == TagKind::See {
+            extract_see_tag_symbol(tag, spans);
+            continue;
         }
 
-        line_start += line.len() + 1;
+        // ── @method ─────────────────────────────────────────────────
+        if tag.kind == TagKind::Method || tag.kind == TagKind::PsalmMethod {
+            extract_method_tag_symbols(docblock, desc_start_in_docblock, base_offset, spans);
+            continue;
+        }
+
+        // ── @template variants ──────────────────────────────────────
+        if let Some(variance) = template_variance_for_tag(&tag.kind) {
+            if let Some((name, offset, bound)) =
+                extract_template_tag_symbols(docblock, desc_start_in_docblock, base_offset, spans)
+            {
+                template_params.push((name, offset, bound, variance));
+            }
+            continue;
+        }
+
+        // ── Type-first tags ─────────────────────────────────────────
+        if is_type_first_tag(&tag.kind, &tag.name) {
+            emit_type_first_tag(docblock, desc_start_in_docblock, base_offset, spans);
+        }
     }
 
     template_params
+}
+
+/// Emit type spans for a tag whose description starts with a type
+/// expression (e.g. `@param string $name`, `@return Collection<int>`).
+///
+/// Uses [`join_multiline_type`] to handle types that span continuation
+/// lines and [`emit_type_spans`] to produce navigable symbol spans.
+fn emit_type_first_tag(
+    docblock: &str,
+    desc_start_in_docblock: usize,
+    base_offset: u32,
+    spans: &mut Vec<SymbolSpan>,
+) {
+    if desc_start_in_docblock >= docblock.len() {
+        return;
+    }
+    // The description may start with whitespace (e.g. double-space after
+    // the tag name: `@param  Type`).  Trim it and adjust the offset so
+    // that `join_multiline_type` begins at the first non-whitespace byte
+    // on the same line.
+    let raw = &docblock[desc_start_in_docblock..];
+    let first_nl = raw.find('\n').unwrap_or(raw.len());
+    let first_line = &raw[..first_nl];
+    let trimmed = first_line.trim_start();
+    if trimmed.is_empty() {
+        return;
+    }
+    let leading_ws = first_line.len() - trimmed.len();
+    let adjusted_start = desc_start_in_docblock + leading_ws;
+
+    let (joined, offset_map) = join_multiline_type(docblock, adjusted_start);
+    let (type_token, _remainder) = split_type_token(&joined);
+    if !type_token.is_empty() {
+        let mut local_spans: Vec<SymbolSpan> = Vec::new();
+        emit_type_spans(type_token, 0, &mut local_spans);
+        for mut sp in local_spans {
+            sp.start = base_offset
+                + offset_map
+                    .get(sp.start as usize)
+                    .copied()
+                    .unwrap_or(sp.start as usize) as u32;
+            sp.end = base_offset
+                + offset_map
+                    .get(sp.end as usize)
+                    .copied()
+                    .unwrap_or(sp.end as usize) as u32;
+            spans.push(sp);
+        }
+    }
 }
 
 /// Scan a docblock for `@param $varName` tokens and return
@@ -334,71 +358,51 @@ pub(super) fn extract_docblock_symbols(
 /// [`SymbolKind::Variable`] spans so that rename and find-references
 /// cover parameter names mentioned in docblocks.
 pub(super) fn extract_param_var_spans(docblock: &str, base_offset: u32) -> Vec<(String, u32)> {
+    let base_span = Span::new(
+        FileId::zero(),
+        Position::new(base_offset),
+        Position::new(base_offset + docblock.len() as u32),
+    );
+    let Some(info) = parse_docblock(docblock, base_span) else {
+        return Vec::new();
+    };
+
     let mut results = Vec::new();
-    let mut line_start: usize = 0;
 
-    for line in docblock.split('\n') {
-        if let Some(at_pos) = line.find('@')
-            && is_tag_position(line, at_pos)
-        {
-            let after_at = &line[at_pos..];
-            let tag_end = after_at
-                .find(|c: char| c.is_whitespace())
-                .unwrap_or(after_at.len());
-            let tag = &after_at[..tag_end];
-            let tag_lower = tag.to_ascii_lowercase();
+    for tag in &info.tags {
+        let is_param = matches!(tag.kind, TagKind::Param | TagKind::PhpstanParam)
+            || (tag.kind == TagKind::Other && tag.name == "psalm-param");
+        if !is_param {
+            continue;
+        }
 
-            if tag_lower == "@param" || tag_lower == "@phpstan-param" || tag_lower == "@psalm-param"
-            {
-                // Format: `@param TypeHint $varName description`
-                // The $varName may appear right after the tag (when the
-                // type hint is omitted) or after a type token.  We scan
-                // the remainder for the first `$` token.
-                let after_tag = &after_at[tag_end..];
-                if let Some(dollar_in_after) = after_tag.find('$') {
-                    let dollar_pos_in_line = at_pos + tag_end + dollar_in_after;
-                    let rest = &line[dollar_pos_in_line..];
-                    // Extract the variable name: `$` followed by
-                    // identifier chars.
-                    let name_end = rest[1..]
-                        .find(|c: char| !c.is_alphanumeric() && c != '_')
-                        .map(|i| i + 1)
-                        .unwrap_or(rest.len());
-                    if name_end > 1 {
-                        let name = rest[1..name_end].to_string();
-                        let file_offset = base_offset + (line_start + dollar_pos_in_line) as u32;
-                        results.push((name, file_offset));
-                    }
-                }
+        // The description is `TypeHint $varName desc` or just `$varName`.
+        // Find the `$` in the raw source covered by description_span so
+        // the file offset is accurate.
+        let desc_file_start = tag.description_span.start.offset;
+        let desc_in_doc_start = (desc_file_start - base_offset) as usize;
+        let desc_in_doc_end =
+            ((tag.description_span.end.offset - base_offset) as usize).min(docblock.len());
+        let raw_desc = &docblock[desc_in_doc_start..desc_in_doc_end];
+
+        if let Some(dollar_pos) = raw_desc.find('$') {
+            let rest = &raw_desc[dollar_pos..];
+            let name_end = rest[1..]
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .map(|i| i + 1)
+                .unwrap_or(rest.len());
+            if name_end > 1 {
+                let name = rest[1..name_end].to_string();
+                let file_offset = desc_file_start + dollar_pos as u32;
+                results.push((name, file_offset));
             }
         }
-        line_start += line.len() + 1;
     }
 
     results
 }
 
 // ─── Type span emission ─────────────────────────────────────────────────────
-
-/// Check whether `@` at byte position `at_pos` in a docblock line is
-/// in a valid tag position.
-///
-/// A valid tag position means the `@` is preceded only by whitespace
-/// and an optional `*` (the standard `" * @tag"` docblock prefix).
-/// An `@` that appears mid-sentence (e.g. `"filtered out of @throws
-/// suggestions."`) is description text, not a tag.
-fn is_tag_position(line: &str, at_pos: usize) -> bool {
-    let before = &line[..at_pos];
-    let trimmed = before.trim_start();
-    // After stripping leading whitespace, valid prefixes are:
-    //   ""        — `@tag` at start of line (after whitespace)
-    //   "*"       — `* @tag` (single asterisk)
-    //   "* "...   — `*   @tag` (asterisk + whitespace before @)
-    //   "/**"     — `/** @tag` (opening of single-line docblock)
-    // The key rule: after removing leading whitespace, the remaining
-    // prefix before `@` must be only `*`, `/`, or more whitespace.
-    trimmed.is_empty() || trimmed.bytes().all(|b| b == b'*' || b == b'/' || b == b' ')
-}
 
 /// Emit `SymbolSpan` entries for a type token, splitting unions and
 /// intersections and skipping scalars.
@@ -990,40 +994,40 @@ fn find_keyword_depth0(s: &str, keyword: &str) -> Option<usize> {
 
 // ─── @template tag extraction ───────────────────────────────────────────────
 
-/// Handle `@template` (and variants) tags which have the form:
-/// `@template T of BoundType`
+/// Handle `@template` (and variants) tags whose description has the form:
+/// `T of BoundType`
 ///
-/// The first token after the tag is the template parameter name — its
-/// `(name, byte_offset)` pair is returned so the caller can record a
-/// [`super::TemplateParamDef`].  If followed by the keyword `of`, the next
-/// token is the bound type which is emitted as a `ClassReference`.
+/// `desc_start_in_docblock` is the byte offset within `docblock` where
+/// the tag's description begins.  This is derived from the structured
+/// `description_span` so that file-level offsets are accurate.
+///
+/// Returns `(name, byte_offset, optional_bound)` so the caller can
+/// record a [`super::TemplateParamDef`].
 fn extract_template_tag_symbols(
-    after_at: &str,
-    tag_end: usize,
-    tag_start_in_line: usize,
-    line_start: usize,
+    docblock: &str,
+    desc_start_in_docblock: usize,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
 ) -> Option<(String, u32, Option<String>)> {
-    // Skip the tag itself to get to the template parameter name.
-    let after_tag = &after_at[tag_end..];
-    let after_tag_trimmed = after_tag.trim_start();
-    if after_tag_trimmed.is_empty() {
+    let desc = docblock.get(desc_start_in_docblock..)?;
+    // Take only the first line of the description (template tags are
+    // always single-line).
+    let first_line = desc.split('\n').next().unwrap_or(desc);
+    let trimmed = first_line.trim_start();
+    if trimmed.is_empty() {
         return None;
     }
+    let leading_ws = first_line.len() - trimmed.len();
 
     // The first non-whitespace token is the parameter name (e.g. `T`, `TNode`).
-    let param_end = after_tag_trimmed
+    let param_end = trimmed
         .find(|c: char| c.is_whitespace())
-        .unwrap_or(after_tag_trimmed.len());
+        .unwrap_or(trimmed.len());
 
-    let param_name = &after_tag_trimmed[..param_end];
-    // Compute the byte offset of the param name within the file.
-    let param_offset_in_after_at = after_at.len() - after_tag_trimmed.len();
-    let param_file_offset =
-        base_offset + (line_start + tag_start_in_line + param_offset_in_after_at) as u32;
+    let param_name = &trimmed[..param_end];
+    let param_file_offset = base_offset + (desc_start_in_docblock + leading_ws) as u32;
 
-    let after_param = &after_tag_trimmed[param_end..];
+    let after_param = &trimmed[param_end..];
     let after_param_trimmed = after_param.trim_start();
 
     // Check for `of` keyword.
@@ -1038,19 +1042,15 @@ fn extract_template_tag_symbols(
         return Some((param_name.to_string(), param_file_offset, None));
     }
 
-    // Compute the offset of the bound type within the original line.
-    // after_at starts at tag_start_in_line within the line.
-    // after_of_trimmed starts at:
-    //   tag_start_in_line + tag_end + (whitespace before param)
-    //   + param_end + (whitespace before "of") + 2 + (whitespace after "of")
-    let bound_offset_in_after_at = after_at.len() - after_of_trimmed.len();
-    let bound_start_in_line = tag_start_in_line + bound_offset_in_after_at;
+    // Compute the offset of the bound type within the docblock.
+    let bound_offset_in_desc = trimmed.len() - after_of_trimmed.len();
+    let bound_start_in_docblock = desc_start_in_docblock + leading_ws + bound_offset_in_desc;
 
     let (type_token, _remainder) = split_type_token(after_of_trimmed);
     let bound = if !type_token.is_empty() {
         emit_type_spans(
             type_token,
-            base_offset + (line_start + bound_start_in_line) as u32,
+            base_offset + bound_start_in_docblock as u32,
             spans,
         );
         Some(type_token.to_string())
@@ -1063,32 +1063,38 @@ fn extract_template_tag_symbols(
 
 // ─── @method tag extraction ─────────────────────────────────────────────────
 
-/// Handle `@method` tags which have the form:
-/// `@method [static] ReturnType methodName(ParamType $p, ...)`
+/// Handle `@method` tags whose description has the form:
+/// `[static] ReturnType methodName(ParamType $p, ...)`
+///
+/// `desc_start_in_docblock` is the byte offset within `docblock` where
+/// the tag's description begins.
 fn extract_method_tag_symbols(
-    line: &str,
-    tag_start_in_line: usize,
-    tag_end_in_tag: usize,
-    line_start: usize,
+    docblock: &str,
+    desc_start_in_docblock: usize,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
 ) {
-    let after_tag = &line[tag_start_in_line + tag_end_in_tag..];
-    let after_tag_trimmed = after_tag.trim_start();
-    if after_tag_trimmed.is_empty() {
+    let desc = match docblock.get(desc_start_in_docblock..) {
+        Some(d) => d,
+        None => return,
+    };
+    // Take only the first line (method tags are single-line).
+    let first_line = desc.split('\n').next().unwrap_or(desc);
+    let trimmed = first_line.trim_start();
+    if trimmed.is_empty() {
         return;
     }
+    let leading_ws = first_line.len() - trimmed.len();
 
-    let mut rest = after_tag_trimmed;
-    let mut rest_offset =
-        tag_start_in_line + tag_end_in_tag + (after_tag.len() - after_tag_trimmed.len());
+    let mut rest = trimmed;
+    let mut rest_offset_in_docblock = desc_start_in_docblock + leading_ws;
 
     // Skip optional `static` keyword.
     if rest.starts_with("static ") || rest.starts_with("static\t") {
         let skip = "static".len();
         let after_static = rest[skip..].trim_start();
         let whitespace_len = rest.len() - skip - after_static.len();
-        rest_offset += skip + whitespace_len;
+        rest_offset_in_docblock += skip + whitespace_len;
         rest = after_static;
     }
 
@@ -1101,7 +1107,7 @@ fn extract_method_tag_symbols(
     if !return_type.is_empty() {
         emit_type_spans(
             return_type,
-            base_offset + (line_start + rest_offset) as u32,
+            base_offset + rest_offset_in_docblock as u32,
             spans,
         );
     }
@@ -1111,7 +1117,7 @@ fn extract_method_tag_symbols(
         let close = remainder[paren_pos..].find(')');
         if let Some(close_pos) = close {
             let inner = &remainder[paren_pos + 1..paren_pos + close_pos];
-            let inner_offset_in_line = rest_offset
+            let inner_offset_in_docblock = rest_offset_in_docblock
                 + return_type.len()
                 + (remainder.len() - rest[return_type.len()..].len())
                 + paren_pos
@@ -1129,8 +1135,7 @@ fn extract_method_tag_symbols(
                         let param = inner[param_start..i].trim();
                         emit_method_param_type(
                             param,
-                            line_start,
-                            inner_offset_in_line,
+                            inner_offset_in_docblock,
                             param_start,
                             base_offset,
                             spans,
@@ -1144,8 +1149,7 @@ fn extract_method_tag_symbols(
             let param = inner[param_start..].trim();
             emit_method_param_type(
                 param,
-                line_start,
-                inner_offset_in_line,
+                inner_offset_in_docblock,
                 param_start,
                 base_offset,
                 spans,
@@ -1156,49 +1160,32 @@ fn extract_method_tag_symbols(
 
 // ─── @see tag symbol extraction ─────────────────────────────────────────────
 
-/// Extract symbol references from `@see` tags in a docblock.
+/// Extract a symbol reference from a structured `@see` tag.
 ///
-/// Handles both block-level tags:
-///   `@see ClassName`
-///   `@see ClassName::method()`
-///   `@see ClassName::$property`
-///
-/// And inline tags:
-///   `{@see ClassName}`
-///   `Wraps {@see fixture()} with ...`
-///
-/// URLs (`http://`, `https://`) are skipped (handled by document links).
-fn extract_see_tag_symbols(docblock: &str, base_offset: u32, spans: &mut Vec<SymbolSpan>) {
-    // ── 1. Block-level `@see` tags ──────────────────────────────────
-    let mut line_start: usize = 0;
-    for line in docblock.split('\n') {
-        if let Some(at_pos) = line.find('@')
-            && is_tag_position(line, at_pos)
-        {
-            let after_at = &line[at_pos..];
-            let tag_end = after_at
-                .find(|c: char| c.is_whitespace())
-                .unwrap_or(after_at.len());
-            let tag = &after_at[..tag_end];
-
-            if tag.eq_ignore_ascii_case("@see") {
-                let rest = after_at[tag_end..].trim_start();
-                if !rest.is_empty() {
-                    let rest_offset_in_line =
-                        at_pos + tag_end + (after_at[tag_end..].len() - rest.len());
-                    let rest_offset = line_start + rest_offset_in_line;
-                    // Take the first whitespace-delimited token.
-                    let reference = rest.split_whitespace().next().unwrap_or("");
-                    if !reference.is_empty() {
-                        emit_see_reference(reference, base_offset + rest_offset as u32, spans);
-                    }
-                }
-            }
-        }
-        line_start += line.len() + 1;
+/// The tag's `description_span` gives the file-level offset of the
+/// reference token.
+fn extract_see_tag_symbol(tag: &crate::docblock::parser::TagInfo, spans: &mut Vec<SymbolSpan>) {
+    let desc = tag.description.trim();
+    if desc.is_empty() {
+        return;
     }
+    let reference = desc.split_whitespace().next().unwrap_or("");
+    if reference.is_empty() {
+        return;
+    }
+    // Compute the file offset: description_span.start + any leading whitespace.
+    let raw_desc = &tag.description;
+    let leading_ws = raw_desc.len() - raw_desc.trim_start().len();
+    let file_offset = tag.description_span.start.offset + leading_ws as u32;
+    emit_see_reference(reference, file_offset, spans);
+}
 
-    // ── 2. Inline `{@see ...}` tags ────────────────────────────────
+/// Scan raw docblock text for inline `{@see ...}` references.
+///
+/// These appear in free-text (descriptions, not top-level tags) and must
+/// be found by scanning the raw string since `mago-docblock` does not
+/// expose inline tag positions with sufficient granularity.
+fn extract_inline_see_symbols(docblock: &str, base_offset: u32, spans: &mut Vec<SymbolSpan>) {
     let mut search_from = 0;
     while let Some(open) = docblock[search_from..].find("{@see ") {
         let abs_open = search_from + open;
@@ -1330,10 +1317,13 @@ fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolS
 }
 
 /// Emit a type span for a single parameter in a `@method` tag's parameter list.
+///
+/// `inner_offset_in_docblock` is the byte offset of the opening `(` + 1
+/// within the raw docblock string.  `param_start_in_inner` is the byte
+/// offset of this parameter's text within the parenthesized list.
 fn emit_method_param_type(
     param: &str,
-    line_start: usize,
-    inner_offset_in_line: usize,
+    inner_offset_in_docblock: usize,
     param_start_in_inner: usize,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
@@ -1349,10 +1339,8 @@ fn emit_method_param_type(
             let (type_token, _) = split_type_token(type_part);
             if !type_token.is_empty() {
                 let file_offset = base_offset
-                    + (line_start
-                        + inner_offset_in_line
-                        + param_start_in_inner
-                        + type_start_in_param) as u32;
+                    + (inner_offset_in_docblock + param_start_in_inner + type_start_in_param)
+                        as u32;
                 emit_type_spans(type_token, file_offset, spans);
             }
         }
