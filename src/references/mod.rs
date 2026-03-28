@@ -731,21 +731,20 @@ impl Backend {
                     if *is_definition && !include_declaration {
                         continue;
                     }
-                    let resolved =
-                        if let Some(fqn) =
-                            resolved_names.as_ref().and_then(|rn| rn.get(span.start))
-                        {
-                            fqn.to_string()
-                        } else {
-                            let use_map = file_use_map.get_or_init(|| {
-                                self.use_map
-                                    .read()
-                                    .get(file_uri)
-                                    .cloned()
-                                    .unwrap_or_default()
-                            });
-                            Self::resolve_to_fqn(name, use_map, &file_namespace)
-                        };
+                    let resolved = if let Some(fqn) =
+                        resolved_names.as_ref().and_then(|rn| rn.get(span.start))
+                    {
+                        fqn.to_string()
+                    } else {
+                        let use_map = file_use_map.get_or_init(|| {
+                            self.use_map
+                                .read()
+                                .get(file_uri)
+                                .cloned()
+                                .unwrap_or_default()
+                        });
+                        Self::resolve_to_fqn(name, use_map, &file_namespace)
+                    };
                     // Input boundary: resolve_to_fqn may return a leading `\`.
                     let resolved_normalized = resolved.strip_prefix('\\').unwrap_or(&resolved);
                     if resolved_normalized != target
