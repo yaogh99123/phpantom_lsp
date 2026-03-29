@@ -81,7 +81,7 @@ mod generate_property_hooks;
 pub(crate) mod implement_methods;
 mod import_class;
 mod inline_variable;
-mod phpstan;
+pub(crate) mod phpstan;
 mod promote_constructor_param;
 mod remove_unused_import;
 mod replace_deprecated;
@@ -229,6 +229,9 @@ impl Backend {
             "phpstan.addOverride" => self.resolve_add_override(&data, &content),
             "phpstan.addIgnore" => self.resolve_add_ignore(&data, &content),
             "phpstan.removeIgnore" => self.resolve_remove_ignore(&data, &content),
+            "phpstan.newStatic.addTag"
+            | "phpstan.newStatic.finalClass"
+            | "phpstan.newStatic.finalConstructor" => self.resolve_new_static(&data, &content),
             // ── Unused import quickfixes ─────────────────────────────
             "quickfix.removeUnusedImport" | "quickfix.removeAllUnusedImports" => {
                 self.resolve_remove_unused_import(&data, &content, action.diagnostics.as_deref())

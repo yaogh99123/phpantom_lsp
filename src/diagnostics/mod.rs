@@ -249,6 +249,17 @@ fn is_stale_phpstan_diagnostic(diag: &Diagnostic, content: &str) -> bool {
     // (see `clear_phpstan_diagnostics_after_resolve` in code_actions).
     // The `@phpstan-ignore` check above still covers manual edits.
 
+    // ── new.static — check if the user manually fixed the class ─────
+    // Unlike the actions above, `new.static` fixes are commonly applied
+    // by hand (adding `final` to the class or constructor), so we keep
+    // a content-based heuristic here.
+    if identifier == "new.static" {
+        return crate::code_actions::phpstan::new_static::is_new_static_stale(
+            content,
+            diag.range.start.line as usize,
+        );
+    }
+
     false
 }
 

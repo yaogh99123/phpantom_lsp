@@ -23,6 +23,7 @@
 mod add_override;
 pub(crate) mod add_throws;
 mod ignore;
+pub(crate) mod new_static;
 mod remove_throws;
 
 use tower_lsp::lsp_types::*;
@@ -69,6 +70,9 @@ impl Backend {
 
         // ── Add #[Override] for overriding methods ──────────────────
         self.collect_add_override_actions(uri, content, params, out);
+
+        // ── Fix unsafe `new static()` ───────────────────────────────
+        self.collect_new_static_actions(uri, content, params, out);
     }
 }
 

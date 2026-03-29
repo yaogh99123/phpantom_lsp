@@ -24,7 +24,6 @@ within the same impact tier.
 | #   | Item                                                                                                                                             | Impact   | Effort      |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | ----------- |
 | M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                                                                 | Critical | Very High   |
-| H1  | [`new.static` — add `final` or `@phpstan-consistent-constructor`](todo/phpstan-actions.md#h1-newstatic--unsafe-usage-of-new-static)              | Medium   | Low         |
 | H3  | [`method.override` / `property.override` — remove `#[Override]`](todo/phpstan-actions.md#h3-methodoverride--propertyoverride--remove-override-attribute) | Medium   | Low         |
 | H5  | [`method.tentativeReturnType` — add `#[\ReturnTypeWillChange]`](todo/phpstan-actions.md#h5-methodtentativereturntype--add-returntypewillchange)  | Medium   | Low         |
 |     | **Release 0.7.0**                                                                                                                                |          |             |

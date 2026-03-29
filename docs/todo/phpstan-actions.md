@@ -13,33 +13,6 @@ No outstanding items.
 
 ## Tier 1 — Trivial (no message parsing or simple static message)
 
-### H1. `new.static` — Unsafe usage of `new static()`
-
-**Identifier:** `new.static`
-**Message:** `Unsafe usage of new static().`
-
-No data to extract from the message. The diagnostic line is inside the class
-that needs fixing. Offer three quickfixes:
-
-1. **Add `@phpstan-consistent-constructor`** — add the tag to the class-level
-   docblock (or create one). This is the least invasive option and should be
-   marked `is_preferred`.
-2. **Add `final` to class** — insert `final ` before the `class` keyword.
-3. **Add `final` to constructor** — find `__construct` in the same class and
-   insert `final ` before the visibility modifier (or `function` if no
-   visibility is present).
-
-Walk backward from the diagnostic line to find the enclosing class declaration.
-The same `find_enclosing_docblock` pattern from `add_throws.rs` works here.
-
-**Stale detection:** the diagnostic is stale when the class has `final` keyword,
-the constructor has `final` keyword, or the class docblock contains
-`@phpstan-consistent-constructor`.
-
-**Reference:** https://phpstan.org/blog/solving-phpstan-error-unsafe-usage-of-new-static
-
----
-
 ### H3. `method.override` / `property.override` — Remove `#[Override]` attribute
 
 **Identifiers:** `method.override`, `property.override`
@@ -499,15 +472,14 @@ Based on effort-to-value ratio and shared infrastructure:
 1. **R1, R2, R3** — prerequisites (small, unblocks everything)
 2. **H3** — `#[Override]` remove (shares logic with H2, already shipped)
 3. **H5** — `#[\ReturnTypeWillChange]` (reuses attribute insertion pattern)
-4. **H1** — `new.static` (three fixes, but each is simple)
-5. **H7, H8, H9** — PHPDoc type mismatch family (implement together)
-6. **H11** — visibility fix (leverages existing `change_visibility.rs`)
-7. **H14** — narrow `@throws` (extends existing `remove_throws.rs`)
-8. **H6** — return type update
-9. **H10** — remove unused union member
-10. **H12** — prefixed class name
-11. **H4** — unset by-ref foreach variable
-12. Everything else based on user demand
+4. **H7, H8, H9** — PHPDoc type mismatch family (implement together)
+5. **H11** — visibility fix (leverages existing `change_visibility.rs`)
+6. **H14** — narrow `@throws` (extends existing `remove_throws.rs`)
+7. **H6** — return type update
+8. **H10** — remove unused union member
+9. **H12** — prefixed class name
+10. **H4** — unset by-ref foreach variable
+11. Everything else based on user demand
 
 ---
 
