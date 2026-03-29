@@ -252,67 +252,92 @@ field (`ParameterInfo::type_hint`, `MethodInfo::return_type`,
 is affected. The phased approach below is designed to make this
 manageable.
 
-### Phase 1: Introduce the type representation
+### Phase 1: Introduce the type representation ✅
 
 **Goal:** Define `PhpType`, implement `PhpType::parse()` and
 `PhpType::to_string()`, and prove they round-trip correctly against
 the existing string pipeline. No existing code changes.
 
-1. Add `mago-type-syntax` to `Cargo.toml`.
+**Status:** Complete. Implemented in `src/php_type.rs` (964 lines,
+33 tests). All CI checks pass.
 
-2. Create `src/types/php_type.rs`:
-   ```
-   pub enum PhpType {
-       Named(String),                  // e.g. "int", "App\\User"
-       Nullable(Box<PhpType>),         // ?T
-       Union(Vec<PhpType>),            // T|U
-       Intersection(Vec<PhpType>),     // T&U
-       Generic(String, Vec<PhpType>),  // Collection<int, User>
-       Array(Box<PhpType>),            // T[]
-       ArrayShape(Vec<ShapeEntry>),    // array{name: string, age: int}
-       ObjectShape(Vec<ShapeEntry>),   // object{name: string}
-       Callable {                      // callable(T): U
-           params: Vec<PhpType>,
-           return_type: Option<Box<PhpType>>,
-       },
-       Conditional {                   // ($x is T ? U : V)
-           param: String,
-           condition: Box<PhpType>,
-           then_type: Box<PhpType>,
-           else_type: Box<PhpType>,
-       },
-       ClassString(Option<Box<PhpType>>),  // class-string<T>
-       KeyOf(Box<PhpType>),            // key-of<T>
-       ValueOf(Box<PhpType>),          // value-of<T>
-       Raw(String),                    // fallback for unparseable strings
-   }
-   ```
+**Implementation notes:**
 
-3. Implement `PhpType::parse(s: &str) -> PhpType` using
-   `mago_type_syntax::parse_str()` to parse into the crate's AST,
-   then convert to our `PhpType`. The `Raw(String)` variant is the
-   fallback for anything the parser rejects — this guarantees the
-   function never fails.
+- File is `src/php_type.rs` (not `src/types/php_type.rs` as
+  originally planned — avoids restructuring `types.rs` into a
+  directory module).
+- Module registered as `pub mod php_type` in `lib.rs`.
+- `mago-type-syntax = "1.14"` added to `Cargo.toml`.
+- The enum has 17 variants (Named, Nullable, Union, Intersection,
+  Generic, Array, ArrayShape, ObjectShape, Callable, Conditional,
+  ClassString, InterfaceString, KeyOf, ValueOf, IntRange,
+  IndexAccess, Literal, Raw) plus helper structs `ShapeEntry` and
+  `CallableParam`.
+- Callable variant stores `kind: String` to distinguish callable,
+  Closure, pure-callable, pure-Closure.
+- Conditional variant stores `negated: bool` for `is not` syntax.
+- Union/Intersection trees from mago's binary AST are flattened
+  into `Vec<PhpType>`.
+- All 34 mago keyword types map to `Named("keyword")`.
+- Unhandled mago variants (int-mask, int-mask-of, properties-of,
+  alias-reference, member-reference, negated, posited) fall back
+  to `Raw(ty.to_string())`.
+- Display works around mago Display bugs for class-string, key-of,
+  value-of (double angle brackets in mago's output).
+- 33 tests: 14 round-trip, 2 error-handling, 15 structural
+  verification (flattening, field values, etc.).
 
-4. Implement `PhpType::to_string() -> String` so we can convert back
-   to the string representation for display (hover, completion
-   detail, etc.).
+Original plan steps (all done):
 
-5. Write round-trip tests: for every type string in the existing test
-   suite, assert `PhpType::parse(s).to_string() == s` (or a
-   canonically equivalent form).
+1. ✅ Add `mago-type-syntax` to `Cargo.toml`.
+2. ✅ Create `src/php_type.rs` with `PhpType` enum.
+3. ✅ Implement `PhpType::parse(s: &str) -> PhpType`.
+4. ✅ Implement `Display for PhpType`.
+5. ✅ Write round-trip tests.
 
-### Phase 2: Dual representation on core types
+### Phase 2: Dual representation on core types ✅
 
 **Goal:** Add `_parsed: Option<PhpType>` fields alongside existing
 string fields on the core types. Populate them at extraction time.
 No consumers change yet.
 
-1. Add `return_type_parsed: Option<PhpType>` to `MethodInfo`.
-2. Add `type_hint_parsed: Option<PhpType>` to `ParameterInfo`.
-3. Add `type_hint_parsed: Option<PhpType>` to `PropertyInfo`.
-4. Add `type_hint_parsed: Option<PhpType>` to `ConstantInfo`.
-5. Populate these fields in `src/parser/classes.rs` and
+**Status:** Complete. All four core types carry a parsed field
+populated via `PhpType::parse()` at every construction site. All CI
+checks pass (cargo test, clippy, clippy --tests, fmt, php -l).
+
+**Implementation notes:**
+
+- `MethodInfo::return_type_parsed: Option<PhpType>` populated in
+  `src/parser/classes.rs` (`extract_class_like_members`),
+  `src/docblock/virtual_members.rs` (`extract_method_tags`), and
+  `MethodInfo::virtual_method`.
+- `ParameterInfo::type_hint_parsed: Option<PhpType>` populated in
+  `src/parser/mod.rs` (`extract_parameters`),
+  `src/parser/classes.rs` (extra `@param` tags),
+  `src/parser/functions.rs` (extra `@param` tags), and
+  `src/docblock/virtual_members.rs` (`extract_method_tag_params`).
+- `PropertyInfo::type_hint_parsed: Option<PhpType>` populated in
+  `src/parser/mod.rs` (`extract_property_info`),
+  `src/parser/classes.rs` (promoted constructor properties),
+  `src/completion/types/resolution.rs` (array-shape entries),
+  `src/virtual_members/phpdoc.rs` (`@property` tags), and
+  `PropertyInfo::virtual_property`.
+- `ConstantInfo::type_hint_parsed: Option<PhpType>` populated in
+  `src/parser/classes.rs` (class constants and enum cases).
+- Test construction sites use `None` for the parsed field since
+  they don't exercise type-structural consumers yet.
+- The `_parsed` field is placed after the corresponding string
+  field in struct definitions and before it in struct literals
+  (to avoid borrow-after-move when the string field uses
+  shorthand initialization).
+
+Original plan steps (all done):
+
+1. ✅ Add `return_type_parsed: Option<PhpType>` to `MethodInfo`.
+2. ✅ Add `type_hint_parsed: Option<PhpType>` to `ParameterInfo`.
+3. ✅ Add `type_hint_parsed: Option<PhpType>` to `PropertyInfo`.
+4. ✅ Add `type_hint_parsed: Option<PhpType>` to `ConstantInfo`.
+5. ✅ Populate these fields in `src/parser/classes.rs` and
    `src/parser/functions.rs` by calling `PhpType::parse()` on the
    existing string value.
 
@@ -328,12 +353,98 @@ migrated, its string-field reads are removed.
 
 Modules in recommended migration order (least dependencies first):
 
-1. **`src/hover/`** — Type display. Replace `split_type_token` /
-   `clean_type` chains with `PhpType::to_string()` formatting.
+1. ✅ **`src/hover/`** — Type display and structural operations.
 
-2. **`src/completion/`** — Type matching for member access. Replace
-   `base_class_name` / `extract_generic_value_type` chains with
-   `PhpType::Generic` / `PhpType::Named` pattern matching.
+   **Status:** Complete. Structural type operations migrated to
+   `PhpType`; display formatting kept on `shorten_type_string` to
+   preserve callable parameter names and source-level
+   parenthesization. All 236 hover integration tests pass.
+
+   **What changed:**
+
+   - `build_variable_hover_body` uses `PhpType::parse()` +
+     `union_members()` instead of `split_top_level_union` (deleted).
+   - `build_variable_hover_body` uses `PhpType::is_scalar()` instead
+     of `docblock::type_strings::is_scalar`.
+   - `resolve_type_namespace` replaced by
+     `resolve_type_namespace_structured` which uses
+     `PhpType::base_name()` instead of string surgery.
+   - `build_var_annotation` and `build_param_return_section` use
+     `PhpType::equivalent()` instead of `types_equivalent` for
+     type comparison.
+   - Template bound display (3 sites) uses
+     `PhpType::parse(bound).shorten()` instead of
+     `shorten_type_string(bound)`.
+   - `shorten_type_string` and `types_equivalent` kept as exports
+     for `completion/builder.rs` and other modules not yet migrated.
+
+   **Design decision:** `PhpType::shorten().to_string()` drops
+   callable parameter names (`$item`) and changes union spacing
+   (`|` → ` | `). For display in hover popups, the old
+   `shorten_type_string` is kept because it preserves the original
+   format character-by-character. `PhpType` is used only for
+   structural operations (union splitting, equivalence checks,
+   scalar detection, base-name extraction).
+
+   **New `PhpType` helper methods** added in this step:
+   - `shorten()` — produce a new `PhpType` with all FQNs shortened
+   - `is_scalar()` — whether a type is a built-in / non-class type
+   - `base_name()` — extract the base class name (if any)
+   - `union_members()` — return top-level union members as a vec
+   - `equivalent()` — compare two types ignoring namespace differences
+
+2. ✅ **`src/completion/`** — Type matching for member access.
+
+   **Status:** Complete. All `extract_generic_value_type`,
+   `extract_generic_key_type`, and several `clean_type` call sites
+   migrated to `PhpType` methods. All 3,400+ tests pass.
+
+   **What changed:**
+
+   - `src/hover/variable_type.rs` — foreach value/key extraction
+     uses `PhpType::extract_value_type(true)` /
+     `PhpType::extract_key_type(true)` instead of
+     `docblock::types::extract_generic_value_type` /
+     `extract_generic_key_type`.
+   - `src/completion/variable/foreach_resolution.rs` — 4 call sites
+     migrated from `extract_generic_value_type` /
+     `extract_generic_key_type` to `PhpType::extract_value_type` /
+     `extract_key_type`.
+   - `src/completion/variable/raw_type_inference.rs` — 8 call sites
+     migrated: all `extract_generic_value_type` calls, plus
+     `clean_type`/`is_scalar` in `extract_array_map_element_type`
+     replaced with `PhpType::parse().base_name()`.
+   - `src/completion/variable/rhs_resolution.rs` — 4 call sites:
+     `classify_template_binding` and `resolve_rhs_array_access`
+     use `PhpType::base_name()` and `extract_value_type`.
+     `resolve_rhs_property_access` uses `PhpType::base_name()`.
+   - `src/completion/variable/resolution.rs` — 1 call site migrated
+     (`resolve_arg_raw_type` uses `PhpType::extract_value_type`).
+   - `src/completion/call_resolution.rs` — 1 call site migrated.
+   - `src/completion/source/helpers.rs` — `walk_array_segments_and_resolve`
+     uses `PhpType::extract_value_type` for element access and
+     `PhpType::is_scalar()` for the final type check. Two
+     `resolve_lhs_to_class` sites kept on `clean_type` for now
+     (they handle unions/nullable types that `base_name()` can't
+     collapse).
+
+   **New `PhpType` helper methods** added in this step:
+   - `extract_value_type(skip_scalar)` — extract the value type from
+     generics/arrays (last param, or 2nd for Generator)
+   - `extract_key_type(skip_scalar)` — extract the key type from
+     2+-param generics
+   - `extract_element_type()` — convenience for
+     `extract_value_type(false)`
+   - `intersection_members()` — return top-level intersection members
+
+   **Design decision:** `clean_type` is a Swiss-army-knife function
+   that strips `?`, leading `\`, trailing punctuation, extracts
+   non-null from unions, and strips generics. It cannot be replaced
+   by a single `PhpType` method. Call sites where `clean_type` is
+   used purely for base-name extraction were migrated to
+   `PhpType::base_name()`. Call sites where `clean_type` handles
+   union collapsing (e.g. `User|null` → `User`) were kept on
+   `clean_type` since `base_name()` returns `None` for unions.
 
 3. **`src/resolution.rs`** — `resolve_type_string`. Replace the
    string-surgery approach (split on `|`, recurse, rejoin) with
