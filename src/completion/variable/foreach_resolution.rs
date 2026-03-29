@@ -474,7 +474,7 @@ fn extract_iterable_element_type_from_class(
         let short = short_name(name);
         if ITERABLE_IFACE_NAMES.contains(&short) && !args.is_empty() {
             let value = args.last().unwrap();
-            if !docblock::types::is_scalar(value) {
+            if !crate::php_type::PhpType::parse(value).is_scalar() {
                 return Some(value.clone());
             }
         }
@@ -491,7 +491,7 @@ fn extract_iterable_element_type_from_class(
             && is_transitive_iterable(&iface, class_loader)
         {
             let value = args.last().unwrap();
-            if !docblock::types::is_scalar(value) {
+            if !crate::php_type::PhpType::parse(value).is_scalar() {
                 return Some(value.clone());
             }
         }
@@ -502,7 +502,7 @@ fn extract_iterable_element_type_from_class(
     for (_, args) in &class.extends_generics {
         if !args.is_empty() {
             let value = args.last().unwrap();
-            if !docblock::types::is_scalar(value) {
+            if !crate::php_type::PhpType::parse(value).is_scalar() {
                 return Some(value.clone());
             }
         }
@@ -528,7 +528,7 @@ fn extract_iterable_key_type_from_class(
         let short = short_name(name);
         if ITERABLE_IFACE_NAMES.contains(&short) && args.len() >= 2 {
             let key = &args[0];
-            if !docblock::types::is_scalar(key) {
+            if !crate::php_type::PhpType::parse(key).is_scalar() {
                 return Some(key.clone());
             }
         }
@@ -544,7 +544,7 @@ fn extract_iterable_key_type_from_class(
             && is_transitive_iterable(&iface, class_loader)
         {
             let key = &args[0];
-            if !docblock::types::is_scalar(key) {
+            if !crate::php_type::PhpType::parse(key).is_scalar() {
                 return Some(key.clone());
             }
         }
@@ -554,7 +554,7 @@ fn extract_iterable_key_type_from_class(
     for (_, args) in &class.extends_generics {
         if args.len() >= 2 {
             let key = &args[0];
-            if !docblock::types::is_scalar(key) {
+            if !crate::php_type::PhpType::parse(key).is_scalar() {
                 return Some(key.clone());
             }
         }

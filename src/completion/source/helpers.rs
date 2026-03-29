@@ -24,7 +24,8 @@
 /// are called via their canonical module paths.
 use std::sync::Arc;
 
-use crate::docblock::{self, replace_self_in_type};
+use crate::docblock;
+use crate::php_type::PhpType;
 use crate::types::{BracketSegment, ClassInfo};
 use crate::util::{find_semicolon_balanced, short_name};
 
@@ -254,7 +255,7 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
 
         if let Some(cls) = owner {
             return crate::inheritance::resolve_method_return_type(&cls, method_name, class_loader)
-                .map(|ret| replace_self_in_type(&ret, &cls.name));
+                .map(|ret| PhpType::parse(&ret).replace_self(&cls.name).to_string());
         }
         return None;
     }
@@ -281,7 +282,7 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
 
         if let Some(cls) = owner {
             return crate::inheritance::resolve_method_return_type(&cls, method_name, class_loader)
-                .map(|ret| replace_self_in_type(&ret, &cls.name));
+                .map(|ret| PhpType::parse(&ret).replace_self(&cls.name).to_string());
         }
         return None;
     }
@@ -293,7 +294,7 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
         && !callable_text.starts_with('$')
     {
         let func_info = function_loader?(callable_text)?;
-        return func_info.return_type;
+        return func_info.return_type_str();
     }
 
     None
@@ -531,13 +532,16 @@ fn resolve_lhs_to_class(
         })?;
 
         // `ret_type` is a type string — resolve it to ClassInfo.
-        let clean = crate::docblock::types::clean_type(&ret_type);
-        let lookup = short_name(&clean);
-        return all_classes
-            .iter()
-            .find(|c| c.name == lookup)
-            .map(|c| ClassInfo::clone(c))
-            .or_else(|| class_loader(&clean).map(Arc::unwrap_or_clone));
+        let parsed = PhpType::parse(&ret_type);
+        let effective = parsed.non_null_type().unwrap_or_else(|| parsed.clone());
+        if let Some(base) = effective.base_name() {
+            let lookup = short_name(base);
+            return all_classes
+                .iter()
+                .find(|c| c.name == lookup)
+                .map(|c| ClassInfo::clone(c))
+                .or_else(|| class_loader(base).map(Arc::unwrap_or_clone));
+        }
     }
 
     // `$this->prop` — property access
@@ -548,13 +552,16 @@ fn resolve_lhs_to_class(
     {
         let owner = current_class?;
         let type_str = crate::inheritance::resolve_property_type_hint(owner, prop, class_loader)?;
-        let clean = crate::docblock::types::clean_type(&type_str);
-        let lookup = short_name(&clean);
-        return all_classes
-            .iter()
-            .find(|c| c.name == lookup)
-            .map(|c| ClassInfo::clone(c))
-            .or_else(|| class_loader(&clean).map(Arc::unwrap_or_clone));
+        let parsed = PhpType::parse(&type_str);
+        let effective = parsed.non_null_type().unwrap_or_else(|| parsed.clone());
+        if let Some(base) = effective.base_name() {
+            let lookup = short_name(base);
+            return all_classes
+                .iter()
+                .find(|c| c.name == lookup)
+                .map(|c| ClassInfo::clone(c))
+                .or_else(|| class_loader(base).map(Arc::unwrap_or_clone));
+        }
     }
 
     None

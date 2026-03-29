@@ -1561,7 +1561,11 @@ fn find_callable_params_on_receiver_classes(
             let receiver_fqn = cls.fqn();
             let result = params
                 .into_iter()
-                .map(|ty| crate::docblock::replace_self_in_type(&ty, &receiver_fqn))
+                .map(|ty| {
+                    crate::php_type::PhpType::parse(&ty)
+                        .replace_self(&receiver_fqn)
+                        .to_string()
+                })
                 .collect();
             return Some(result);
         }
@@ -1578,7 +1582,8 @@ fn find_callable_params_on_method(
     let method = class.methods.iter().find(|m| m.name == method_name)?;
     let param = method.parameters.get(arg_idx)?;
     let hint = param.type_hint.as_ref()?;
-    let types = crate::docblock::extract_callable_param_types(hint)?;
+    let hint_str = hint.to_string();
+    let types = crate::docblock::extract_callable_param_types(&hint_str)?;
     if types.is_empty() { None } else { Some(types) }
 }
 

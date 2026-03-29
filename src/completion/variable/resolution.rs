@@ -757,15 +757,16 @@ fn resolve_variable_in_members<'b>(
                             .find(|p| p.name == ctx.var_name)
                             && let Some(ref hint) = merged_param.type_hint
                         {
+                            let hint_str = hint.to_string();
                             let resolved = crate::completion::type_resolution::type_hint_to_classes(
-                                hint,
+                                &hint_str,
                                 &ctx.current_class.name,
                                 ctx.all_classes,
                                 ctx.class_loader,
                             );
                             if !resolved.is_empty() {
                                 param_results =
-                                    ResolvedType::from_classes_with_hint(resolved, hint);
+                                    ResolvedType::from_classes_with_hint(resolved, &hint_str);
                                 break;
                             }
                         }
@@ -2100,7 +2101,7 @@ fn extract_native_type_from_rhs<'b>(
                 func_name.and_then(|name| {
                     ctx.function_loader()
                         .and_then(|fl| fl(&name))
-                        .and_then(|fi| fi.return_type)
+                        .and_then(|fi| fi.return_type_str())
                 })
             }
             Call::Method(method_call) => {
@@ -2116,7 +2117,7 @@ fn extract_native_type_from_rhs<'b>(
                             cls.methods
                                 .iter()
                                 .find(|m| m.name == method_name)
-                                .and_then(|m| m.return_type.clone())
+                                .and_then(|m| m.return_type_str())
                         })
                 } else {
                     None
@@ -2144,7 +2145,7 @@ fn extract_native_type_from_rhs<'b>(
                         o.methods
                             .iter()
                             .find(|m| m.name == method_name)
-                            .and_then(|m| m.return_type.clone())
+                            .and_then(|m| m.return_type_str())
                     })
                 } else {
                     None
@@ -2582,7 +2583,7 @@ fn try_apply_pass_by_reference_type(
             && let Some(ref type_hint) = param.type_hint
         {
             let resolved = crate::completion::type_resolution::type_hint_to_classes(
-                type_hint,
+                &type_hint.to_string(),
                 &ctx.current_class.name,
                 ctx.all_classes,
                 ctx.class_loader,

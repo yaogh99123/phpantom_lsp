@@ -349,7 +349,7 @@ function array_map(
     assert_eq!(names, vec!["$callback", "$array", "$arrays"]);
 
     // $array should be typed `array`
-    assert_eq!(params[1].type_hint.as_deref(), Some("array"));
+    assert_eq!(params[1].type_hint_str().as_deref(), Some("array"));
     assert_eq!(params[1].name, "$array");
 
     // ...$arrays should be variadic
@@ -551,7 +551,7 @@ class FilesystemIterator {
     let method = &classes[0].methods[0];
     assert_eq!(method.parameters.len(), 1);
     assert_eq!(method.parameters[0].name, "$flags");
-    assert_eq!(method.parameters[0].type_hint.as_deref(), Some("int"));
+    assert_eq!(method.parameters[0].type_hint_str().as_deref(), Some("int"));
 
     // PHP 7.4 — should get untyped `$flags = null`
     let classes = Backend::parse_php_versioned(content, Some(PhpVersion::new(7, 4)));
@@ -780,7 +780,7 @@ function sleep(int $seconds): int|false {}
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
     assert_eq!(functions.len(), 1);
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("int"),
         "PHP 8.0 should select the 8.0 variant"
     );
@@ -789,7 +789,7 @@ function sleep(int $seconds): int|false {}
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(7, 4)));
     assert_eq!(functions.len(), 1);
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("int|false"),
         "PHP 7.4 should fall back to default"
     );
@@ -809,7 +809,7 @@ function bzerror(): int {}
     // PHP 8.1+ should get "int" (highest matching)
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("int"),
         "PHP 8.4 should select 8.1 variant (highest <= target)"
     );
@@ -817,7 +817,7 @@ function bzerror(): int {}
     // PHP 8.0 should get "int|false" (exact match for 8.0)
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("int|false"),
         "PHP 8.0 should select the 8.0 variant"
     );
@@ -825,7 +825,7 @@ function bzerror(): int {}
     // PHP 7.4 should get the default "int"
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(7, 4)));
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("int"),
         "PHP 7.4 should fall back to default"
     );
@@ -846,7 +846,7 @@ function phpinfo(int $flags = 0): bool {}
     // PHP 8.2+ should get "true"
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 2)));
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("true"),
         "PHP 8.2 should select the 8.2 variant"
     );
@@ -854,7 +854,7 @@ function phpinfo(int $flags = 0): bool {}
     // PHP 8.1 should fall back to the native type since default is empty
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 1)));
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("bool"),
         "PHP 8.1 should fall back to native type when default is empty"
     );
@@ -870,7 +870,7 @@ function normal_function(string $arg): string {}
 
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("string"),
         "Functions without LanguageLevelTypeAware keep native type"
     );
@@ -895,7 +895,7 @@ function pspell_check(
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
     assert_eq!(functions[0].parameters.len(), 2);
     assert_eq!(
-        functions[0].parameters[0].type_hint.as_deref(),
+        functions[0].parameters[0].type_hint_str().as_deref(),
         Some("PSpell\\Dictionary"),
         "PHP 8.4 should select 8.1 variant for parameter"
     );
@@ -903,7 +903,7 @@ function pspell_check(
     // PHP 8.0 should get default "int"
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
     assert_eq!(
-        functions[0].parameters[0].type_hint.as_deref(),
+        functions[0].parameters[0].type_hint_str().as_deref(),
         Some("int"),
         "PHP 8.0 should fall back to default for parameter"
     );
@@ -927,7 +927,7 @@ function filter(
     // PHP 8.0+ should get "bool"
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
     assert_eq!(
-        functions[0].parameters[3].type_hint.as_deref(),
+        functions[0].parameters[3].type_hint_str().as_deref(),
         Some("bool"),
         "PHP 8.0 should select the 8.0 variant"
     );
@@ -935,7 +935,7 @@ function filter(
     // PHP 7.4 — empty default means no type override; native hint is None
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(7, 4)));
     assert_eq!(
-        functions[0].parameters[3].type_hint.as_deref(),
+        functions[0].parameters[3].type_hint_str().as_deref(),
         None,
         "PHP 7.4 should have no type when default is empty and native is untyped"
     );
@@ -962,7 +962,7 @@ class SplFileObject {
         .find(|m| m.name == "fgets")
         .unwrap();
     assert_eq!(
-        method.return_type.as_deref(),
+        method.return_type_str().as_deref(),
         Some("string|false"),
         "PHP 8.4 should select the 8.0 variant for method return"
     );
@@ -974,7 +974,7 @@ class SplFileObject {
         .find(|m| m.name == "fgets")
         .unwrap();
     assert_eq!(
-        method.return_type.as_deref(),
+        method.return_type_str().as_deref(),
         Some("string"),
         "PHP 7.4 should fall back to default for method return"
     );
@@ -1008,7 +1008,7 @@ class php_user_filter {
         .find(|p| p.name == "filtername")
         .unwrap();
     assert_eq!(
-        filtername.type_hint.as_deref(),
+        filtername.type_hint_str().as_deref(),
         Some("string"),
         "PHP 8.4 should select 8.1 type for $filtername"
     );
@@ -1019,7 +1019,7 @@ class php_user_filter {
         .find(|p| p.name == "params")
         .unwrap();
     assert_eq!(
-        params.type_hint.as_deref(),
+        params.type_hint_str().as_deref(),
         Some("mixed"),
         "PHP 8.4 should select 8.1 type for $params"
     );
@@ -1030,7 +1030,7 @@ class php_user_filter {
         .find(|p| p.name == "stream")
         .unwrap();
     assert_eq!(
-        stream.type_hint.as_deref(),
+        stream.type_hint_str().as_deref(),
         None,
         "$stream has no LanguageLevelTypeAware and no native type"
     );
@@ -1043,7 +1043,7 @@ class php_user_filter {
         .find(|p| p.name == "filtername")
         .unwrap();
     assert_eq!(
-        filtername.type_hint.as_deref(),
+        filtername.type_hint_str().as_deref(),
         None,
         "PHP 7.4 should have no type when default is empty"
     );
@@ -1067,7 +1067,7 @@ function sleep(int $seconds): int|false {}
     let functions = backend.parse_functions_versioned(stub, None);
     assert_eq!(functions.len(), 1);
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("int|false"),
         "Without a target version, native type should be kept"
     );
@@ -1089,7 +1089,7 @@ function my_func(): string|false {}
 
     let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("string"),
         "Double-quoted strings in attribute should work"
     );

@@ -4,6 +4,7 @@
 //! tag extraction, type resolution, conditional return types, etc.
 
 use phpantom_lsp::docblock::*;
+use phpantom_lsp::php_type::PhpType;
 use phpantom_lsp::types::*;
 
 // ─── @method tag extraction ─────────────────────────────────────────
@@ -14,12 +15,15 @@ fn method_tag_simple() {
     let methods = extract_method_tags(doc);
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0].name, "mock");
-    assert_eq!(methods[0].return_type.as_deref(), Some("MockInterface"));
+    assert_eq!(
+        methods[0].return_type_str().as_deref(),
+        Some("MockInterface")
+    );
     assert!(!methods[0].is_static);
     assert_eq!(methods[0].parameters.len(), 1);
     assert_eq!(methods[0].parameters[0].name, "$abstract");
     assert_eq!(
-        methods[0].parameters[0].type_hint.as_deref(),
+        methods[0].parameters[0].type_hint_str().as_deref(),
         Some("string")
     );
     assert!(methods[0].parameters[0].is_required);
@@ -31,7 +35,7 @@ fn method_tag_static() {
     let methods = extract_method_tags(doc);
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0].name, "getAmountUntilBonusCashIsTriggered");
-    assert_eq!(methods[0].return_type.as_deref(), Some("Decimal"));
+    assert_eq!(methods[0].return_type_str().as_deref(), Some("Decimal"));
     assert!(methods[0].is_static);
     assert!(methods[0].parameters.is_empty());
 }
@@ -46,19 +50,19 @@ fn method_tag_no_return_type() {
     assert_eq!(methods[0].parameters.len(), 3);
     assert_eq!(methods[0].parameters[0].name, "$table");
     assert_eq!(
-        methods[0].parameters[0].type_hint.as_deref(),
+        methods[0].parameters[0].type_hint_str().as_deref(),
         Some("string")
     );
     assert!(methods[0].parameters[0].is_required);
     assert_eq!(methods[0].parameters[1].name, "$data");
     assert_eq!(
-        methods[0].parameters[1].type_hint.as_deref(),
+        methods[0].parameters[1].type_hint_str().as_deref(),
         Some("array<string, mixed>")
     );
     assert!(methods[0].parameters[1].is_required);
     assert_eq!(methods[0].parameters[2].name, "$connection");
     assert_eq!(
-        methods[0].parameters[2].type_hint.as_deref(),
+        methods[0].parameters[2].type_hint_str().as_deref(),
         Some("string")
     );
     assert!(!methods[0].parameters[2].is_required);
@@ -70,7 +74,7 @@ fn method_tag_fqn_return_type() {
     let methods = extract_method_tags(doc);
     assert_eq!(methods.len(), 1);
     assert_eq!(
-        methods[0].return_type.as_deref(),
+        methods[0].return_type_str().as_deref(),
         Some("\\Mockery\\MockInterface")
     );
 }
@@ -113,7 +117,7 @@ fn method_tag_no_params() {
     let methods = extract_method_tags(doc);
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0].name, "getName");
-    assert_eq!(methods[0].return_type.as_deref(), Some("string"));
+    assert_eq!(methods[0].return_type_str().as_deref(), Some("string"));
     assert!(methods[0].parameters.is_empty());
 }
 
@@ -122,7 +126,7 @@ fn method_tag_nullable_return() {
     let doc = "/** @method ?User findUser(int $id) */";
     let methods = extract_method_tags(doc);
     assert_eq!(methods.len(), 1);
-    assert_eq!(methods[0].return_type.as_deref(), Some("?User"));
+    assert_eq!(methods[0].return_type_str().as_deref(), Some("?User"));
 }
 
 #[test]
@@ -149,12 +153,12 @@ fn method_tag_name_matches_type_keyword() {
     let methods = extract_method_tags(doc);
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0].name, "string");
-    assert_eq!(methods[0].return_type.as_deref(), Some("string"));
+    assert_eq!(methods[0].return_type_str().as_deref(), Some("string"));
     assert!(methods[0].is_static);
     assert_eq!(methods[0].parameters.len(), 2);
     assert_eq!(methods[0].parameters[0].name, "$key");
     assert_eq!(
-        methods[0].parameters[0].type_hint.as_deref(),
+        methods[0].parameters[0].type_hint_str().as_deref(),
         Some("string")
     );
 }
@@ -870,20 +874,6 @@ fn clean_generic_preserved() {
 }
 
 #[test]
-fn base_class_name_strips_generics() {
-    // base_class_name strips generics for plain class-name lookups.
-    assert_eq!(base_class_name("Collection<int, Model>"), "Collection");
-}
-
-#[test]
-fn base_class_name_fqn_with_generics() {
-    assert_eq!(
-        base_class_name("\\App\\Models\\Collection<int, User>"),
-        "\\App\\Models\\Collection"
-    );
-}
-
-#[test]
 fn clean_type_nested_generic() {
     assert_eq!(
         clean_type("array<int, Collection<string, User>>"),
@@ -917,31 +907,14 @@ fn clean_nullable_union() {
 #[test]
 fn clean_nullable_shorthand_preserved() {
     // clean_type preserves `?` — it is meaningful for display and tag
-    // extraction.  Use base_class_name when you need a bare class name.
+    // extraction.  Use PhpType::parse(s).base_name() when you need a
+    // bare class name.
     assert_eq!(clean_type("?Foo"), "?Foo");
 }
 
 #[test]
 fn clean_nullable_shorthand_fqn_preserved() {
     assert_eq!(clean_type("?\\App\\Models\\User"), "?\\App\\Models\\User");
-}
-
-#[test]
-fn base_class_name_nullable_shorthand() {
-    assert_eq!(base_class_name("?Foo"), "Foo");
-}
-
-#[test]
-fn base_class_name_nullable_fqn() {
-    assert_eq!(
-        base_class_name("?\\App\\Models\\User"),
-        "\\App\\Models\\User"
-    );
-}
-
-#[test]
-fn base_class_name_nullable_with_generics() {
-    assert_eq!(base_class_name("?Collection<int, User>"), "Collection");
 }
 
 #[test]
@@ -962,19 +935,18 @@ fn conditional_simple_class_string() {
     assert!(result.is_some(), "Should parse a conditional return type");
     let cond = result.unwrap();
     match cond {
-        ConditionalReturnType::Conditional {
-            ref param_name,
+        PhpType::Conditional {
+            ref param,
+            negated,
             ref condition,
             ref then_type,
             ref else_type,
         } => {
-            assert_eq!(param_name, "abstract");
-            assert_eq!(*condition, ParamCondition::ClassString);
-            assert_eq!(
-                **then_type,
-                ConditionalReturnType::Concrete("TClass".into())
-            );
-            assert_eq!(**else_type, ConditionalReturnType::Concrete("mixed".into()));
+            assert_eq!(param, "$abstract");
+            assert!(!negated);
+            assert!(matches!(condition.as_ref(), PhpType::ClassString(_)));
+            assert_eq!(**then_type, PhpType::Named("TClass".into()));
+            assert_eq!(**else_type, PhpType::Named("mixed".into()));
         }
         _ => panic!("Expected Conditional, got {:?}", cond),
     }
@@ -989,23 +961,23 @@ fn conditional_null_check() {
     );
     let result = extract_conditional_return_type(doc).unwrap();
     match result {
-        ConditionalReturnType::Conditional {
-            param_name,
+        PhpType::Conditional {
+            param,
+            negated,
             condition,
             then_type,
             else_type,
         } => {
-            assert_eq!(param_name, "guard");
-            assert_eq!(condition, ParamCondition::IsNull);
+            assert_eq!(param, "$guard");
+            assert!(!negated);
+            assert_eq!(*condition, PhpType::Named("null".into()));
             assert_eq!(
                 *then_type,
-                ConditionalReturnType::Concrete("\\Illuminate\\Contracts\\Auth\\Factory".into())
+                PhpType::Named("\\Illuminate\\Contracts\\Auth\\Factory".into())
             );
             assert_eq!(
                 *else_type,
-                ConditionalReturnType::Concrete(
-                    "\\Illuminate\\Contracts\\Auth\\StatefulGuard".into()
-                )
+                PhpType::Named("\\Illuminate\\Contracts\\Auth\\StatefulGuard".into())
             );
         }
         _ => panic!("Expected Conditional"),
@@ -1021,38 +993,34 @@ fn conditional_nested() {
     );
     let result = extract_conditional_return_type(doc).unwrap();
     match result {
-        ConditionalReturnType::Conditional {
-            ref param_name,
+        PhpType::Conditional {
+            ref param,
+            negated,
             ref condition,
             ref then_type,
             ref else_type,
         } => {
-            assert_eq!(param_name, "abstract");
-            assert_eq!(*condition, ParamCondition::ClassString);
-            assert_eq!(
-                **then_type,
-                ConditionalReturnType::Concrete("TClass".into())
-            );
+            assert_eq!(param, "$abstract");
+            assert!(!negated);
+            assert!(matches!(condition.as_ref(), PhpType::ClassString(_)));
+            assert_eq!(**then_type, PhpType::Named("TClass".into()));
             // else_type should be another conditional
             match else_type.as_ref() {
-                ConditionalReturnType::Conditional {
-                    param_name: inner_param,
+                PhpType::Conditional {
+                    param: inner_param,
+                    negated: inner_negated,
                     condition: inner_cond,
                     then_type: inner_then,
                     else_type: inner_else,
                 } => {
-                    assert_eq!(inner_param, "abstract");
-                    assert_eq!(*inner_cond, ParamCondition::IsNull);
+                    assert_eq!(inner_param, "$abstract");
+                    assert!(!inner_negated);
+                    assert_eq!(**inner_cond, PhpType::Named("null".into()));
                     assert_eq!(
                         **inner_then,
-                        ConditionalReturnType::Concrete(
-                            "\\Illuminate\\Foundation\\Application".into()
-                        )
+                        PhpType::Named("\\Illuminate\\Foundation\\Application".into())
                     );
-                    assert_eq!(
-                        **inner_else,
-                        ConditionalReturnType::Concrete("mixed".into())
-                    );
+                    assert_eq!(**inner_else, PhpType::Named("mixed".into()));
                 }
                 _ => panic!("Expected nested Conditional"),
             }
@@ -1078,13 +1046,11 @@ fn conditional_multiline() {
     let result = extract_conditional_return_type(doc);
     assert!(result.is_some(), "Should parse multi-line conditional");
     match result.unwrap() {
-        ConditionalReturnType::Conditional {
-            param_name,
-            condition,
-            ..
+        PhpType::Conditional {
+            param, condition, ..
         } => {
-            assert_eq!(param_name, "abstract");
-            assert_eq!(condition, ParamCondition::ClassString);
+            assert_eq!(param, "$abstract");
+            assert!(matches!(condition.as_ref(), PhpType::ClassString(_)));
         }
         _ => panic!("Expected Conditional"),
     }
@@ -1099,25 +1065,23 @@ fn conditional_is_type() {
     );
     let result = extract_conditional_return_type(doc).unwrap();
     match result {
-        ConditionalReturnType::Conditional {
-            param_name,
+        PhpType::Conditional {
+            param,
+            negated,
             condition,
             then_type,
             else_type,
         } => {
-            assert_eq!(param_name, "job");
-            assert_eq!(condition, ParamCondition::IsType("Closure".into()));
+            assert_eq!(param, "$job");
+            assert!(!negated);
+            assert_eq!(*condition, PhpType::Named("\\Closure".into()));
             assert_eq!(
                 *then_type,
-                ConditionalReturnType::Concrete(
-                    "\\Illuminate\\Foundation\\Bus\\PendingClosureDispatch".into()
-                )
+                PhpType::Named("\\Illuminate\\Foundation\\Bus\\PendingClosureDispatch".into())
             );
             assert_eq!(
                 *else_type,
-                ConditionalReturnType::Concrete(
-                    "\\Illuminate\\Foundation\\Bus\\PendingDispatch".into()
-                )
+                PhpType::Named("\\Illuminate\\Foundation\\Bus\\PendingDispatch".into())
             );
         }
         _ => panic!("Expected Conditional"),

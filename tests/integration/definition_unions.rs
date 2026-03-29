@@ -1,4 +1,5 @@
 use crate::common::{create_psr4_workspace, create_test_backend};
+use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -161,7 +162,7 @@ async fn test_goto_definition_union_return_type_standalone_function() {
                     name: "getAnimal".to_string(),
                     name_offset: 0,
                     parameters: vec![],
-                    return_type: Some("Dog|Cat".to_string()),
+                    return_type: Some(PhpType::parse("Dog|Cat")),
                     native_return_type: None,
                     description: None,
                     return_description: None,

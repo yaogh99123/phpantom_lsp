@@ -290,11 +290,11 @@ impl Backend {
                                 docblock::extract_param_raw_type_from_info(info, &param.name);
                             if let Some(ref doc_type) = param_doc_type {
                                 let effective = docblock::resolve_effective_type(
-                                    param.type_hint.as_deref(),
+                                    param.type_hint.as_ref().map(|t| t.to_string()).as_deref(),
                                     Some(doc_type),
                                 );
                                 if effective.is_some() {
-                                    param.type_hint = effective;
+                                    param.type_hint = effective.map(|s| PhpType::parse(&s));
                                 }
                             }
                             param.description =
@@ -328,8 +328,7 @@ impl Backend {
                                 parameters.push(ParameterInfo {
                                     name: tag_name,
                                     is_required: false,
-                                    type_hint_parsed: type_hint.as_deref().map(PhpType::parse),
-                                    type_hint,
+                                    type_hint: type_hint.map(|s| PhpType::parse(&s)),
                                     native_type_hint: None,
                                     description,
                                     default_value: None,
@@ -346,7 +345,7 @@ impl Backend {
                         name_offset,
                         parameters,
                         native_return_type,
-                        return_type,
+                        return_type: return_type.map(|s| PhpType::parse(&s)),
                         description,
                         return_description,
                         links: link_urls,

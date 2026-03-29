@@ -161,58 +161,6 @@ fn test_extract_object_shape_property_type_quoted_key() {
     );
 }
 
-// ─── Depth-Aware Intersection Split Unit Tests ──────────────────────────────
-
-#[test]
-fn test_split_intersection_depth0_simple() {
-    use phpantom_lsp::docblock::split_intersection_depth0;
-
-    let parts = split_intersection_depth0("User&JsonSerializable");
-    assert_eq!(parts, vec!["User", "JsonSerializable"]);
-}
-
-#[test]
-fn test_split_intersection_depth0_object_shape_and_class() {
-    use phpantom_lsp::docblock::split_intersection_depth0;
-
-    let parts = split_intersection_depth0(r"object{foo: int}&\stdClass");
-    assert_eq!(parts, vec!["object{foo: int}", r"\stdClass"]);
-}
-
-#[test]
-fn test_split_intersection_depth0_nested_intersection_not_split() {
-    use phpantom_lsp::docblock::split_intersection_depth0;
-
-    // The `&` inside the object shape braces should NOT cause a split
-    let parts = split_intersection_depth0("object{foo: A&B}");
-    assert_eq!(parts, vec!["object{foo: A&B}"]);
-}
-
-#[test]
-fn test_split_intersection_depth0_no_intersection() {
-    use phpantom_lsp::docblock::split_intersection_depth0;
-
-    let parts = split_intersection_depth0("User");
-    assert_eq!(parts, vec!["User"]);
-}
-
-#[test]
-fn test_split_intersection_depth0_three_parts() {
-    use phpantom_lsp::docblock::split_intersection_depth0;
-
-    let parts = split_intersection_depth0("A&B&C");
-    assert_eq!(parts, vec!["A", "B", "C"]);
-}
-
-#[test]
-fn test_split_intersection_depth0_nested_in_generic() {
-    use phpantom_lsp::docblock::split_intersection_depth0;
-
-    // `&` inside `<>` should not split
-    let parts = split_intersection_depth0("Collection<A&B>&Iterator");
-    assert_eq!(parts, vec!["Collection<A&B>", "Iterator"]);
-}
-
 // ─── Object Shape Completion Integration Tests ──────────────────────────────
 
 /// Basic object shape: `@return object{foo: int, bar: string}` should

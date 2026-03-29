@@ -255,7 +255,7 @@ fn property_to_symbol(prop: &PropertyInfo, content: &str) -> Option<DocumentSymb
     let selection_range = Range::new(pos, name_end);
     let range = selection_range;
 
-    let detail = prop.type_hint.clone();
+    let detail = prop.type_hint_str();
     let tags = if prop.deprecation_message.is_some() {
         Some(vec![SymbolTag::DEPRECATED])
     } else {
@@ -299,10 +299,7 @@ fn constant_to_symbol(
     let detail = if constant.is_enum_case {
         constant.enum_value.clone()
     } else {
-        constant
-            .type_hint
-            .clone()
-            .or_else(|| constant.value.clone())
+        constant.type_hint_str().or_else(|| constant.value.clone())
     };
 
     let tags = if constant.deprecation_message.is_some() {
@@ -408,7 +405,7 @@ fn build_method_detail(method: &MethodInfo) -> Option<String> {
         .map(|p| {
             let mut s = String::new();
             if let Some(ref t) = p.type_hint {
-                s.push_str(t);
+                s.push_str(&t.to_string());
                 s.push(' ');
             }
             if p.is_variadic {
@@ -424,7 +421,7 @@ fn build_method_detail(method: &MethodInfo) -> Option<String> {
     // Return type.
     if let Some(ref ret) = method.return_type {
         detail.push_str(": ");
-        detail.push_str(ret);
+        detail.push_str(&ret.to_string());
     }
 
     Some(detail)
@@ -441,7 +438,7 @@ fn build_function_detail(func: &FunctionInfo) -> Option<String> {
         .map(|p| {
             let mut s = String::new();
             if let Some(ref t) = p.type_hint {
-                s.push_str(t);
+                s.push_str(&t.to_string());
                 s.push(' ');
             }
             if p.is_variadic {
@@ -456,7 +453,7 @@ fn build_function_detail(func: &FunctionInfo) -> Option<String> {
 
     if let Some(ref ret) = func.return_type {
         detail.push_str(": ");
-        detail.push_str(ret);
+        detail.push_str(&ret.to_string());
     }
 
     Some(detail)
@@ -490,6 +487,7 @@ fn find_name_after_keyword(content: &str, keyword_offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::php_type::PhpType;
     use crate::types::{ClassLikeKind, MethodInfo, ParameterInfo, Visibility};
     use std::collections::HashMap;
 
@@ -514,8 +512,7 @@ mod tests {
             name: "foo".to_string(),
             name_offset: 0,
             parameters: vec![],
-            return_type: Some("void".to_string()),
-            return_type_parsed: None,
+            return_type: Some(PhpType::parse("void")),
             native_return_type: None,
             description: None,
             return_description: None,
@@ -548,8 +545,7 @@ mod tests {
                 ParameterInfo {
                     name: "$input".to_string(),
                     is_required: true,
-                    type_hint: Some("string".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("string")),
                     native_type_hint: None,
                     description: None,
                     default_value: None,
@@ -560,8 +556,7 @@ mod tests {
                 ParameterInfo {
                     name: "$items".to_string(),
                     is_required: false,
-                    type_hint: Some("array".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("array")),
                     native_type_hint: None,
                     description: None,
                     default_value: Some("[]".to_string()),
@@ -570,8 +565,7 @@ mod tests {
                     closure_this_type: None,
                 },
             ],
-            return_type: Some("int".to_string()),
-            return_type_parsed: None,
+            return_type: Some(PhpType::parse("int")),
             native_return_type: None,
             description: None,
             return_description: None,

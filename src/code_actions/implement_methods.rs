@@ -472,10 +472,11 @@ fn format_return_type(
     file_namespace: &Option<String>,
 ) -> String {
     // Prefer native return type (the actual PHP source-level type hint).
+    let return_type_str = method.return_type_str();
     let hint = method
         .native_return_type
         .as_deref()
-        .or(method.return_type.as_deref());
+        .or(return_type_str.as_deref());
 
     match hint {
         Some(t) if !t.is_empty() => {
@@ -578,6 +579,7 @@ pub(crate) fn detect_class_indent(content: &str, class: &ClassInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::php_type::PhpType;
     use crate::types::{ParameterInfo, Visibility};
 
     // ── shorten_type tests ──────────────────────────────────────────────
@@ -640,8 +642,7 @@ mod tests {
                 ParameterInfo {
                     name: "$name".to_string(),
                     is_required: true,
-                    type_hint: Some("string".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("string")),
                     native_type_hint: Some("string".to_string()),
                     description: None,
                     default_value: None,
@@ -652,8 +653,7 @@ mod tests {
                 ParameterInfo {
                     name: "$age".to_string(),
                     is_required: false,
-                    type_hint: Some("int".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("int")),
                     native_type_hint: Some("int".to_string()),
                     description: None,
                     default_value: Some("0".to_string()),
@@ -676,8 +676,7 @@ mod tests {
                 ParameterInfo {
                     name: "$items".to_string(),
                     is_required: true,
-                    type_hint: Some("string".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("string")),
                     native_type_hint: Some("string".to_string()),
                     description: None,
                     default_value: None,
@@ -688,8 +687,7 @@ mod tests {
                 ParameterInfo {
                     name: "$out".to_string(),
                     is_required: true,
-                    type_hint: Some("array".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("array")),
                     native_type_hint: Some("array".to_string()),
                     description: None,
                     default_value: None,
@@ -711,7 +709,7 @@ mod tests {
     fn format_return_type_with_native() {
         let method = MethodInfo {
             native_return_type: Some("string".to_string()),
-            return_type: Some("string".to_string()),
+            return_type: Some(PhpType::parse("string")),
             ..MethodInfo::virtual_method("test", Some("string"))
         };
 
@@ -1035,8 +1033,7 @@ mod tests {
                 ParameterInfo {
                     name: "$name".to_string(),
                     is_required: true,
-                    type_hint: Some("string".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("string")),
                     native_type_hint: Some("string".to_string()),
                     description: None,
                     default_value: None,
@@ -1047,8 +1044,7 @@ mod tests {
                 ParameterInfo {
                     name: "$options".to_string(),
                     is_required: false,
-                    type_hint: Some("array".to_string()),
-                    type_hint_parsed: None,
+                    type_hint: Some(PhpType::parse("array")),
                     native_type_hint: Some("array".to_string()),
                     description: None,
                     default_value: Some("[]".to_string()),

@@ -13,6 +13,7 @@
 use crate::common::{
     create_psr4_workspace, create_test_backend, create_test_backend_with_function_stubs,
 };
+use phpantom_lsp::php_type::PhpType;
 use phpantom_lsp::types::FunctionInfo;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
@@ -74,7 +75,7 @@ fn register_namespaced_function(
                     name: name.to_string(),
                     name_offset: 0,
                     parameters: vec![],
-                    return_type: Some("mixed".to_string()),
+                    return_type: Some(PhpType::parse("mixed")),
                     native_return_type: None,
                     description: None,
                     return_description: None,
@@ -107,7 +108,7 @@ fn register_global_function(backend: &phpantom_lsp::Backend, name: &str, uri: &s
                     name: name.to_string(),
                     name_offset: 0,
                     parameters: vec![],
-                    return_type: Some("string".to_string()),
+                    return_type: Some(PhpType::parse("string")),
                     native_return_type: None,
                     description: None,
                     return_description: None,
@@ -847,8 +848,7 @@ async fn test_use_function_namespaced_detail_shows_signature() {
                     parameters: vec![phpantom_lsp::types::ParameterInfo {
                         name: "$value".to_string(),
                         is_required: true,
-                        type_hint: Some("mixed".to_string()),
-                        type_hint_parsed: None,
+                        type_hint: Some(PhpType::parse("mixed")),
                         native_type_hint: Some("mixed".to_string()),
                         description: None,
                         default_value: None,
@@ -856,7 +856,7 @@ async fn test_use_function_namespaced_detail_shows_signature() {
                         is_reference: false,
                         closure_this_type: None,
                     }],
-                    return_type: Some("mixed".to_string()),
+                    return_type: Some(PhpType::parse("mixed")),
                     native_return_type: None,
                     description: None,
                     return_description: None,

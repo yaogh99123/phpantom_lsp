@@ -2789,7 +2789,7 @@ array_map(null, []);
     // $callback's effective type `(callable(mixed $item): mixed)|null` is richer
     // than native `?callable`, so it shows with backtick type + description.
     assert!(
-        text.contains("**$callback** `(callable(mixed $item): mixed)|null`"),
+        text.contains("**$callback** `callable(mixed): mixed|null`"),
         "should show $callback with rich effective type: {}",
         text
     );

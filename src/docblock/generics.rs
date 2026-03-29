@@ -4,57 +4,9 @@
 //! type strings (e.g. `Collection<int, User>`) and extracting element
 //! types from generic iterable annotations.
 
-use super::type_strings::{clean_type, is_scalar, split_generic_args, strip_generics};
+use crate::php_type::PhpType;
 
-/// Parse a type string into its base class name and generic arguments.
-///
-/// Returns `(base_name, args)` where `args` is empty if the type has no
-/// generic parameters.
-///
-/// **Note:** This only handles `<…>` generics. For array shape syntax
-/// (`array{…}`), use [`super::shapes::parse_array_shape`] instead.
-///
-/// # Examples
-///
-/// - `"Collection<int, User>"` → `("Collection", ["int", "User"])`
-/// - `"array<int, list<User>>"` → `("array", ["int", "list<User>"])`
-/// - `"Foo"` → `("Foo", [])`
-pub(crate) fn parse_generic_args(type_str: &str) -> (&str, Vec<&str>) {
-    let angle_pos = match type_str.find('<') {
-        Some(pos) => pos,
-        None => return (type_str, vec![]),
-    };
-
-    let base = &type_str[..angle_pos];
-
-    // Find the matching closing `>`
-    let rest = &type_str[angle_pos + 1..];
-    let close_pos = find_matching_close(rest);
-    let inner = &rest[..close_pos];
-
-    let args = split_generic_args(inner);
-    (base, args)
-}
-
-/// Find the position of the matching `>` for an opening `<` that has
-/// already been consumed.  `s` starts right after the `<`.
-pub(crate) fn find_matching_close(s: &str) -> usize {
-    let mut depth = 1i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 {
-                    return i;
-                }
-            }
-            _ => {}
-        }
-    }
-    // Fallback: end of string (malformed type).
-    s.len()
-}
+use super::type_strings::{clean_type, split_generic_args};
 
 /// Extract the element (value) type from a generic iterable type annotation.
 ///
@@ -84,8 +36,7 @@ pub fn extract_generic_value_type(raw_type: &str) -> Option<String> {
     // ── Handle `Type[]` shorthand ───────────────────────────────────────
     if let Some(base) = s.strip_suffix("[]") {
         let cleaned = clean_type(base);
-        let base_name = strip_generics(&cleaned);
-        if !base_name.is_empty() && !is_scalar(&base_name) {
+        if !cleaned.is_empty() && !PhpType::parse(&cleaned).is_scalar() {
             return Some(cleaned);
         }
         // e.g. `int[]` — no class element type
@@ -117,9 +68,8 @@ pub fn extract_generic_value_type(raw_type: &str) -> Option<String> {
     };
 
     let cleaned = clean_type(value_part.trim());
-    let base_name = strip_generics(&cleaned);
 
-    if base_name.is_empty() || is_scalar(&base_name) {
+    if cleaned.is_empty() || PhpType::parse(&cleaned).is_scalar() {
         return None;
     }
     Some(cleaned)
@@ -219,9 +169,8 @@ pub fn extract_generic_key_type(raw_type: &str) -> Option<String> {
     }
     let key_part = args[0];
     let cleaned = clean_type(key_part.trim());
-    let base_name = strip_generics(&cleaned);
 
-    if base_name.is_empty() || is_scalar(&base_name) {
+    if cleaned.is_empty() || PhpType::parse(&cleaned).is_scalar() {
         return None;
     }
     Some(cleaned)

@@ -1100,20 +1100,24 @@ impl Backend {
         // parameter on the method or owning class, show the template's
         // variance and bound so the user understands the constraint.
         // Method-level templates take priority over class-level ones.
-        let mut seen_templates = Vec::new();
-        if let Some(ref ret) = method.return_type
-            && let Some(tpl_line) = find_template_info_in_method_or_class(ret, method, owner)
-        {
-            seen_templates.push(ret.clone());
-            lines.push(tpl_line);
+        let mut seen_templates: Vec<String> = Vec::new();
+        if let Some(ref ret) = method.return_type {
+            let ret_str = ret.to_string();
+            if let Some(tpl_line) = find_template_info_in_method_or_class(&ret_str, method, owner) {
+                seen_templates.push(ret_str);
+                lines.push(tpl_line);
+            }
         }
         for param in &method.parameters {
-            if let Some(ref hint) = param.type_hint
-                && !seen_templates.iter().any(|s| s == hint)
-                && let Some(tpl_line) = find_template_info_in_method_or_class(hint, method, owner)
-            {
-                seen_templates.push(hint.clone());
-                lines.push(tpl_line);
+            if let Some(ref hint) = param.type_hint {
+                let hint_str = hint.to_string();
+                if !seen_templates.iter().any(|s| s == &hint_str)
+                    && let Some(tpl_line) =
+                        find_template_info_in_method_or_class(&hint_str, method, owner)
+                {
+                    seen_templates.push(hint_str);
+                    lines.push(tpl_line);
+                }
             }
         }
 
@@ -1146,9 +1150,10 @@ impl Backend {
         format_see_refs(&resolved_see, &method.links, &mut lines);
 
         // Build the readable param/return section as markdown.
+        let effective_return = method.return_type_str();
         if let Some(section) = build_param_return_section(
             &method.parameters,
-            method.return_type.as_deref(),
+            effective_return.as_deref(),
             method.native_return_type.as_deref(),
             method.return_description.as_deref(),
         ) {
@@ -1191,8 +1196,9 @@ impl Backend {
 
         // Build the docblock annotation showing the effective type
         // when it differs from the native one.
+        let eff_type_str = property.type_hint_str();
         let var_annotation = build_var_annotation(
-            property.type_hint.as_deref(),
+            eff_type_str.as_deref(),
             property.native_type_hint.as_deref(),
         );
 
@@ -1202,10 +1208,11 @@ impl Backend {
         // class, show the template's variance and bound so the user
         // understands the constraint (e.g. "**template-covariant**
         // `TNode` of `AstNode`").
-        if let Some(ref type_hint) = property.type_hint
-            && let Some(tpl_line) = find_template_info_in_class(type_hint, owner)
-        {
-            lines.push(tpl_line);
+        if let Some(ref type_hint) = property.type_hint {
+            let type_hint_str = type_hint.to_string();
+            if let Some(tpl_line) = find_template_info_in_class(&type_hint_str, owner) {
+                lines.push(tpl_line);
+            }
         }
 
         // Origin indicator (override / implements / virtual).

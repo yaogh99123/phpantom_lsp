@@ -1,5 +1,6 @@
 use crate::common::{create_test_backend, create_test_backend_with_function_stubs};
 use phpantom_lsp::Backend;
+use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -77,7 +78,7 @@ async fn test_stub_function_index_resolves_str_contains() {
         func.return_type.is_some(),
         "str_contains should have a return type"
     );
-    assert_eq!(func.return_type.as_deref(), Some("bool"));
+    assert_eq!(func.return_type_str().as_deref(), Some("bool"));
 }
 
 /// Verify that `find_or_load_function` can resolve `json_decode`.
@@ -165,7 +166,8 @@ async fn test_stub_function_date_create_return_type() {
     let func = result.unwrap();
     assert_eq!(func.name, "date_create");
 
-    let ret = func.return_type.as_deref().unwrap_or("");
+    let ret_str = func.return_type_str();
+    let ret = ret_str.as_deref().unwrap_or("");
     assert!(
         ret.contains("DateTime"),
         "date_create return type should mention DateTime, got: {}",
@@ -243,7 +245,8 @@ async fn test_stub_function_simplexml_load_string() {
     );
 
     let func = result.unwrap();
-    let ret = func.return_type.as_deref().unwrap_or("");
+    let ret_str = func.return_type_str();
+    let ret = ret_str.as_deref().unwrap_or("");
     assert!(
         ret.contains("SimpleXMLElement"),
         "simplexml_load_string return type should mention SimpleXMLElement, got: {}",
@@ -341,7 +344,7 @@ async fn test_user_function_takes_precedence_over_stub() {
         name: "str_contains".to_string(),
         name_offset: 0,
         parameters: vec![],
-        return_type: Some("CustomReturn".to_string()),
+        return_type: Some(PhpType::parse("CustomReturn")),
         native_return_type: None,
         description: None,
         return_description: None,
@@ -370,7 +373,7 @@ async fn test_user_function_takes_precedence_over_stub() {
     assert!(result.is_some());
     let func = result.unwrap();
     assert_eq!(
-        func.return_type.as_deref(),
+        func.return_type_str().as_deref(),
         Some("CustomReturn"),
         "User-defined function should take precedence over stub"
     );
@@ -462,7 +465,7 @@ async fn test_stub_function_array_key_exists() {
 
     let func = result.unwrap();
     assert_eq!(func.name, "array_key_exists");
-    assert_eq!(func.return_type.as_deref(), Some("bool"));
+    assert_eq!(func.return_type_str().as_deref(), Some("bool"));
 }
 
 /// Verify that `substr` is resolvable.

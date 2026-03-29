@@ -7,7 +7,7 @@
 //! inferring relationship types from method body text when no `@return`
 //! annotation is present.
 
-use crate::docblock::types::parse_generic_args;
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, ELOQUENT_COLLECTION_FQN};
 use crate::util::short_name;
 
@@ -116,7 +116,8 @@ pub(super) enum RelationshipKind {
 /// is the common case for body-inferred types and docblock annotations
 /// that use `use` imports.
 pub(super) fn classify_relationship(return_type: &str) -> Option<RelationshipKind> {
-    let (base, _) = parse_generic_args(return_type);
+    let parsed = PhpType::parse(return_type);
+    let base = parsed.base_name().unwrap_or(return_type);
     let sname = short_name(base);
 
     // When the base type is qualified (contains `\`), verify it belongs
@@ -147,13 +148,16 @@ pub(super) fn classify_relationship(return_type: &str) -> Option<RelationshipKin
 ///
 /// Returns `None` if no generic parameters are present.
 pub(super) fn extract_related_type(return_type: &str) -> Option<String> {
-    let (_, args) = parse_generic_args(return_type);
-    let first = args.first()?;
-    let trimmed = first.trim();
-    if trimmed.is_empty() {
-        return None;
+    let parsed = PhpType::parse(return_type);
+    if let PhpType::Generic(_, args) = &parsed {
+        let first = args.first()?;
+        let s = first.to_string();
+        if s.is_empty() {
+            return None;
+        }
+        return Some(s);
     }
-    Some(trimmed.to_string())
+    None
 }
 
 /// Build the property type string for a relationship.
@@ -171,10 +175,14 @@ pub(super) fn build_property_type(
         RelationshipKind::Singular => related_type.map(|t| t.to_string()),
         RelationshipKind::Collection => {
             let inner = related_type.unwrap_or("Illuminate\\Database\\Eloquent\\Model");
-            let collection_class = custom_collection
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| ELOQUENT_COLLECTION_FQN.to_string());
-            Some(format!("{collection_class}<{inner}>"))
+            let collection_class = custom_collection.unwrap_or(ELOQUENT_COLLECTION_FQN);
+            Some(
+                PhpType::Generic(
+                    collection_class.to_string(),
+                    vec![PhpType::Named(inner.to_string())],
+                )
+                .to_string(),
+            )
         }
         RelationshipKind::MorphTo => Some("Illuminate\\Database\\Eloquent\\Model".to_string()),
     }
@@ -198,8 +206,8 @@ pub(crate) fn count_property_to_relationship_method(
     }
     let method_name = snake_to_camel(base);
     let method = class.methods.iter().find(|m| m.name == method_name)?;
-    let return_type = method.return_type.as_deref()?;
-    if classify_relationship(return_type).is_some() {
+    let return_type = method.return_type_str()?;
+    if classify_relationship(&return_type).is_some() {
         Some(method_name)
     } else {
         None
@@ -236,7 +244,7 @@ pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
         // `resolve_name` will strip the leading `\` back to canonical
         // form during the resolution pass.
         if method_name == "morphTo" {
-            return Some(format!("\\{fqn}"));
+            return Some(PhpType::Named(format!("\\{fqn}")).to_string());
         }
 
         // Extract the first argument from the call.  We look for
@@ -245,13 +253,15 @@ pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
         let after_paren = &body_text[args_start..];
 
         if let Some(class_arg) = extract_class_argument(after_paren) {
-            return Some(format!("\\{fqn}<{class_arg}>"));
+            return Some(
+                PhpType::Generic(format!("\\{fqn}"), vec![PhpType::Named(class_arg)]).to_string(),
+            );
         }
 
         // No `::class` argument found — return the bare relationship
         // name without generics.  The provider will handle it the same
         // way it handles annotated relationships without generics.
-        return Some(format!("\\{fqn}"));
+        return Some(PhpType::Named(format!("\\{fqn}")).to_string());
     }
 
     None

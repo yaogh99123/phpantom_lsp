@@ -17,8 +17,8 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::completion::resolver::{Loaders, ResolutionCtx};
-use crate::docblock::type_strings::is_scalar;
 use crate::hover::variable_type;
+use crate::php_type::PhpType;
 use crate::symbol_map::SymbolKind;
 use crate::types::*;
 use crate::util::{find_class_at_offset, position_to_offset};
@@ -167,13 +167,13 @@ impl Backend {
                     .iter()
                     .find(|m| m.name.eq_ignore_ascii_case(member_name))
                 {
-                    let type_str = method.return_type.as_deref().unwrap_or("");
+                    let default_type = PhpType::parse("");
+                    let ret_type = method.return_type.as_ref().unwrap_or(&default_type);
 
                     // Replace self/static/$this with the owning class name.
-                    let type_str =
-                        crate::docblock::type_strings::replace_self_in_type(type_str, &merged.name);
+                    let resolved = ret_type.replace_self(&merged.name);
 
-                    let names = extract_class_names_from_type_string(&type_str);
+                    let names = resolved.top_level_class_names();
                     if !names.is_empty() {
                         return names;
                     }
@@ -181,12 +181,12 @@ impl Backend {
             } else {
                 // Property access — resolve the property type.
                 if let Some(prop) = merged.properties.iter().find(|p| p.name == member_name) {
-                    let type_str = prop.type_hint.as_deref().unwrap_or("");
+                    let default_type = PhpType::parse("");
+                    let prop_type = prop.type_hint.as_ref().unwrap_or(&default_type);
 
-                    let type_str =
-                        crate::docblock::type_strings::replace_self_in_type(type_str, &merged.name);
+                    let resolved = prop_type.replace_self(&merged.name);
 
-                    let names = extract_class_names_from_type_string(&type_str);
+                    let names = resolved.top_level_class_names();
                     if !names.is_empty() {
                         return names;
                     }
@@ -194,9 +194,10 @@ impl Backend {
 
                 // Constants.
                 if let Some(constant) = merged.constants.iter().find(|c| c.name == member_name) {
-                    let type_str = constant.type_hint.as_deref().unwrap_or("");
+                    let default_type = PhpType::parse("");
+                    let const_type = constant.type_hint.as_ref().unwrap_or(&default_type);
 
-                    let names = extract_class_names_from_type_string(type_str);
+                    let names = const_type.top_level_class_names();
                     if !names.is_empty() {
                         return names;
                     }
@@ -220,9 +221,10 @@ impl Backend {
 
         for candidate in &candidates {
             if let Some(func) = function_loader(candidate) {
-                let type_str = func.return_type.as_deref().unwrap_or("");
+                let default_type = PhpType::parse("");
+                let ret_type = func.return_type.as_ref().unwrap_or(&default_type);
 
-                let names = extract_class_names_from_type_string(type_str);
+                let names = ret_type.top_level_class_names();
                 if !names.is_empty() {
                     return names;
                 }
@@ -244,7 +246,7 @@ impl Backend {
         let mut locations = Vec::new();
 
         for name in type_names {
-            if is_scalar(name) {
+            if PhpType::parse(name).is_scalar() {
                 continue;
             }
 
@@ -298,7 +300,7 @@ fn resolve_variable_type_names(
         class_loader,
         crate::completion::resolver::Loaders::with_function(Some(function_loader)),
     ) {
-        return extract_class_names_from_type_string(&type_str);
+        return PhpType::parse(&type_str).top_level_class_names();
     }
 
     // Fall back to ClassInfo-based resolution.
@@ -326,85 +328,8 @@ fn resolve_variable_type_names(
     types
         .into_iter()
         .map(|c| c.name.clone())
-        .filter(|n| !is_scalar(n))
+        .filter(|n| !PhpType::parse(n).is_scalar())
         .collect()
-}
-
-/// Extract non-scalar class names from a type string.
-///
-/// Handles union types (`Foo|Bar`), nullable types (`?Foo`), and
-/// generic types (`Collection<int, User>` -> `Collection`).
-/// Scalar types (`int`, `string`, `array`, `null`, `void`, `mixed`,
-/// `false`, `true`, `never`, `callable`, `iterable`, `resource`,
-/// `object`) are excluded.
-fn extract_class_names_from_type_string(type_str: &str) -> Vec<String> {
-    let mut names = Vec::new();
-
-    // Split top-level union types at depth 0.
-    let parts = split_top_level_union(type_str);
-
-    for part in parts {
-        let part = part.trim();
-
-        // Skip `null`.
-        if part.eq_ignore_ascii_case("null") {
-            continue;
-        }
-
-        // Strip leading `?` (nullable shorthand).
-        let part = part.strip_prefix('?').unwrap_or(part).trim();
-
-        if part.is_empty() {
-            continue;
-        }
-
-        // Strip generic parameters: `Collection<int, User>` -> `Collection`.
-        let base = if let Some(idx) = part.find('<') {
-            &part[..idx]
-        } else if let Some(idx) = part.find('{') {
-            // Array shapes: `array{name: string}` -> `array`.
-            &part[..idx]
-        } else {
-            part
-        };
-
-        let base = base.trim();
-
-        // Strip trailing `[]` (array notation like `User[]`).
-        let base = base.strip_suffix("[]").unwrap_or(base);
-
-        if base.is_empty() || is_scalar(base) {
-            continue;
-        }
-
-        let name = base.to_string();
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-
-    names
-}
-
-/// Split a type string at top-level `|` separators, respecting nesting
-/// depth of `<>`, `()`, and `{}`.
-fn split_top_level_union(type_str: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0u32;
-    let mut start = 0;
-    for (i, ch) in type_str.char_indices() {
-        match ch {
-            '<' | '(' | '{' => depth += 1,
-            '>' | ')' | '}' => depth = depth.saturating_sub(1),
-            '|' if depth == 0 => {
-                parts.push(&type_str[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push(&type_str[start..]);
-    parts
 }
 
 #[cfg(test)]
@@ -413,67 +338,67 @@ mod tests {
 
     #[test]
     fn test_extract_simple_class() {
-        let names = extract_class_names_from_type_string("User");
+        let names = PhpType::parse("User").top_level_class_names();
         assert_eq!(names, vec!["User"]);
     }
 
     #[test]
     fn test_extract_fqn_class() {
-        let names = extract_class_names_from_type_string("\\App\\Models\\User");
+        let names = PhpType::parse("\\App\\Models\\User").top_level_class_names();
         assert_eq!(names, vec!["\\App\\Models\\User"]);
     }
 
     #[test]
     fn test_extract_nullable() {
-        let names = extract_class_names_from_type_string("?User");
+        let names = PhpType::parse("?User").top_level_class_names();
         assert_eq!(names, vec!["User"]);
     }
 
     #[test]
     fn test_extract_union_with_null() {
-        let names = extract_class_names_from_type_string("User|null");
+        let names = PhpType::parse("User|null").top_level_class_names();
         assert_eq!(names, vec!["User"]);
     }
 
     #[test]
     fn test_extract_union_multiple_classes() {
-        let names = extract_class_names_from_type_string("User|Admin");
+        let names = PhpType::parse("User|Admin").top_level_class_names();
         assert_eq!(names, vec!["User", "Admin"]);
     }
 
     #[test]
     fn test_extract_generic_stripped() {
-        let names = extract_class_names_from_type_string("Collection<int, User>");
+        let names = PhpType::parse("Collection<int, User>").top_level_class_names();
         assert_eq!(names, vec!["Collection"]);
     }
 
     #[test]
     fn test_extract_scalar_excluded() {
-        let names = extract_class_names_from_type_string("string");
+        let names = PhpType::parse("string").top_level_class_names();
         assert!(names.is_empty());
     }
 
     #[test]
     fn test_extract_mixed_union() {
-        let names = extract_class_names_from_type_string("string|User|int|Admin|null");
+        let names = PhpType::parse("string|User|int|Admin|null").top_level_class_names();
         assert_eq!(names, vec!["User", "Admin"]);
     }
 
     #[test]
     fn test_extract_void() {
-        let names = extract_class_names_from_type_string("void");
+        let names = PhpType::parse("void").top_level_class_names();
         assert!(names.is_empty());
     }
 
     #[test]
     fn test_extract_array_of_class() {
-        let names = extract_class_names_from_type_string("User[]");
+        let names = PhpType::parse("User[]").top_level_class_names();
         assert_eq!(names, vec!["User"]);
     }
 
     #[test]
     fn test_extract_array_shape_excluded() {
-        let names = extract_class_names_from_type_string("array{name: string}");
+        let names = PhpType::parse("array{name: string}").top_level_class_names();
         assert!(names.is_empty());
     }
 }

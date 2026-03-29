@@ -10,13 +10,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::inheritance::apply_substitution;
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, MethodInfo};
 
 use super::helpers::extends_eloquent_model;
 
-/// The default return type for scope methods that don't declare a return
+/// Build the default return type for scope methods that don't declare a return
 /// type or return `void`.
-const DEFAULT_SCOPE_RETURN_TYPE: &str = "Illuminate\\Database\\Eloquent\\Builder<static>";
+fn default_scope_return_type() -> String {
+    PhpType::Generic(
+        "Illuminate\\Database\\Eloquent\\Builder".to_string(),
+        vec![PhpType::Named("static".to_string())],
+    )
+    .to_string()
+}
 
 /// Determine whether a method is an Eloquent scope.
 ///
@@ -74,8 +81,8 @@ pub(super) fn scope_name(method_name: &str) -> String {
 /// `void` or absent, defaults to
 /// `\Illuminate\Database\Eloquent\Builder<static>`.
 pub(super) fn scope_return_type(method: &MethodInfo) -> String {
-    match method.return_type.as_deref() {
-        Some("void") | None => DEFAULT_SCOPE_RETURN_TYPE.to_string(),
+    match method.return_type_str().as_deref() {
+        Some("void") | None => default_scope_return_type(),
         Some(rt) => rt.to_string(),
     }
 }
@@ -175,7 +182,9 @@ pub fn build_scope_methods_for_builder(
 
         // Apply substitutions to the return type.
         if let Some(ref mut ret) = m.return_type {
-            *ret = apply_substitution(ret, &subs).into_owned();
+            let ret_str = ret.to_string();
+            let substituted = apply_substitution(&ret_str, &subs);
+            *ret = PhpType::parse(&substituted);
         }
 
         methods.push(m);

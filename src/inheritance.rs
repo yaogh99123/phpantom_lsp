@@ -81,10 +81,10 @@ impl MergeDedup {
     }
 }
 
-use crate::docblock::types::{find_matching_close, split_generic_args};
+use crate::php_type::PhpType;
 use crate::types::{
-    ClassInfo, ConditionalReturnType, MAX_INHERITANCE_DEPTH, MAX_TRAIT_DEPTH, MethodInfo,
-    ParamCondition, PropertyInfo, TraitAlias, TraitPrecedence, Visibility,
+    ClassInfo, MAX_INHERITANCE_DEPTH, MAX_TRAIT_DEPTH, MethodInfo, PropertyInfo, TraitAlias,
+    TraitPrecedence, Visibility,
 };
 use crate::util::short_name;
 use crate::virtual_members::laravel::{
@@ -288,7 +288,7 @@ pub(crate) fn resolve_method_return_type(
         .methods
         .iter()
         .find(|m| m.name == method_name)
-        .and_then(|m| m.return_type.clone())
+        .and_then(|m| m.return_type_str())
 }
 
 /// Look up a property's type hint through the inheritance chain.
@@ -312,7 +312,7 @@ pub(crate) fn resolve_property_type_hint(
         .properties
         .iter()
         .find(|p| p.name == prop_name)
-        .and_then(|p| p.type_hint.clone())
+        .and_then(|p| p.type_hint_str())
 }
 
 /// Recursively merge members from the given traits into `merged`.
@@ -721,56 +721,28 @@ pub(crate) fn apply_substitution_to_method(
     subs: &HashMap<String, String>,
 ) {
     if let Some(ref mut ret) = method.return_type {
-        let substituted = apply_substitution(ret, subs);
-        if substituted.as_ref() != ret.as_str() {
-            *ret = substituted.into_owned();
-        }
+        *ret = ret.substitute(subs);
     }
     if let Some(ref mut cond) = method.conditional_return {
         apply_substitution_to_conditional(cond, subs);
     }
     for param in &mut method.parameters {
         if let Some(ref mut hint) = param.type_hint {
-            let substituted = apply_substitution(hint, subs);
-            if substituted.as_ref() != hint.as_str() {
-                *hint = substituted.into_owned();
-            }
+            *hint = hint.substitute(subs);
         }
     }
 }
 
 /// Apply generic type substitution to a conditional return type tree.
 ///
-/// Recursively walks the [`ConditionalReturnType`] and applies
-/// [`apply_substitution`] to every concrete type string (both terminal
-/// `Concrete` nodes and `IsType` condition strings).
+/// Delegates to [`PhpType::substitute`] which recursively walks all
+/// type variants (including nested conditionals) and replaces template
+/// parameter names with their concrete types.
 pub(crate) fn apply_substitution_to_conditional(
-    cond: &mut ConditionalReturnType,
+    cond: &mut PhpType,
     subs: &HashMap<String, String>,
 ) {
-    match cond {
-        ConditionalReturnType::Concrete(ty) => {
-            let substituted = apply_substitution(ty, subs);
-            if substituted.as_ref() != ty.as_str() {
-                *ty = substituted.into_owned();
-            }
-        }
-        ConditionalReturnType::Conditional {
-            condition,
-            then_type,
-            else_type,
-            ..
-        } => {
-            if let ParamCondition::IsType(type_str) = condition {
-                let substituted = apply_substitution(type_str, subs);
-                if substituted.as_ref() != type_str.as_str() {
-                    *type_str = substituted.into_owned();
-                }
-            }
-            apply_substitution_to_conditional(then_type, subs);
-            apply_substitution_to_conditional(else_type, subs);
-        }
-    }
+    *cond = cond.substitute(subs);
 }
 
 /// Apply generic type substitution to a property's type hint.
@@ -779,10 +751,7 @@ pub(crate) fn apply_substitution_to_property(
     subs: &HashMap<String, String>,
 ) {
     if let Some(ref mut hint) = property.type_hint {
-        let substituted = apply_substitution(hint, subs);
-        if substituted.as_ref() != hint.as_str() {
-            *hint = substituted.into_owned();
-        }
+        *hint = hint.substitute(subs);
     }
 }
 
@@ -797,12 +766,16 @@ pub(crate) fn apply_substitution_to_property(
 ///   - Nested generics: `"Collection<TKey, list<TValue>>"` →
 ///     `"Collection<int, list<Language>>"`
 ///   - Combinations: `"?Collection<TKey, TValue>|null"` → resolved correctly
+///
+/// Internally delegates to [`PhpType::substitute`] which walks the
+/// parsed type tree.  This wrapper preserves the `&str → Cow<str>` API
+/// so that existing callers do not need to change.
 pub(crate) fn apply_substitution<'a>(
     type_str: &'a str,
     subs: &HashMap<String, String>,
 ) -> Cow<'a, str> {
     let s = type_str.trim();
-    if s.is_empty() {
+    if s.is_empty() || subs.is_empty() {
         return Cow::Borrowed(s);
     }
 
@@ -810,339 +783,21 @@ pub(crate) fn apply_substitution<'a>(
     // substitution keys as a substring, no replacement can happen.
     // This skips the vast majority of type strings that don't reference
     // template parameters, avoiding all allocation and recursion.
-    if !subs.is_empty() && !subs.keys().any(|key| s.contains(key.as_str())) {
+    if !subs.keys().any(|key| s.contains(key.as_str())) {
         return Cow::Borrowed(s);
     }
 
-    // Handle nullable prefix.
-    if let Some(inner) = s.strip_prefix('?') {
-        let resolved = apply_substitution(inner, subs);
-        return Cow::Owned(format!("?{resolved}"));
+    let parsed = PhpType::parse(s);
+    let substituted = parsed.substitute(subs);
+    let result = substituted.to_string();
+
+    // If the result is identical to the input, return borrowed to
+    // avoid unnecessary allocation in callers that check for changes.
+    if result == s {
+        Cow::Borrowed(s)
+    } else {
+        Cow::Owned(result)
     }
-
-    // Handle union types: split on `|` at depth 0.
-    if let Some(parts) = split_at_depth_0(s, '|') {
-        let resolved: Vec<Cow<str>> = parts.iter().map(|p| apply_substitution(p, subs)).collect();
-        if resolved
-            .iter()
-            .zip(parts.iter())
-            .all(|(r, &p)| matches!(r, Cow::Borrowed(b) if *b == p))
-        {
-            return Cow::Borrowed(s);
-        }
-        return Cow::Owned(
-            resolved
-                .iter()
-                .map(|c| c.as_ref())
-                .collect::<Vec<_>>()
-                .join("|"),
-        );
-    }
-
-    // Handle intersection types: split on `&` at depth 0.
-    if let Some(parts) = split_at_depth_0(s, '&') {
-        let resolved: Vec<Cow<str>> = parts.iter().map(|p| apply_substitution(p, subs)).collect();
-        if resolved
-            .iter()
-            .zip(parts.iter())
-            .all(|(r, &p)| matches!(r, Cow::Borrowed(b) if *b == p))
-        {
-            return Cow::Borrowed(s);
-        }
-        return Cow::Owned(
-            resolved
-                .iter()
-                .map(|c| c.as_ref())
-                .collect::<Vec<_>>()
-                .join("&"),
-        );
-    }
-
-    // Handle array/object shapes: `array{key: T, ...}` or `object{key: T}`.
-    if let Some(brace_pos) = find_brace_at_depth_0(s) {
-        let base = &s[..brace_pos];
-        let rest = &s[brace_pos + 1..];
-        let close_pos = find_matching_close_brace(rest);
-        let inner = &rest[..close_pos];
-        let after = &rest[close_pos + 1..]; // anything after `}`
-
-        let entries = split_generic_args(inner);
-        let resolved_entries: Vec<String> = entries
-            .iter()
-            .map(|entry| {
-                // Check for `key: type` syntax — find `:` at depth 0.
-                if let Some(colon_pos) = find_colon_at_depth_0(entry) {
-                    let key_part = &entry[..colon_pos + 1]; // includes the `:`
-                    let val_part = entry[colon_pos + 1..].trim_start();
-                    let resolved_val = apply_substitution(val_part, subs);
-                    format!("{key_part} {resolved_val}")
-                } else {
-                    // Bare type entry (no key), e.g. `array{T, string}`.
-                    apply_substitution(entry, subs).into_owned()
-                }
-            })
-            .collect();
-
-        let mut result = format!("{}{{{}}}", base, resolved_entries.join(", "));
-        if !after.is_empty() {
-            result.push_str(after);
-        }
-        return Cow::Owned(result);
-    }
-
-    // Handle generic types: `Base<Arg1, Arg2>`.
-    if let Some(angle_pos) = find_angle_at_depth_0(s) {
-        let base = &s[..angle_pos];
-        // Find the matching closing `>`.
-        let rest = &s[angle_pos + 1..];
-        let close_pos = find_matching_close(rest);
-        let inner = &rest[..close_pos];
-        let after = &rest[close_pos + 1..]; // anything after `>`
-
-        // Resolve the base (it might itself be a template param).
-        let resolved_base = apply_substitution(base, subs);
-
-        // Split inner on commas at depth 0 and resolve each arg.
-        let args = split_generic_args(inner);
-        let resolved_args: Vec<Cow<str>> =
-            args.iter().map(|a| apply_substitution(a, subs)).collect();
-
-        let mut result = format!(
-            "{resolved_base}<{}>",
-            resolved_args
-                .iter()
-                .map(|c| c.as_ref())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        if !after.is_empty() {
-            result.push_str(after);
-        }
-        return Cow::Owned(result);
-    }
-
-    // Handle callable/Closure signatures: `callable(TValue): RetType` or
-    // `Closure(A, B): C`.  Recurse into the parameter types and the
-    // return type so that template parameters are properly substituted.
-    {
-        let callable_prefix = if s.starts_with("callable(") {
-            Some("callable")
-        } else if s.starts_with("Closure(") {
-            Some("Closure")
-        } else {
-            None
-        };
-        if let Some(prefix) = callable_prefix {
-            let after_prefix = &s[prefix.len()..]; // starts with '('
-            let inner = &after_prefix[1..]; // skip '('
-
-            // Find the matching ')' respecting nesting.
-            let mut depth = 1i32;
-            let mut close_pos = None;
-            for (i, c) in inner.char_indices() {
-                match c {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            close_pos = Some(i);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(close) = close_pos {
-                let params_str = &inner[..close];
-                let after_paren = &inner[close + 1..];
-
-                // Substitute each comma-separated parameter type.
-                let resolved_params = if params_str.trim().is_empty() {
-                    String::new()
-                } else {
-                    let param_parts = split_generic_args(params_str);
-                    let resolved: Vec<Cow<str>> = param_parts
-                        .iter()
-                        .map(|p| apply_substitution(p, subs))
-                        .collect();
-                    resolved
-                        .iter()
-                        .map(|c| c.as_ref())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-
-                // Check for a return type after `): RetType`.
-                let rest_trimmed = after_paren.trim_start();
-                if let Some(after_colon) = rest_trimmed.strip_prefix(':') {
-                    let ret_type = after_colon.trim_start();
-                    if !ret_type.is_empty() {
-                        let resolved_ret = apply_substitution(ret_type, subs);
-                        return Cow::Owned(format!("{prefix}({resolved_params}): {resolved_ret}"));
-                    }
-                }
-                return Cow::Owned(format!("{prefix}({resolved_params}){after_paren}"));
-            }
-        }
-    }
-
-    // Handle array shorthand: `TValue[]`.
-    if let Some(base) = s.strip_suffix("[]") {
-        let resolved = apply_substitution(base, subs);
-        return Cow::Owned(format!("{resolved}[]"));
-    }
-
-    // Strip parentheses from DNF types like `(A&B)`.
-    if s.starts_with('(') && s.ends_with(')') {
-        let inner = &s[1..s.len() - 1];
-        let resolved = apply_substitution(inner, subs);
-        return Cow::Owned(format!("({resolved})"));
-    }
-
-    // Base case: direct lookup.
-    if let Some(replacement) = subs.get(s) {
-        return Cow::Owned(replacement.clone());
-    }
-
-    // No match — return as-is (borrowed, no allocation).
-    Cow::Borrowed(s)
-}
-
-/// Split a type string on `delimiter` at nesting depth 0 (respecting
-/// `<…>` and `(…)` nesting).
-///
-/// Returns `None` if the delimiter does not appear at depth 0 (i.e. the
-/// string cannot be split).  Returns `Some(parts)` with at least 2 parts
-/// otherwise.
-fn split_at_depth_0(s: &str, delimiter: char) -> Option<Vec<&str>> {
-    let mut depth_angle = 0i32;
-    let mut depth_paren = 0i32;
-    let mut depth_brace = 0i32;
-    let mut found = false;
-
-    // First pass: check if splitting is needed.
-    for ch in s.chars() {
-        match ch {
-            '<' => depth_angle += 1,
-            '>' => depth_angle -= 1,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '{' => depth_brace += 1,
-            '}' => depth_brace -= 1,
-            c if c == delimiter && depth_angle == 0 && depth_paren == 0 && depth_brace == 0 => {
-                found = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    if !found {
-        return None;
-    }
-
-    // Second pass: collect parts.
-    let mut parts = Vec::new();
-    depth_angle = 0;
-    depth_paren = 0;
-    depth_brace = 0;
-    let mut start = 0;
-
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' => depth_angle += 1,
-            '>' => depth_angle -= 1,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '{' => depth_brace += 1,
-            '}' => depth_brace -= 1,
-            c if c == delimiter && depth_angle == 0 && depth_paren == 0 && depth_brace == 0 => {
-                parts.push(&s[start..i]);
-                start = i + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    parts.push(&s[start..]);
-
-    Some(parts)
-}
-
-/// Find the position of the first `<` at nesting depth 0.
-fn find_angle_at_depth_0(s: &str) -> Option<usize> {
-    let mut depth_paren = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '<' if depth_paren == 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Find the position of the first `{` at nesting depth 0 (respecting
-/// `<…>` and `(…)` nesting).
-fn find_brace_at_depth_0(s: &str) -> Option<usize> {
-    let mut depth_angle = 0i32;
-    let mut depth_paren = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' => depth_angle += 1,
-            '>' => depth_angle -= 1,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '{' if depth_angle == 0 && depth_paren == 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Find the matching `}` for an already-opened `{`, respecting nested
-/// `{…}`, `<…>`, and `(…)` pairs.  The input `s` starts *after* the
-/// opening `{`.
-fn find_matching_close_brace(s: &str) -> usize {
-    let mut depth = 1i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return i;
-                }
-            }
-            _ => {}
-        }
-    }
-    // Fallback: end of string (malformed type).
-    s.len()
-}
-
-/// Find the position of the first `:` at nesting depth 0 inside a shape
-/// entry (respecting `<…>`, `(…)`, and `{…}` nesting).
-fn find_colon_at_depth_0(s: &str) -> Option<usize> {
-    let mut depth_angle = 0i32;
-    let mut depth_paren = 0i32;
-    let mut depth_brace = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' => depth_angle += 1,
-            '>' => depth_angle -= 1,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '{' => depth_brace += 1,
-            '}' => depth_brace -= 1,
-            ':' if depth_angle == 0 && depth_paren == 0 && depth_brace == 0 => {
-                return Some(i);
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Apply explicit generic type arguments to a class's members.

@@ -12,7 +12,8 @@ use mago_docblock::document::TagKind;
 
 use super::parser::{DocblockInfo, collapse_newlines, parse_docblock_for_tags};
 use super::types::{split_generic_args, split_type_token};
-use crate::types::{ConditionalReturnType, ParamCondition, TemplateVariance};
+use crate::php_type::PhpType;
+use crate::types::TemplateVariance;
 
 // ─── Template Parameters ────────────────────────────────────────────────────
 
@@ -497,7 +498,7 @@ fn parse_import_type_alias(rest: &str) -> Option<(String, String)> {
 /// an instance of whatever class name is passed as that argument.
 ///
 /// This function detects that pattern and produces a
-/// [`ConditionalReturnType`] so that the resolver can substitute the
+/// [`PhpType::Conditional`] so that the resolver can substitute the
 /// concrete class at call sites.
 ///
 /// Returns `None` if the pattern is not detected, or if
@@ -508,7 +509,7 @@ pub fn synthesize_template_conditional(
     template_params: &[String],
     return_type: Option<&str>,
     has_existing_conditional: bool,
-) -> Option<ConditionalReturnType> {
+) -> Option<PhpType> {
     // Don't override an existing conditional return type.
     if has_existing_conditional {
         return None;
@@ -532,17 +533,18 @@ pub fn synthesize_template_conditional(
     // template param, and extract the parameter name (without `$`).
     let param_name = find_class_string_param_name(docblock, stripped)?;
 
-    Some(ConditionalReturnType::Conditional {
-        param_name,
-        condition: ParamCondition::ClassString,
+    Some(PhpType::Conditional {
+        param: format!("${param_name}"),
+        negated: false,
+        condition: Box::new(PhpType::ClassString(None)),
         // `then_type` is unused for ClassString — the resolver extracts
         // the class name directly from the argument (e.g. `User::class`
         // → `"User"`).
-        then_type: Box::new(ConditionalReturnType::Concrete("mixed".into())),
+        then_type: Box::new(PhpType::Named("mixed".into())),
         // `else_type` is used when the argument is not a `::class`
         // literal — `mixed` will produce `None` from resolution, which
         // lets the caller fall back to the plain return type.
-        else_type: Box::new(ConditionalReturnType::Concrete("mixed".into())),
+        else_type: Box::new(PhpType::Named("mixed".into())),
     })
 }
 
@@ -552,7 +554,7 @@ pub fn synthesize_template_conditional_from_info(
     template_params: &[String],
     return_type: Option<&str>,
     has_existing_conditional: bool,
-) -> Option<ConditionalReturnType> {
+) -> Option<PhpType> {
     // Don't override an existing conditional return type.
     if has_existing_conditional {
         return None;
@@ -576,11 +578,12 @@ pub fn synthesize_template_conditional_from_info(
     // template param, and extract the parameter name (without `$`).
     let param_name = find_class_string_param_name_from_info(info, stripped)?;
 
-    Some(ConditionalReturnType::Conditional {
-        param_name,
-        condition: ParamCondition::ClassString,
-        then_type: Box::new(ConditionalReturnType::Concrete("mixed".into())),
-        else_type: Box::new(ConditionalReturnType::Concrete("mixed".into())),
+    Some(PhpType::Conditional {
+        param: format!("${param_name}"),
+        negated: false,
+        condition: Box::new(PhpType::ClassString(None)),
+        then_type: Box::new(PhpType::Named("mixed".into())),
+        else_type: Box::new(PhpType::Named("mixed".into())),
     })
 }
 

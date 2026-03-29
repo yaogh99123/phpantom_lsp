@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::common::{create_test_backend, create_test_backend_with_stubs};
 use phpantom_lsp::Backend;
+use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -2543,7 +2544,7 @@ async fn test_use_function_shows_only_functions() {
                     name: "array_merge".to_string(),
                     name_offset: 0,
                     parameters: vec![],
-                    return_type: Some("array".to_string()),
+                    return_type: Some(PhpType::parse("array")),
                     native_return_type: None,
                     description: None,
                     return_description: None,

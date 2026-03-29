@@ -28,7 +28,8 @@ use crate::completion::phpdoc::generation::enrichment_plain;
 use crate::completion::source::throws_analysis::{self, ThrowsContext};
 use crate::docblock::is_compatible_refinement;
 use crate::docblock::parser::{DocblockInfo, parse_docblock_for_tags};
-use crate::docblock::type_strings::{split_type_token, split_union_depth0};
+use crate::docblock::type_strings::split_type_token;
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, FunctionLoader};
 use crate::util::offset_to_position;
 
@@ -657,17 +658,19 @@ fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
     // If the native type contains `|`, compare the union components.
 
     // Simple heuristic: normalize both and compare base types.
-    let doc_bases = split_union_depth0(&doc_clean);
-    let native_bases = split_union_depth0(&native_clean);
+    let doc_parsed = PhpType::parse(&doc_clean);
+    let native_parsed = PhpType::parse(&native_clean);
+    let doc_bases = doc_parsed.union_members();
+    let native_bases = native_parsed.union_members();
 
     // If every native base appears in doc bases (or a refinement thereof),
     // it's not a contradiction.
     // For simplicity, if the base types are completely different, it's a
     // contradiction.
     if doc_bases.len() == 1 && native_bases.len() == 1 {
-        let db = &doc_bases[0];
-        let nb = &native_bases[0];
-        if db != nb && !is_compatible_refinement(db, nb) {
+        let db = doc_bases[0].to_string();
+        let nb = native_bases[0].to_string();
+        if db != nb && !is_compatible_refinement(&db, &nb) {
             return true;
         }
     }
@@ -684,10 +687,9 @@ fn normalize_type_for_comparison(t: &str) -> String {
         |rest| format!("{}|null", rest.to_lowercase()),
     );
     // Sort union components.
-    let mut parts: Vec<&str> = split_union_depth0(&t)
-        .into_iter()
-        .map(|s| s.trim())
-        .collect();
+    let parsed = PhpType::parse(&t);
+    let members = parsed.union_members();
+    let mut parts: Vec<String> = members.iter().map(|m| m.to_string()).collect();
     parts.sort();
     parts.join("|")
 }

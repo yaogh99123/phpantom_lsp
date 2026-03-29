@@ -5,6 +5,7 @@
 //! placing tests in the `tests/` directory.
 
 use phpantom_lsp::completion::named_args::*;
+use phpantom_lsp::php_type::PhpType;
 use phpantom_lsp::types::ParameterInfo;
 use tower_lsp::lsp_types::*;
 
@@ -405,8 +406,7 @@ fn make_param(name: &str, type_hint: Option<&str>, required: bool) -> ParameterI
     ParameterInfo {
         name: format!("${}", name),
         is_required: required,
-        type_hint: type_hint.map(|s| s.to_string()),
-        type_hint_parsed: None,
+        type_hint: type_hint.map(PhpType::parse),
         native_type_hint: type_hint.map(|s| s.to_string()),
         description: None,
         default_value: None,
@@ -536,8 +536,7 @@ fn completions_variadic_detail() {
     let params = vec![ParameterInfo {
         name: "$items".to_string(),
         is_required: true,
-        type_hint: Some("string".to_string()),
-        type_hint_parsed: None,
+        type_hint: Some(PhpType::parse("string")),
         native_type_hint: Some("string".to_string()),
         description: None,
         default_value: None,

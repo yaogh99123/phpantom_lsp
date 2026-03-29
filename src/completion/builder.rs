@@ -147,10 +147,11 @@ fn attribute_placeholder(param: &ParameterInfo) -> (String, String, String) {
     }
 
     // Infer from the type hint.
+    let type_hint_string = param.type_hint_str();
     let hint = param
         .native_type_hint
         .as_deref()
-        .or(param.type_hint.as_deref())
+        .or(type_hint_string.as_deref())
         .unwrap_or("");
 
     // Strip leading `?` for nullable types (e.g. `?string` → `string`).
@@ -338,8 +339,8 @@ pub(crate) fn build_completion_items(
 
         // Show the return type inline after the label so the user sees
         // e.g. `getUser($id): User` in the completion popup.
-        let return_type = method
-            .return_type
+        let return_type_string = method.return_type_str();
+        let return_type = return_type_string
             .as_deref()
             .or(method.native_return_type.as_deref())
             .map(shorten_type_string);
@@ -400,7 +401,7 @@ pub(crate) fn build_completion_items(
             property.name.clone()
         };
 
-        let detail = property.type_hint.as_deref().map(shorten_type_string);
+        let detail = property.type_hint_str().as_deref().map(shorten_type_string);
 
         let data = serde_json::to_value(CompletionItemData {
             class_name: target_class.name.clone(),
@@ -443,7 +444,7 @@ pub(crate) fn build_completion_items(
             let detail = constant
                 .value
                 .clone()
-                .or_else(|| constant.type_hint.as_deref().map(shorten_type_string));
+                .or_else(|| constant.type_hint_str().as_deref().map(shorten_type_string));
 
             let data = serde_json::to_value(CompletionItemData {
                 class_name: target_class.name.clone(),

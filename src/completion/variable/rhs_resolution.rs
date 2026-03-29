@@ -134,15 +134,18 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
                 let mut combined: Vec<ResolvedType> = lhs_results
                     .into_iter()
                     .filter_map(|mut rt| {
-                        if rt.type_string == "null" {
-                            return None;
+                        let parsed = crate::php_type::PhpType::parse(&rt.type_string);
+                        match parsed.non_null_type() {
+                            // Nullable/union contained null — use the stripped version.
+                            Some(non_null) => {
+                                rt.type_string = non_null.to_string();
+                                Some(rt)
+                            }
+                            // Not nullable/union: bare `null` is filtered out,
+                            // everything else (including `mixed`) passes through.
+                            None if rt.type_string == "null" => None,
+                            None => Some(rt),
                         }
-                        if docblock::type_strings::raw_type_is_nullable(&rt.type_string) {
-                            rt.type_string =
-                                docblock::type_strings::strip_null_from_union(&rt.type_string)
-                                    .unwrap_or(rt.type_string);
-                        }
-                        Some(rt)
                     })
                     .collect();
                 // Always union with the RHS.  Even when the LHS type
@@ -382,14 +385,15 @@ fn resolve_rhs_pipe(pipe: &Pipe<'_>, ctx: &VarResolutionCtx<'_>) -> Vec<Resolved
                 && let Some(func_info) = fl(&func_name)
                 && let Some(ref ret) = func_info.return_type
             {
+                let ret_str = ret.to_string();
                 return ResolvedType::from_classes_with_hint(
                     crate::completion::type_resolution::type_hint_to_classes(
-                        ret,
+                        &ret_str,
                         &ctx.current_class.name,
                         ctx.all_classes,
                         ctx.class_loader,
                     ),
-                    ret,
+                    &ret_str,
                 );
             }
             vec![]
@@ -514,11 +518,11 @@ fn build_constructor_template_subs(
         // Determine the binding mode by inspecting the parameter's
         // docblock type hint.  The type hint tells us how the template
         // param is embedded in the `@param` annotation.
-        let param_hint = ctor
+        let param_hint_str = ctor
             .parameters
             .get(param_idx)
-            .and_then(|p| p.type_hint.as_deref());
-        let binding_mode = classify_template_binding(tpl_name, param_hint);
+            .and_then(|p| p.type_hint_str());
+        let binding_mode = classify_template_binding(tpl_name, param_hint_str.as_deref());
 
         match binding_mode {
             TemplateBindingMode::Direct => {
@@ -884,11 +888,11 @@ pub(crate) fn build_function_template_subs(
         // Determine the binding mode by inspecting the parameter's
         // docblock type hint.  The type hint tells us how the template
         // param is embedded in the `@param` annotation.
-        let param_hint = func_info
+        let param_hint_str = func_info
             .parameters
             .get(param_idx)
-            .and_then(|p| p.type_hint.as_deref());
-        let binding_mode = classify_template_binding(tpl_name, param_hint);
+            .and_then(|p| p.type_hint_str());
+        let binding_mode = classify_template_binding(tpl_name, param_hint_str.as_deref());
 
         match binding_mode {
             TemplateBindingMode::Direct => {
@@ -996,53 +1000,46 @@ fn resolve_arg_variable_raw_type(
 /// - `array<User>` at position 0 → `"User"`
 fn extract_array_type_at_position(raw_type: &str, position: usize) -> Option<String> {
     let trimmed = raw_type.trim();
+    let parsed = crate::php_type::PhpType::parse(trimmed);
 
-    // `T[]` shorthand → key is int (position 0), value is T (position 1).
-    if let Some(base) = trimmed.strip_suffix("[]") {
-        let element = crate::docblock::types::clean_type(base);
-        return match position {
+    match &parsed {
+        // `T[]` shorthand → key is int (position 0), value is T (position 1).
+        crate::php_type::PhpType::Array(inner) => match position {
             0 => Some("int".to_string()),
-            1 => Some(element),
+            1 => Some(inner.to_string()),
             _ => None,
-        };
-    }
+        },
 
-    // `list<T>` → key is int, value is T.
-    if trimmed.starts_with("list<") || trimmed.starts_with("non-empty-list<") {
-        let (_base, args) = crate::docblock::generics::parse_generic_args(trimmed);
-        return match position {
-            0 => Some("int".to_string()),
-            1 => args
-                .first()
-                .map(|a| crate::docblock::types::clean_type(a.trim())),
-            _ => None,
-        };
-    }
-
-    // `array<K, V>` or `array<V>`.
-    if trimmed.starts_with("array<")
-        || trimmed.starts_with("non-empty-array<")
-        || trimmed.starts_with("iterable<")
-    {
-        let (_base, args) = crate::docblock::generics::parse_generic_args(trimmed);
-        if args.len() == 2 {
-            // `array<K, V>` — position maps directly.
-            return args
-                .get(position)
-                .map(|a| crate::docblock::types::clean_type(a.trim()));
-        } else if args.len() == 1 {
-            // `array<V>` — position 0 = int (key), position 1 = V.
-            return match position {
-                0 => Some("int".to_string()),
-                1 => args
-                    .first()
-                    .map(|a| crate::docblock::types::clean_type(a.trim())),
+        // Generic types: `array<K, V>`, `array<V>`, `list<T>`, `iterable<K, V>`, etc.
+        crate::php_type::PhpType::Generic(name, args) => {
+            let lower = name.to_ascii_lowercase();
+            match lower.as_str() {
+                "list" | "non-empty-list" => match position {
+                    0 => Some("int".to_string()),
+                    1 => args.first().map(|a| a.to_string()),
+                    _ => None,
+                },
+                "array" | "non-empty-array" | "iterable" | "associative-array" => {
+                    if args.len() == 2 {
+                        // `array<K, V>` — position maps directly.
+                        args.get(position).map(|a| a.to_string())
+                    } else if args.len() == 1 {
+                        // `array<V>` — position 0 = int (key), position 1 = V.
+                        match position {
+                            0 => Some("int".to_string()),
+                            1 => args.first().map(|a| a.to_string()),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
-            };
+            }
         }
-    }
 
-    None
+        _ => None,
+    }
 }
 
 /// Whether a wrapper type name should be treated as array-like for
@@ -1196,7 +1193,8 @@ fn resolve_rhs_function_call<'b>(
                 if !subs.is_empty()
                     && let Some(ref ret) = func_info.return_type
                 {
-                    let substituted = crate::inheritance::apply_substitution(ret, &subs);
+                    let ret_str = ret.to_string();
+                    let substituted = crate::inheritance::apply_substitution(&ret_str, &subs);
                     let resolved = crate::completion::type_resolution::type_hint_to_classes(
                         &substituted,
                         current_class_name,
@@ -1211,14 +1209,15 @@ fn resolve_rhs_function_call<'b>(
         }
 
         if let Some(ref ret) = func_info.return_type {
+            let ret_str = ret.to_string();
             let resolved = crate::completion::type_resolution::type_hint_to_classes(
-                ret,
+                &ret_str,
                 current_class_name,
                 all_classes,
                 class_loader,
             );
             if !resolved.is_empty() {
-                return ResolvedType::from_classes_with_hint(resolved, ret);
+                return ResolvedType::from_classes_with_hint(resolved, &ret_str);
             }
             // The function has a return type string but
             // `type_hint_to_classes` found no matching class (e.g.
@@ -1230,8 +1229,8 @@ fn resolve_rhs_function_call<'b>(
             // — returning these would mask more precise type info from
             // the raw-type pipeline's specialised handlers (e.g.
             // `resolve_array_func_raw_type` for `array_filter`).
-            if is_informative_type_string(ret) {
-                return vec![ResolvedType::from_type_string(ret.clone())];
+            if is_informative_type_string(&ret_str) {
+                return vec![ResolvedType::from_type_string(ret_str)];
             }
         }
     }
@@ -1341,22 +1340,23 @@ fn resolve_rhs_function_call<'b>(
             if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                 && let Some(ref ret) = invoke.return_type
             {
+                let ret_str = ret.to_string();
                 let resolved = crate::completion::type_resolution::type_hint_to_classes(
-                    ret,
+                    &ret_str,
                     current_class_name,
                     all_classes,
                     class_loader,
                 );
                 if !resolved.is_empty() {
-                    return ResolvedType::from_classes_with_hint(resolved, ret);
+                    return ResolvedType::from_classes_with_hint(resolved, &ret_str);
                 }
                 // When type_hint_to_classes can't resolve the return
                 // type (e.g. `Item[]` where the `[]` suffix prevents
                 // class lookup), emit a type-string-only entry so that
                 // callers like foreach resolution can still extract the
                 // element type via `extract_generic_value_type`.
-                if !ret.is_empty() {
-                    return vec![ResolvedType::from_type_string(ret.clone())];
+                if !ret_str.is_empty() {
+                    return vec![ResolvedType::from_type_string(ret_str)];
                 }
             }
         }
@@ -1394,17 +1394,18 @@ fn resolve_rhs_function_call<'b>(
                 && let Some(invoke) = owner_cls.methods.iter().find(|m| m.name == "__invoke")
                 && let Some(ref ret) = invoke.return_type
             {
+                let ret_str = ret.to_string();
                 let resolved = crate::completion::type_resolution::type_hint_to_classes(
-                    ret,
+                    &ret_str,
                     current_class_name,
                     all_classes,
                     class_loader,
                 );
                 if !resolved.is_empty() {
-                    return ResolvedType::from_classes_with_hint(resolved, ret);
+                    return ResolvedType::from_classes_with_hint(resolved, &ret_str);
                 }
-                if !ret.is_empty() {
-                    return vec![ResolvedType::from_type_string(ret.clone())];
+                if !ret_str.is_empty() {
+                    return vec![ResolvedType::from_type_string(ret_str)];
                 }
             }
         }
@@ -1488,12 +1489,15 @@ fn resolve_rhs_method_call_inner<'b>(
             .find(|m| m.name == method_name)
             .and_then(|m| m.return_type.as_ref())
             .map(|ret| {
+                let ret_str = ret.to_string();
                 let substituted = if !template_subs.is_empty() {
-                    crate::inheritance::apply_substitution(ret, &template_subs).into_owned()
+                    crate::inheritance::apply_substitution(&ret_str, &template_subs).into_owned()
                 } else {
-                    ret.clone()
+                    ret_str
                 };
-                docblock::type_strings::replace_self_in_type(&substituted, &owner.name)
+                crate::php_type::PhpType::parse(&substituted)
+                    .replace_self(&owner.name)
+                    .to_string()
             });
 
         let results = Backend::resolve_method_return_types_with_args(
@@ -1608,12 +1612,16 @@ fn resolve_rhs_static_call(
                 .find(|m| m.name == method_name)
                 .and_then(|m| m.return_type.as_ref())
                 .map(|ret| {
+                    let ret_str = ret.to_string();
                     let substituted = if !template_subs.is_empty() {
-                        crate::inheritance::apply_substitution(ret, &template_subs).into_owned()
+                        crate::inheritance::apply_substitution(&ret_str, &template_subs)
+                            .into_owned()
                     } else {
-                        ret.clone()
+                        ret_str
                     };
-                    docblock::type_strings::replace_self_in_type(&substituted, &owner.name)
+                    crate::php_type::PhpType::parse(&substituted)
+                        .replace_self(&owner.name)
+                        .to_string()
                 });
 
             let results = Backend::resolve_method_return_types_with_args(
@@ -1733,14 +1741,15 @@ fn resolve_rhs_property_access(
                         }
                         // Typed class constant — resolve via type_hint.
                         if let Some(ref th) = c.type_hint {
+                            let th_str = th.to_string();
                             let resolved = crate::completion::type_resolution::type_hint_to_classes(
-                                th,
+                                &th_str,
                                 current_class_name,
                                 all_classes,
                                 class_loader,
                             );
                             if !resolved.is_empty() {
-                                return ResolvedType::from_classes_with_hint(resolved, th);
+                                return ResolvedType::from_classes_with_hint(resolved, &th_str);
                             }
                         }
                         // No type_hint — infer from the initializer value.

@@ -18,7 +18,8 @@
 ///   conditional tree taking the "null default" branch at each level.
 use mago_syntax::ast::*;
 
-use crate::types::{ConditionalReturnType, ParamCondition, ParameterInfo};
+use crate::php_type::PhpType;
+use crate::types::ParameterInfo;
 
 /// Callback that resolves a variable name (e.g. `"$requestType"`) to the
 /// class names it holds as class-string values (e.g. from match expression
@@ -72,26 +73,21 @@ pub(crate) fn split_call_subject(subject: &str) -> Option<(&str, &str)> {
 /// and we therefore don't have an AST `ArgumentList` — only the raw text
 /// between the parentheses.
 pub(crate) fn resolve_conditional_with_text_args(
-    conditional: &ConditionalReturnType,
+    conditional: &PhpType,
     params: &[ParameterInfo],
     text_args: &str,
     var_resolver: VarClassStringResolver<'_>,
 ) -> Option<String> {
     match conditional {
-        ConditionalReturnType::Concrete(ty) => {
-            if ty == "mixed" || ty == "void" || ty == "never" {
-                return None;
-            }
-            Some(ty.clone())
-        }
-        ConditionalReturnType::Conditional {
-            param_name,
+        PhpType::Conditional {
+            param,
+            negated: _,
             condition,
             then_type,
             else_type,
         } => {
             // Find which parameter index corresponds to $param_name
-            let target = format!("${}", param_name);
+            let target = param.as_str();
             let param_idx = params.iter().position(|p| p.name == target).unwrap_or(0);
             let is_variadic = params
                 .get(param_idx)
@@ -103,8 +99,8 @@ pub(crate) fn resolve_conditional_with_text_args(
             let args = split_text_args(text_args);
             let arg_text = args.get(param_idx).map(|s| s.trim());
 
-            match condition {
-                ParamCondition::ClassString => {
+            match condition.as_ref() {
+                PhpType::ClassString(_) => {
                     // For variadic class-string parameters, collect class
                     // names from ALL arguments at and after param_idx and
                     // form a union type (e.g. `A|B` from `A::class, B::class`).
@@ -158,7 +154,7 @@ pub(crate) fn resolve_conditional_with_text_args(
                     // Argument isn't a ::class literal or resolvable variable → try else branch
                     resolve_conditional_with_text_args(else_type, params, text_args, var_resolver)
                 }
-                ParamCondition::IsNull => {
+                PhpType::Named(s) if s == "null" => {
                     if arg_text.is_none() || arg_text == Some("") || arg_text == Some("null") {
                         // No argument provided or explicitly null → null branch
                         resolve_conditional_with_text_args(
@@ -177,10 +173,43 @@ pub(crate) fn resolve_conditional_with_text_args(
                         )
                     }
                 }
-                ParamCondition::IsType(type_str) => {
+                PhpType::Literal(s) => {
+                    // Strip quotes from the literal to get the expected value.
+                    let expected = s
+                        .strip_prefix('\'')
+                        .and_then(|s| s.strip_suffix('\''))
+                        .or_else(|| s.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+                        .unwrap_or(s);
+
+                    // Check if the argument is a quoted string literal
+                    // matching the expected value (e.g. `'foo'` or `"foo"`).
+                    if let Some(arg) = arg_text {
+                        let trimmed = arg.trim();
+                        let arg_value = if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+                            || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+                        {
+                            Some(&trimmed[1..trimmed.len() - 1])
+                        } else {
+                            None
+                        };
+                        if arg_value == Some(expected) {
+                            return resolve_conditional_with_text_args(
+                                then_type,
+                                params,
+                                text_args,
+                                var_resolver,
+                            );
+                        }
+                    }
+                    // Argument doesn't match the literal → else branch.
+                    resolve_conditional_with_text_args(else_type, params, text_args, var_resolver)
+                }
+                _ => {
+                    // IsType equivalent: can't statically determine most
+                    // conditions, but we handle `array` specially.
                     // Check if the condition mentions `array` and the
                     // argument is an array literal (starts with `[`).
-                    if condition_includes_array(type_str)
+                    if condition_includes_array(condition.as_ref())
                         && let Some(arg) = arg_text
                         && arg.trim_start().starts_with('[')
                     {
@@ -194,72 +223,31 @@ pub(crate) fn resolve_conditional_with_text_args(
                     // Can't statically determine; fall through to else.
                     resolve_conditional_with_text_args(else_type, params, text_args, var_resolver)
                 }
-                ParamCondition::LiteralString(expected) => {
-                    // Check if the argument is a quoted string literal
-                    // matching the expected value (e.g. `'foo'` or `"foo"`).
-                    if let Some(arg) = arg_text {
-                        let trimmed = arg.trim();
-                        let arg_value = if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-                            || (trimmed.starts_with('"') && trimmed.ends_with('"'))
-                        {
-                            Some(&trimmed[1..trimmed.len() - 1])
-                        } else {
-                            None
-                        };
-                        if arg_value == Some(expected.as_str()) {
-                            return resolve_conditional_with_text_args(
-                                then_type,
-                                params,
-                                text_args,
-                                var_resolver,
-                            );
-                        }
-                    }
-                    // Argument doesn't match the literal → else branch.
-                    resolve_conditional_with_text_args(else_type, params, text_args, var_resolver)
-                }
             }
+        }
+        // Non-Conditional PhpType variant (replaces Concrete)
+        other => {
+            let ty = other.to_string();
+            if ty == "mixed" || ty == "void" || ty == "never" {
+                return None;
+            }
+            Some(ty)
         }
     }
 }
 
-/// Check whether a condition type string includes `array` as one of its
+/// Check whether a condition type includes `array` as one of its
 /// union members.
 ///
-/// The type string may be a bare `array`, a generic `array<mixed>`, or a
-/// union wrapped in parentheses like
-/// `(Illuminate\Contracts\Support\Arrayable<...>|array<mixed>)`.
-///
-/// We split on `|` at depth 0 (respecting `<…>` nesting) and check
-/// whether any part starts with `array`.  This avoids false positives
-/// from `Arrayable` which also contains "array" as a substring.
-fn condition_includes_array(type_str: &str) -> bool {
-    let s = type_str.trim();
-    // Strip wrapping parens if present (union groups).
-    let inner = s
-        .strip_prefix('(')
-        .and_then(|s| s.strip_suffix(')'))
-        .unwrap_or(s);
-
-    let mut depth = 0i32;
-    let mut start = 0;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            '|' if depth == 0 => {
-                let part = inner[start..i].trim();
-                if part == "array" || part.starts_with("array<") {
-                    return true;
-                }
-                start = i + 1;
-            }
-            _ => {}
-        }
+/// Checks whether the PhpType is `Named("array")`, `Generic("array", _)`,
+/// or a `Union` containing any such member.
+fn condition_includes_array(condition: &PhpType) -> bool {
+    match condition {
+        PhpType::Named(s) if s == "array" => true,
+        PhpType::Generic(s, _) if s == "array" => true,
+        PhpType::Union(members) => members.iter().any(condition_includes_array),
+        _ => false,
     }
-    // Check the last (or only) segment.
-    let part = inner[start..].trim();
-    part == "array" || part.starts_with("array<")
 }
 
 /// Split a textual argument list by commas, respecting nested parentheses
@@ -322,27 +310,25 @@ fn extract_class_name_from_text(text: &str) -> Option<String> {
 ///   - `is SomeType`: not statically resolvable from AST; falls through
 ///     to the else branch.
 pub(crate) fn resolve_conditional_with_args<'b>(
-    conditional: &ConditionalReturnType,
+    conditional: &PhpType,
     params: &[ParameterInfo],
     argument_list: &ArgumentList<'b>,
     var_resolver: VarClassStringResolver<'_>,
 ) -> Option<String> {
     match conditional {
-        ConditionalReturnType::Concrete(ty) => {
-            if ty == "mixed" || ty == "void" || ty == "never" {
-                return None;
-            }
-            Some(ty.clone())
-        }
-        ConditionalReturnType::Conditional {
-            param_name,
+        PhpType::Conditional {
+            param,
+            negated: _,
             condition,
             then_type,
             else_type,
         } => {
-            // Find which parameter index corresponds to $param_name
-            let target = format!("${}", param_name);
+            // Find which parameter index corresponds to param
+            let target = param.as_str();
             let param_idx = params.iter().position(|p| p.name == target).unwrap_or(0);
+
+            // Extract param_name without $ prefix for named argument matching
+            let param_name_without_dollar = param.strip_prefix('$').unwrap_or(param);
 
             // Get the actual argument expression (if provided)
             let arg_expr: Option<&Expression<'b>> = argument_list
@@ -353,7 +339,7 @@ pub(crate) fn resolve_conditional_with_args<'b>(
                     Argument::Positional(pos) => Some(pos.value),
                     Argument::Named(named) => {
                         // Also match named arguments by param name
-                        if named.name.value == param_name.as_str() {
+                        if named.name.value == param_name_without_dollar {
                             Some(named.value)
                         } else {
                             None
@@ -361,8 +347,8 @@ pub(crate) fn resolve_conditional_with_args<'b>(
                     }
                 });
 
-            match condition {
-                ParamCondition::ClassString => {
+            match condition.as_ref() {
+                PhpType::ClassString(_) => {
                     // Check if the argument is `X::class`
                     if let Some(class_name) = arg_expr.and_then(extract_class_string_from_expr) {
                         return Some(class_name);
@@ -380,7 +366,7 @@ pub(crate) fn resolve_conditional_with_args<'b>(
                     // Argument isn't a ::class literal or resolvable variable → try else branch
                     resolve_conditional_with_args(else_type, params, argument_list, var_resolver)
                 }
-                ParamCondition::IsNull => {
+                PhpType::Named(s) if s == "null" => {
                     if arg_expr.is_none() {
                         // No argument provided → param uses default (null)
                         resolve_conditional_with_args(
@@ -399,24 +385,14 @@ pub(crate) fn resolve_conditional_with_args<'b>(
                         )
                     }
                 }
-                ParamCondition::IsType(type_str) => {
-                    // Check if the condition mentions `array` and the
-                    // argument is an array literal (`[...]`).
-                    if condition_includes_array(type_str)
-                        && let Some(Expression::Array(_)) = arg_expr
-                    {
-                        return resolve_conditional_with_args(
-                            then_type,
-                            params,
-                            argument_list,
-                            var_resolver,
-                        );
-                    }
-                    // We can't statically determine the type of an
-                    // arbitrary expression; fall through to else.
-                    resolve_conditional_with_args(else_type, params, argument_list, var_resolver)
-                }
-                ParamCondition::LiteralString(expected) => {
+                PhpType::Literal(s) => {
+                    // Strip quotes from the literal to get the expected value.
+                    let expected = s
+                        .strip_prefix('\'')
+                        .and_then(|s| s.strip_suffix('\''))
+                        .or_else(|| s.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+                        .unwrap_or(s);
+
                     // Check if the argument is a string literal matching
                     // the expected value.
                     let matches = match arg_expr {
@@ -453,7 +429,33 @@ pub(crate) fn resolve_conditional_with_args<'b>(
                         )
                     }
                 }
+                _ => {
+                    // IsType equivalent
+                    // Check if the condition mentions `array` and the
+                    // argument is an array literal (`[...]`).
+                    if condition_includes_array(condition.as_ref())
+                        && let Some(Expression::Array(_)) = arg_expr
+                    {
+                        return resolve_conditional_with_args(
+                            then_type,
+                            params,
+                            argument_list,
+                            var_resolver,
+                        );
+                    }
+                    // We can't statically determine the type of an
+                    // arbitrary expression; fall through to else.
+                    resolve_conditional_with_args(else_type, params, argument_list, var_resolver)
+                }
             }
+        }
+        // Non-Conditional PhpType variant (replaces Concrete)
+        other => {
+            let ty = other.to_string();
+            if ty == "mixed" || ty == "void" || ty == "never" {
+                return None;
+            }
+            Some(ty)
         }
     }
 }
@@ -462,30 +464,25 @@ pub(crate) fn resolve_conditional_with_args<'b>(
 /// (text-based path).  Walks the tree taking the "no argument / null
 /// default" branch at each level.
 pub(crate) fn resolve_conditional_without_args(
-    conditional: &ConditionalReturnType,
+    conditional: &PhpType,
     params: &[ParameterInfo],
 ) -> Option<String> {
     match conditional {
-        ConditionalReturnType::Concrete(ty) => {
-            if ty == "mixed" || ty == "void" || ty == "never" {
-                return None;
-            }
-            Some(ty.clone())
-        }
-        ConditionalReturnType::Conditional {
-            param_name,
+        PhpType::Conditional {
+            param,
+            negated: _,
             condition,
             then_type,
             else_type,
         } => {
             // Without arguments we check whether the parameter has a
             // null default — if so, the `is null` branch is taken.
-            let target = format!("${}", param_name);
-            let param = params.iter().find(|p| p.name == target);
-            let has_null_default = param.is_some_and(|p| !p.is_required);
+            let target = param.as_str();
+            let param_info = params.iter().find(|p| p.name == target);
+            let has_null_default = param_info.is_some_and(|p| !p.is_required);
 
-            match condition {
-                ParamCondition::IsNull if has_null_default => {
+            match condition.as_ref() {
+                PhpType::Named(s) if s == "null" && has_null_default => {
                     resolve_conditional_without_args(then_type, params)
                 }
                 _ => {
@@ -493,6 +490,14 @@ pub(crate) fn resolve_conditional_without_args(
                     resolve_conditional_without_args(else_type, params)
                 }
             }
+        }
+        // Non-Conditional PhpType variant (replaces Concrete)
+        other => {
+            let ty = other.to_string();
+            if ty == "mixed" || ty == "void" || ty == "never" {
+                return None;
+            }
+            Some(ty)
         }
     }
 }

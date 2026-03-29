@@ -154,6 +154,142 @@ impl PhpType {
         }
     }
 
+    /// Produce a new `PhpType` with all class names resolved through
+    /// the provided callback.
+    ///
+    /// The callback receives each class-like name (from `Named`,
+    /// `Generic`, `ClassString`, etc.) and returns the resolved
+    /// fully-qualified name. Names that are keywords/scalars are
+    /// never passed to the callback.
+    ///
+    /// This replaces the character-by-character `resolve_type_string`
+    /// function in `ast_update.rs` with a clean tree traversal.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let ty = PhpType::parse("Collection<int, User>|null");
+    /// let resolved = ty.resolve_names(&|name| {
+    ///     use_map.get(name).cloned()
+    ///         .unwrap_or_else(|| format!("App\\{}", name))
+    /// });
+    /// // → Generic("App\\Collection", [Named("int"), Named("App\\User")]) | Named("null")
+    /// ```
+    pub fn resolve_names(&self, resolver: &dyn Fn(&str) -> String) -> PhpType {
+        match self {
+            PhpType::Named(s) => {
+                if is_keyword_type(s) {
+                    PhpType::Named(s.clone())
+                } else {
+                    PhpType::Named(resolver(s))
+                }
+            }
+
+            PhpType::Nullable(inner) => PhpType::Nullable(Box::new(inner.resolve_names(resolver))),
+
+            PhpType::Union(types) => {
+                PhpType::Union(types.iter().map(|t| t.resolve_names(resolver)).collect())
+            }
+
+            PhpType::Intersection(types) => {
+                PhpType::Intersection(types.iter().map(|t| t.resolve_names(resolver)).collect())
+            }
+
+            PhpType::Generic(name, args) => {
+                let resolved_name = if is_keyword_type(name) {
+                    name.clone()
+                } else {
+                    resolver(name)
+                };
+                PhpType::Generic(
+                    resolved_name,
+                    args.iter().map(|a| a.resolve_names(resolver)).collect(),
+                )
+            }
+
+            PhpType::Array(inner) => PhpType::Array(Box::new(inner.resolve_names(resolver))),
+
+            PhpType::ArrayShape(entries) => PhpType::ArrayShape(
+                entries
+                    .iter()
+                    .map(|e| ShapeEntry {
+                        key: e.key.clone(),
+                        value_type: e.value_type.resolve_names(resolver),
+                        optional: e.optional,
+                    })
+                    .collect(),
+            ),
+
+            PhpType::ObjectShape(entries) => PhpType::ObjectShape(
+                entries
+                    .iter()
+                    .map(|e| ShapeEntry {
+                        key: e.key.clone(),
+                        value_type: e.value_type.resolve_names(resolver),
+                        optional: e.optional,
+                    })
+                    .collect(),
+            ),
+
+            PhpType::Callable {
+                kind,
+                params,
+                return_type,
+            } => PhpType::Callable {
+                kind: kind.clone(),
+                params: params
+                    .iter()
+                    .map(|p| CallableParam {
+                        type_hint: p.type_hint.resolve_names(resolver),
+                        optional: p.optional,
+                        variadic: p.variadic,
+                    })
+                    .collect(),
+                return_type: return_type
+                    .as_ref()
+                    .map(|rt| Box::new(rt.resolve_names(resolver))),
+            },
+
+            PhpType::Conditional {
+                param,
+                negated,
+                condition,
+                then_type,
+                else_type,
+            } => PhpType::Conditional {
+                param: param.clone(),
+                negated: *negated,
+                condition: Box::new(condition.resolve_names(resolver)),
+                then_type: Box::new(then_type.resolve_names(resolver)),
+                else_type: Box::new(else_type.resolve_names(resolver)),
+            },
+
+            PhpType::ClassString(inner) => {
+                PhpType::ClassString(inner.as_ref().map(|i| Box::new(i.resolve_names(resolver))))
+            }
+
+            PhpType::InterfaceString(inner) => PhpType::InterfaceString(
+                inner.as_ref().map(|i| Box::new(i.resolve_names(resolver))),
+            ),
+
+            PhpType::KeyOf(inner) => PhpType::KeyOf(Box::new(inner.resolve_names(resolver))),
+
+            PhpType::ValueOf(inner) => PhpType::ValueOf(Box::new(inner.resolve_names(resolver))),
+
+            PhpType::IntRange(min, max) => PhpType::IntRange(min.clone(), max.clone()),
+
+            PhpType::IndexAccess(target, index) => PhpType::IndexAccess(
+                Box::new(target.resolve_names(resolver)),
+                Box::new(index.resolve_names(resolver)),
+            ),
+
+            PhpType::Literal(s) => PhpType::Literal(s.clone()),
+
+            // Raw types can't be structurally resolved — pass through.
+            PhpType::Raw(s) => PhpType::Raw(s.clone()),
+        }
+    }
+
     /// Return the short (unqualified) name from a potentially
     /// namespace-qualified type name. Returns only the part after the
     /// last `\`. Non-class types pass through unchanged.
@@ -267,11 +403,37 @@ impl PhpType {
         }
     }
 
+    /// Whether this type is a primitive scalar / built-in type that
+    /// cannot have members accessed on it at runtime.
+    ///
+    /// Matches the narrow set of primitive PHP types:
+    /// `int`, `float`, `string`, `bool`, `void`, `never`, `null`,
+    /// `false`, `true`, `array`, `callable`, `iterable`, `resource`
+    /// (and their aliases `integer`, `double`, `boolean`).
+    ///
+    /// Unlike [`is_scalar`], this does **not** include `mixed`, `object`,
+    /// `class-string`, `self`, `static`, `parent`, or other PHPDoc
+    /// pseudo-types on which member access may be valid.
+    pub fn is_primitive_scalar(&self) -> bool {
+        match self {
+            PhpType::Named(s) => is_primitive_scalar_name(s),
+            PhpType::Nullable(inner) => inner.is_primitive_scalar(),
+            PhpType::Generic(name, _) => is_primitive_scalar_name(name),
+            PhpType::Array(_) => true,
+            PhpType::ArrayShape(_) => true,
+            PhpType::Callable { .. } => true,
+            PhpType::IntRange(_, _) => true,
+            PhpType::Literal(_) => true,
+            PhpType::Raw(_) => false,
+            _ => false,
+        }
+    }
+
     /// Whether this type is a scalar/built-in type that does not refer
     /// to a user-defined class.
     ///
-    /// Matches the same set as `docblock::type_strings::is_scalar` plus
-    /// common PHPDoc pseudo-types like `mixed`, `class-string`, etc.
+    /// Matches built-in PHP types and common PHPDoc pseudo-types like
+    /// `mixed`, `class-string`, etc.
     pub fn is_scalar(&self) -> bool {
         match self {
             PhpType::Named(s) => is_scalar_name(s),
@@ -409,6 +571,539 @@ impl PhpType {
         self.extract_value_type(false)
     }
 
+    /// Return the non-null part of a type.
+    ///
+    /// For a union like `User|null`, returns `Some(Named("User"))`.
+    /// For `User|Admin|null`, returns `Some(Union([Named("User"), Named("Admin")]))`.
+    /// For a type that doesn't contain `null`, returns `None`.
+    /// For bare `null`, returns `None`.
+    ///
+    /// This replaces the `clean_type` pattern of extracting the
+    /// non-null part from a union type.
+    pub fn non_null_type(&self) -> Option<PhpType> {
+        match self {
+            PhpType::Nullable(inner) => Some(inner.as_ref().clone()),
+            PhpType::Union(members) => {
+                let non_null: Vec<&PhpType> = members
+                    .iter()
+                    .filter(|m| !matches!(m, PhpType::Named(s) if s == "null"))
+                    .collect();
+                match non_null.len() {
+                    0 => None,
+                    1 => Some(non_null[0].clone()),
+                    _ => Some(PhpType::Union(non_null.into_iter().cloned().collect())),
+                }
+            }
+            // Not a union or nullable — no null to strip.
+            _ => None,
+        }
+    }
+
+    /// Whether all non-null members of this type are scalar.
+    ///
+    /// For unions like `string|null`, returns `true`.
+    /// For `User|null`, returns `false` (User is a class).
+    /// For bare scalars like `int`, returns `true`.
+    /// For bare classes like `User`, returns `false`.
+    ///
+    /// This replaces the `clean_type` + `is_scalar` pattern used in
+    /// diagnostics to check whether a type is purely scalar.
+    pub fn all_members_scalar(&self) -> bool {
+        match self {
+            PhpType::Union(members) => members
+                .iter()
+                .filter(|m| !matches!(m, PhpType::Named(s) if s == "null"))
+                .all(|m| m.is_scalar()),
+            PhpType::Nullable(inner) => inner.is_scalar(),
+            other => other.is_scalar(),
+        }
+    }
+
+    /// Like [`all_members_scalar`] but uses the narrow
+    /// [`is_primitive_scalar`] check.
+    ///
+    /// Returns `true` only when every non-null member of the type is a
+    /// primitive scalar (int, string, bool, float, array, void, never,
+    /// etc.).  Returns `false` for `mixed`, `object`, `class-string`,
+    /// and other pseudo-types on which member access may be valid.
+    ///
+    /// This is the correct replacement for the old
+    /// `clean_type` + `is_scalar` pattern in `resolve_scalar_subject_type`.
+    pub fn all_members_primitive_scalar(&self) -> bool {
+        match self {
+            PhpType::Union(members) => members
+                .iter()
+                .filter(|m| !matches!(m, PhpType::Named(s) if s == "null"))
+                .all(|m| m.is_primitive_scalar()),
+            PhpType::Nullable(inner) => inner.is_primitive_scalar(),
+            other => other.is_primitive_scalar(),
+        }
+    }
+
+    /// Produce a new `PhpType` with `self`, `static`, and `$this`
+    /// replaced by the given class name.
+    ///
+    /// Walks the entire type tree and replaces any `Named("self")`,
+    /// `Named("static")`, or `Named("$this")` with
+    /// `Named(class_name)`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let ty = PhpType::parse("self|null");
+    /// let replaced = ty.replace_self("App\\User");
+    /// assert_eq!(replaced.to_string(), "App\\User | null");
+    /// ```
+    pub fn replace_self(&self, class_name: &str) -> PhpType {
+        match self {
+            PhpType::Named(s) if s == "self" || s == "static" || s == "$this" => {
+                PhpType::Named(class_name.to_string())
+            }
+
+            PhpType::Named(_) | PhpType::Literal(_) | PhpType::Raw(_) => self.clone(),
+
+            PhpType::Nullable(inner) => PhpType::Nullable(Box::new(inner.replace_self(class_name))),
+
+            PhpType::Union(types) => {
+                PhpType::Union(types.iter().map(|t| t.replace_self(class_name)).collect())
+            }
+
+            PhpType::Intersection(types) => {
+                PhpType::Intersection(types.iter().map(|t| t.replace_self(class_name)).collect())
+            }
+
+            PhpType::Generic(name, args) => {
+                let resolved_name = match name.as_str() {
+                    "self" | "static" | "$this" => class_name.to_string(),
+                    _ => name.clone(),
+                };
+                PhpType::Generic(
+                    resolved_name,
+                    args.iter().map(|a| a.replace_self(class_name)).collect(),
+                )
+            }
+
+            PhpType::Array(inner) => PhpType::Array(Box::new(inner.replace_self(class_name))),
+
+            PhpType::ArrayShape(entries) => PhpType::ArrayShape(
+                entries
+                    .iter()
+                    .map(|e| ShapeEntry {
+                        key: e.key.clone(),
+                        value_type: e.value_type.replace_self(class_name),
+                        optional: e.optional,
+                    })
+                    .collect(),
+            ),
+
+            PhpType::ObjectShape(entries) => PhpType::ObjectShape(
+                entries
+                    .iter()
+                    .map(|e| ShapeEntry {
+                        key: e.key.clone(),
+                        value_type: e.value_type.replace_self(class_name),
+                        optional: e.optional,
+                    })
+                    .collect(),
+            ),
+
+            PhpType::Callable {
+                kind,
+                params,
+                return_type,
+            } => PhpType::Callable {
+                kind: kind.clone(),
+                params: params
+                    .iter()
+                    .map(|p| CallableParam {
+                        type_hint: p.type_hint.replace_self(class_name),
+                        optional: p.optional,
+                        variadic: p.variadic,
+                    })
+                    .collect(),
+                return_type: return_type
+                    .as_ref()
+                    .map(|r| Box::new(r.replace_self(class_name))),
+            },
+
+            PhpType::Conditional {
+                param,
+                negated,
+                condition,
+                then_type,
+                else_type,
+            } => PhpType::Conditional {
+                param: param.clone(),
+                negated: *negated,
+                condition: Box::new(condition.replace_self(class_name)),
+                then_type: Box::new(then_type.replace_self(class_name)),
+                else_type: Box::new(else_type.replace_self(class_name)),
+            },
+
+            PhpType::ClassString(inner) => {
+                PhpType::ClassString(inner.as_ref().map(|t| Box::new(t.replace_self(class_name))))
+            }
+
+            PhpType::InterfaceString(inner) => PhpType::InterfaceString(
+                inner.as_ref().map(|t| Box::new(t.replace_self(class_name))),
+            ),
+
+            PhpType::KeyOf(inner) => PhpType::KeyOf(Box::new(inner.replace_self(class_name))),
+
+            PhpType::ValueOf(inner) => PhpType::ValueOf(Box::new(inner.replace_self(class_name))),
+
+            PhpType::IntRange(lo, hi) => PhpType::IntRange(lo.clone(), hi.clone()),
+
+            PhpType::IndexAccess(base, index) => PhpType::IndexAccess(
+                Box::new(base.replace_self(class_name)),
+                Box::new(index.replace_self(class_name)),
+            ),
+        }
+    }
+
+    /// Substitute template parameter names throughout this type tree.
+    ///
+    /// Walks the entire type tree and replaces any `Named(s)` node whose
+    /// name appears as a key in `subs` with `PhpType::parse(replacement)`.
+    /// All other nodes are recursively rebuilt with their children
+    /// substituted.
+    ///
+    /// This is the structured-type equivalent of the string-surgery
+    /// `apply_substitution` function in `inheritance.rs`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use std::collections::HashMap;
+    /// let ty = PhpType::parse("Collection<TKey, TValue>");
+    /// let subs: HashMap<String, String> =
+    ///     [("TKey".into(), "int".into()), ("TValue".into(), "User".into())]
+    ///         .into_iter().collect();
+    /// let result = ty.substitute(&subs);
+    /// assert_eq!(result.to_string(), "Collection<int, User>");
+    /// ```
+    pub fn substitute(&self, subs: &std::collections::HashMap<String, String>) -> PhpType {
+        if subs.is_empty() {
+            return self.clone();
+        }
+        match self {
+            PhpType::Named(s) => {
+                if let Some(replacement) = subs.get(s.as_str()) {
+                    PhpType::parse(replacement)
+                } else {
+                    self.clone()
+                }
+            }
+
+            PhpType::Literal(_) | PhpType::Raw(_) | PhpType::IntRange(_, _) => self.clone(),
+
+            PhpType::Nullable(inner) => {
+                let resolved = inner.substitute(subs);
+                // If the substitution produced a union or nullable,
+                // don't double-wrap.
+                match &resolved {
+                    PhpType::Nullable(_) => resolved,
+                    PhpType::Union(members) => {
+                        // Already nullable if it contains null
+                        if members.iter().any(
+                            |m| matches!(m, PhpType::Named(n) if n.eq_ignore_ascii_case("null")),
+                        ) {
+                            resolved
+                        } else {
+                            PhpType::Nullable(Box::new(resolved))
+                        }
+                    }
+                    _ => PhpType::Nullable(Box::new(resolved)),
+                }
+            }
+
+            PhpType::Union(types) => {
+                let resolved: Vec<PhpType> = types.iter().map(|t| t.substitute(subs)).collect();
+                // Flatten any nested unions produced by substitution.
+                let mut flat = Vec::with_capacity(resolved.len());
+                for t in resolved {
+                    match t {
+                        PhpType::Union(inner) => flat.extend(inner),
+                        other => flat.push(other),
+                    }
+                }
+                if flat.len() == 1 {
+                    flat.into_iter().next().unwrap()
+                } else {
+                    PhpType::Union(flat)
+                }
+            }
+
+            PhpType::Intersection(types) => {
+                let resolved: Vec<PhpType> = types.iter().map(|t| t.substitute(subs)).collect();
+                let mut flat = Vec::with_capacity(resolved.len());
+                for t in resolved {
+                    match t {
+                        PhpType::Intersection(inner) => flat.extend(inner),
+                        other => flat.push(other),
+                    }
+                }
+                if flat.len() == 1 {
+                    flat.into_iter().next().unwrap()
+                } else {
+                    PhpType::Intersection(flat)
+                }
+            }
+
+            PhpType::Generic(name, args) => {
+                // The base name might itself be a template parameter.
+                let resolved_name = if let Some(replacement) = subs.get(name.as_str()) {
+                    // If the replacement is a simple name, use it as the
+                    // generic base. Otherwise, fall back to string form.
+                    let parsed = PhpType::parse(replacement);
+                    match parsed {
+                        PhpType::Named(n) => n,
+                        _ => replacement.clone(),
+                    }
+                } else {
+                    name.clone()
+                };
+                PhpType::Generic(
+                    resolved_name,
+                    args.iter().map(|a| a.substitute(subs)).collect(),
+                )
+            }
+
+            PhpType::Array(inner) => PhpType::Array(Box::new(inner.substitute(subs))),
+
+            PhpType::ArrayShape(entries) => PhpType::ArrayShape(
+                entries
+                    .iter()
+                    .map(|e| ShapeEntry {
+                        key: e.key.clone(),
+                        value_type: e.value_type.substitute(subs),
+                        optional: e.optional,
+                    })
+                    .collect(),
+            ),
+
+            PhpType::ObjectShape(entries) => PhpType::ObjectShape(
+                entries
+                    .iter()
+                    .map(|e| ShapeEntry {
+                        key: e.key.clone(),
+                        value_type: e.value_type.substitute(subs),
+                        optional: e.optional,
+                    })
+                    .collect(),
+            ),
+
+            PhpType::Callable {
+                kind,
+                params,
+                return_type,
+            } => PhpType::Callable {
+                kind: kind.clone(),
+                params: params
+                    .iter()
+                    .map(|p| CallableParam {
+                        type_hint: p.type_hint.substitute(subs),
+                        optional: p.optional,
+                        variadic: p.variadic,
+                    })
+                    .collect(),
+                return_type: return_type.as_ref().map(|r| Box::new(r.substitute(subs))),
+            },
+
+            PhpType::Conditional {
+                param,
+                negated,
+                condition,
+                then_type,
+                else_type,
+            } => PhpType::Conditional {
+                param: param.clone(),
+                negated: *negated,
+                condition: Box::new(condition.substitute(subs)),
+                then_type: Box::new(then_type.substitute(subs)),
+                else_type: Box::new(else_type.substitute(subs)),
+            },
+
+            PhpType::ClassString(inner) => {
+                PhpType::ClassString(inner.as_ref().map(|t| Box::new(t.substitute(subs))))
+            }
+
+            PhpType::InterfaceString(inner) => {
+                PhpType::InterfaceString(inner.as_ref().map(|t| Box::new(t.substitute(subs))))
+            }
+
+            PhpType::KeyOf(inner) => PhpType::KeyOf(Box::new(inner.substitute(subs))),
+
+            PhpType::ValueOf(inner) => PhpType::ValueOf(Box::new(inner.substitute(subs))),
+
+            PhpType::IndexAccess(base, index) => PhpType::IndexAccess(
+                Box::new(base.substitute(subs)),
+                Box::new(index.substitute(subs)),
+            ),
+        }
+    }
+
+    /// Extract all class-like names from this type, recursively.
+    ///
+    /// Walks the entire type tree and collects the base names of all
+    /// class-like types (including those nested inside generics,
+    /// callables, shapes, etc.). Scalar types, keywords, `null`,
+    /// and literals are skipped.
+    ///
+    /// For `Collection<int, User>|null`, returns `["Collection", "User"]`.
+    /// For `?User`, returns `["User"]`.
+    /// For `int|string`, returns `[]`.
+    pub fn extract_class_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        self.collect_class_names(&mut names);
+        names
+    }
+
+    /// Extract only top-level class names from this type.
+    ///
+    /// Unlike [`extract_class_names`], this does **not** recurse into
+    /// generic type arguments, callable parameters, shape entries, or
+    /// other nested positions. It returns only the outermost class
+    /// names that are directly part of the type expression.
+    ///
+    /// For `Collection<int, User>|null`, returns `["Collection"]`.
+    /// For `User|Admin`, returns `["User", "Admin"]`.
+    /// For `?User`, returns `["User"]`.
+    /// For `User[]`, returns `["User"]`.
+    /// For `int|string`, returns `[]`.
+    ///
+    /// This is the correct replacement for the string-based
+    /// `extract_class_names_from_type_string` in
+    /// `definition/type_definition.rs`, where go-to-type-definition
+    /// should jump to the container class, not its type arguments.
+    pub fn top_level_class_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        self.collect_top_level_class_names(&mut names);
+        names
+    }
+
+    /// Recursive helper for [`extract_class_names`].
+    fn collect_class_names(&self, names: &mut Vec<String>) {
+        match self {
+            PhpType::Named(s) => {
+                if !is_keyword_type(s) && !s.is_empty() && !names.contains(s) {
+                    names.push(s.clone());
+                }
+            }
+
+            PhpType::Nullable(inner) => inner.collect_class_names(names),
+
+            PhpType::Union(types) | PhpType::Intersection(types) => {
+                for t in types {
+                    t.collect_class_names(names);
+                }
+            }
+
+            PhpType::Generic(name, args) => {
+                if !is_keyword_type(name) && !name.is_empty() && !names.contains(name) {
+                    names.push(name.clone());
+                }
+                for a in args {
+                    a.collect_class_names(names);
+                }
+            }
+
+            PhpType::Array(inner) => inner.collect_class_names(names),
+
+            PhpType::ArrayShape(entries) | PhpType::ObjectShape(entries) => {
+                for e in entries {
+                    e.value_type.collect_class_names(names);
+                }
+            }
+
+            PhpType::Callable {
+                params,
+                return_type,
+                ..
+            } => {
+                for p in params {
+                    p.type_hint.collect_class_names(names);
+                }
+                if let Some(ret) = return_type {
+                    ret.collect_class_names(names);
+                }
+            }
+
+            PhpType::ClassString(inner) => {
+                if let Some(t) = inner {
+                    t.collect_class_names(names);
+                }
+            }
+
+            PhpType::InterfaceString(inner) => {
+                if let Some(t) = inner {
+                    t.collect_class_names(names);
+                }
+            }
+
+            PhpType::KeyOf(inner) | PhpType::ValueOf(inner) => {
+                inner.collect_class_names(names);
+            }
+
+            PhpType::IndexAccess(base, index) => {
+                base.collect_class_names(names);
+                index.collect_class_names(names);
+            }
+
+            PhpType::Conditional {
+                condition,
+                then_type,
+                else_type,
+                ..
+            } => {
+                condition.collect_class_names(names);
+                then_type.collect_class_names(names);
+                else_type.collect_class_names(names);
+            }
+
+            PhpType::Literal(_) | PhpType::Raw(_) | PhpType::IntRange(_, _) => {}
+        }
+    }
+
+    /// Recursive helper for [`top_level_class_names`].
+    ///
+    /// Only descends through union, intersection, and nullable
+    /// wrappers. Does not recurse into generic args, callable
+    /// params/return, shapes, class-string inner types, etc.
+    fn collect_top_level_class_names(&self, names: &mut Vec<String>) {
+        match self {
+            PhpType::Named(s) => {
+                if !is_keyword_type(s) && !s.is_empty() && !names.contains(s) {
+                    names.push(s.clone());
+                }
+            }
+
+            PhpType::Nullable(inner) => inner.collect_top_level_class_names(names),
+
+            PhpType::Union(types) | PhpType::Intersection(types) => {
+                for t in types {
+                    t.collect_top_level_class_names(names);
+                }
+            }
+
+            // For generics, only the base name is top-level.
+            // `Collection<int, User>` → `["Collection"]`.
+            PhpType::Generic(name, _) => {
+                if !is_keyword_type(name) && !name.is_empty() && !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+
+            // `User[]` — the inner type is the top-level class.
+            PhpType::Array(inner) => inner.collect_top_level_class_names(names),
+
+            // Shapes, callables, class-string, key-of, value-of,
+            // conditionals, literals, int-ranges — no navigable
+            // top-level class name.
+            _ => {}
+        }
+    }
+
     /// Check whether two `PhpType` values refer to the same type,
     /// ignoring namespace qualification differences.
     ///
@@ -425,6 +1120,15 @@ impl PhpType {
                 Self::short_name_of(a) == Self::short_name_of(b)
             }
             (PhpType::Nullable(a), PhpType::Nullable(b)) => a.equivalent(b),
+            // `?X` is equivalent to `X|null` — normalise Nullable to a
+            // two-element Union before comparing so that both notations
+            // are treated as identical.
+            (PhpType::Nullable(inner), PhpType::Union(members))
+            | (PhpType::Union(members), PhpType::Nullable(inner)) => {
+                let as_union =
+                    PhpType::Union(vec![inner.as_ref().clone(), PhpType::Named("null".into())]);
+                as_union.equivalent(&PhpType::Union(members.clone()))
+            }
             (PhpType::Union(a), PhpType::Union(b))
             | (PhpType::Intersection(a), PhpType::Intersection(b)) => {
                 if a.len() != b.len() {
@@ -449,7 +1153,81 @@ impl PhpType {
     }
 }
 
+/// Whether a type name is a keyword that should never be resolved as a
+/// class name.
+///
+/// This is a superset of [`is_scalar_name`] that also includes PHPDoc-only
+/// pseudo-types and special names that `resolve_type_string` skips.
+fn is_keyword_type(name: &str) -> bool {
+    if is_scalar_name(name) {
+        return true;
+    }
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        // ── Integer refinements ─────────────────────────────────
+        "non-zero-int"
+            | "int-mask"
+            | "int-mask-of"
+            // ── String refinements ──────────────────────────────────
+            | "literal-string"
+            | "callable-string"
+            | "uppercase-string"
+            | "non-empty-uppercase-string"
+            | "non-empty-literal-string"
+            // ── Class-string variants ───────────────────────────────
+            | "trait-string"
+            | "enum-string"
+            // ── Array / list refinements ────────────────────────────
+            | "associative-array"
+            // ── Scalar / mixed variants ─────────────────────────────
+            | "empty-scalar"
+            | "non-empty-scalar"
+            | "non-empty-mixed"
+            | "number"
+            | "empty"
+            // ── Object / callable variants ──────────────────────────
+            | "callable-object"
+            | "callable-array"
+            // ── Resource variants ───────────────────────────────────
+            | "closed-resource"
+            | "open-resource"
+            // ── Never aliases ───────────────────────────────────────
+            | "no-return"
+            | "noreturn"
+            | "never-return"
+            | "never-returns"
+            // ── Key / value projection ──────────────────────────────
+            | "key-of"
+            | "value-of"
+            // ── Special keywords ────────────────────────────────────
+            | "class"
+    )
+}
+
 /// Whether a type name refers to a scalar / built-in type.
+/// Narrow primitive scalar check matching built-in PHP types.
+fn is_primitive_scalar_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "int"
+            | "integer"
+            | "float"
+            | "double"
+            | "string"
+            | "bool"
+            | "boolean"
+            | "void"
+            | "never"
+            | "null"
+            | "false"
+            | "true"
+            | "array"
+            | "callable"
+            | "iterable"
+            | "resource"
+    )
+}
+
 fn is_scalar_name(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -774,7 +1552,7 @@ impl fmt::Display for PhpType {
             PhpType::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {
                     if i > 0 {
-                        write!(f, " | ")?;
+                        write!(f, "|")?;
                     }
                     write!(f, "{ty}")?;
                 }
@@ -784,7 +1562,7 @@ impl fmt::Display for PhpType {
             PhpType::Intersection(types) => {
                 for (i, ty) in types.iter().enumerate() {
                     if i > 0 {
-                        write!(f, " & ")?;
+                        write!(f, "&")?;
                     }
                     write!(f, "{ty}")?;
                 }
@@ -1006,15 +1784,19 @@ mod tests {
 
     #[test]
     fn round_trip_union() {
-        assert_round_trip("int|string");
-        assert_round_trip("int|string|null");
-        assert_round_trip("Foo|Bar|null");
-        assert_round_trip("int|null");
+        // mago Display uses spaced unions (`int | string`); we prefer
+        // the PHP convention (`int|string`).
+        assert_round_trip_expected("int|string", "int|string");
+        assert_round_trip_expected("int|string|null", "int|string|null");
+        assert_round_trip_expected("Foo|Bar|null", "Foo|Bar|null");
+        assert_round_trip_expected("int|null", "int|null");
     }
 
     #[test]
     fn round_trip_intersection() {
-        assert_round_trip("Countable&Traversable");
+        // mago Display uses spaced intersections (`Countable & Traversable`);
+        // we prefer the PHP convention (`Countable&Traversable`).
+        assert_round_trip_expected("Countable&Traversable", "Countable&Traversable");
     }
 
     #[test]
@@ -1415,6 +2197,80 @@ mod tests {
         assert_eq!(*key, PhpType::Named("Request".to_owned()));
     }
 
+    // ─── non_null_type tests ────────────────────────────────────────────────
+
+    #[test]
+    fn non_null_type_nullable() {
+        let ty = PhpType::parse("?User");
+        let non_null = ty.non_null_type().unwrap();
+        assert_eq!(non_null, PhpType::Named("User".to_owned()));
+    }
+
+    #[test]
+    fn non_null_type_union_with_null() {
+        let ty = PhpType::parse("User|null");
+        let non_null = ty.non_null_type().unwrap();
+        assert_eq!(non_null, PhpType::Named("User".to_owned()));
+    }
+
+    #[test]
+    fn non_null_type_union_multiple_non_null() {
+        let ty = PhpType::parse("User|Admin|null");
+        let non_null = ty.non_null_type().unwrap();
+        match non_null {
+            PhpType::Union(members) => {
+                assert_eq!(members.len(), 2);
+                assert_eq!(members[0], PhpType::Named("User".to_owned()));
+                assert_eq!(members[1], PhpType::Named("Admin".to_owned()));
+            }
+            other => panic!("Expected Union, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_null_type_no_null() {
+        let ty = PhpType::Named("User".to_owned());
+        assert!(ty.non_null_type().is_none());
+    }
+
+    #[test]
+    fn non_null_type_bare_null() {
+        let ty = PhpType::Named("null".to_owned());
+        assert!(ty.non_null_type().is_none());
+    }
+
+    // ─── all_members_scalar tests ───────────────────────────────────────────
+
+    #[test]
+    fn all_members_scalar_int() {
+        assert!(PhpType::Named("int".to_owned()).all_members_scalar());
+    }
+
+    #[test]
+    fn all_members_scalar_string_or_null() {
+        assert!(PhpType::parse("string|null").all_members_scalar());
+    }
+
+    #[test]
+    fn all_members_scalar_nullable_int() {
+        assert!(PhpType::parse("?int").all_members_scalar());
+    }
+
+    #[test]
+    fn all_members_scalar_class() {
+        assert!(!PhpType::Named("User".to_owned()).all_members_scalar());
+    }
+
+    #[test]
+    fn all_members_scalar_class_or_null() {
+        assert!(!PhpType::parse("User|null").all_members_scalar());
+    }
+
+    #[test]
+    fn all_members_scalar_mixed_union() {
+        assert!(!PhpType::parse("int|User").all_members_scalar());
+    }
+
     // ─── intersection_members tests ─────────────────────────────────────────
 
     #[test]
@@ -1430,6 +2286,97 @@ mod tests {
         let members = ty.intersection_members();
         assert_eq!(members.len(), 1);
         assert_eq!(*members[0], PhpType::Named("User".to_owned()));
+    }
+
+    // ─── resolve_names tests ────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_names_simple_class() {
+        let ty = PhpType::Named("User".to_owned());
+        let resolved = ty.resolve_names(&|name| format!("App\\Models\\{}", name));
+        assert_eq!(resolved.to_string(), "App\\Models\\User");
+    }
+
+    #[test]
+    fn resolve_names_scalar_untouched() {
+        let ty = PhpType::Named("int".to_owned());
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "int");
+    }
+
+    #[test]
+    fn resolve_names_union() {
+        let ty = PhpType::parse("User|null");
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "App\\User|null");
+    }
+
+    #[test]
+    fn resolve_names_generic() {
+        let ty = PhpType::parse("Collection<int, User>");
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "App\\Collection<int, App\\User>");
+    }
+
+    #[test]
+    fn resolve_names_nullable() {
+        let ty = PhpType::parse("?User");
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "?App\\User");
+    }
+
+    #[test]
+    fn resolve_names_array_shape() {
+        let ty = PhpType::parse("array{name: string, user: User}");
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "array{name: string, user: App\\User}");
+    }
+
+    #[test]
+    fn resolve_names_callable() {
+        let ty = PhpType::parse("callable(User): Response");
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "callable(App\\User): App\\Response");
+    }
+
+    #[test]
+    fn resolve_names_keyword_types_untouched() {
+        // All of these should pass through without calling the resolver.
+        for kw in &[
+            "self",
+            "static",
+            "parent",
+            "$this",
+            "mixed",
+            "void",
+            "never",
+            "class-string",
+            "key-of",
+            "value-of",
+            "callable",
+            "iterable",
+            "positive-int",
+            "non-empty-string",
+            "array-key",
+        ] {
+            let ty = PhpType::Named(kw.to_string());
+            let resolved = ty.resolve_names(&|name| panic!("should not resolve {}", name));
+            assert_eq!(resolved.to_string(), *kw);
+        }
+    }
+
+    #[test]
+    fn resolve_names_class_string_inner() {
+        let ty = PhpType::parse("class-string<User>");
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "class-string<App\\User>");
+    }
+
+    #[test]
+    fn resolve_names_intersection() {
+        let ty = PhpType::parse("Countable&Traversable");
+        let resolved = ty.resolve_names(&|name| format!("App\\{}", name));
+        assert_eq!(resolved.to_string(), "App\\Countable&App\\Traversable");
     }
 
     // ─── shorten tests ──────────────────────────────────────────────────────
@@ -1455,7 +2402,7 @@ mod tests {
     #[test]
     fn shorten_union() {
         let ty = PhpType::parse("App\\Models\\User|null");
-        assert_eq!(ty.shorten().to_string(), "User | null");
+        assert_eq!(ty.shorten().to_string(), "User|null");
     }
 
     #[test]
@@ -1485,7 +2432,7 @@ mod tests {
     #[test]
     fn shorten_intersection() {
         let ty = PhpType::parse("App\\Contracts\\Countable&App\\Contracts\\Traversable");
-        assert_eq!(ty.shorten().to_string(), "Countable & Traversable");
+        assert_eq!(ty.shorten().to_string(), "Countable&Traversable");
     }
 
     #[test]
@@ -1624,9 +2571,429 @@ mod tests {
     }
 
     #[test]
+    fn equivalent_nullable_vs_union_with_null() {
+        // `?string` is semantically identical to `string|null`
+        let a = PhpType::parse("?string");
+        let b = PhpType::parse("string|null");
+        assert!(a.equivalent(&b));
+        assert!(b.equivalent(&a));
+    }
+
+    #[test]
+    fn equivalent_nullable_vs_null_first_union() {
+        // `?callable` is semantically identical to `null|callable`
+        let a = PhpType::parse("?callable");
+        let b = PhpType::parse("null|callable");
+        assert!(a.equivalent(&b));
+    }
+
+    #[test]
+    fn equivalent_nullable_vs_three_member_union_not_equal() {
+        // `?Foo` is NOT equivalent to `Foo|Bar|null` (different arity)
+        let a = PhpType::parse("?Foo");
+        let b = PhpType::parse("Foo|Bar|null");
+        assert!(!a.equivalent(&b));
+    }
+
+    #[test]
     fn equivalent_different_types() {
         let a = PhpType::Named("User".to_owned());
         let b = PhpType::Named("Post".to_owned());
         assert!(!a.equivalent(&b));
+    }
+
+    // ── replace_self ────────────────────────────────────────────
+
+    #[test]
+    fn replace_self_named() {
+        let ty = PhpType::parse("self");
+        assert_eq!(ty.replace_self("App\\User").to_string(), "App\\User");
+    }
+
+    #[test]
+    fn replace_self_static() {
+        let ty = PhpType::parse("static");
+        assert_eq!(ty.replace_self("App\\User").to_string(), "App\\User");
+    }
+
+    #[test]
+    fn replace_self_this() {
+        let ty = PhpType::parse("$this");
+        assert_eq!(ty.replace_self("App\\User").to_string(), "App\\User");
+    }
+
+    #[test]
+    fn replace_self_in_union() {
+        let ty = PhpType::parse("self|null");
+        let replaced = ty.replace_self("App\\User");
+        assert_eq!(replaced.to_string(), "App\\User|null");
+    }
+
+    #[test]
+    fn replace_self_in_generic() {
+        let ty = PhpType::parse("Collection<int, static>");
+        let replaced = ty.replace_self("App\\User");
+        assert_eq!(replaced.to_string(), "Collection<int, App\\User>");
+    }
+
+    #[test]
+    fn replace_self_no_keywords_unchanged() {
+        let ty = PhpType::parse("string");
+        assert_eq!(ty.replace_self("App\\User").to_string(), "string");
+    }
+
+    #[test]
+    fn replace_self_nullable() {
+        let ty = PhpType::parse("?self");
+        assert_eq!(ty.replace_self("App\\User").to_string(), "?App\\User");
+    }
+
+    #[test]
+    fn replace_self_class_name_unchanged() {
+        let ty = PhpType::parse("Collection<int, User>");
+        assert_eq!(
+            ty.replace_self("App\\Post").to_string(),
+            "Collection<int, User>"
+        );
+    }
+
+    #[test]
+    fn replace_self_intersection() {
+        let ty = PhpType::parse("self&JsonSerializable");
+        let replaced = ty.replace_self("App\\User");
+        assert_eq!(replaced.to_string(), "App\\User&JsonSerializable");
+    }
+
+    // ── extract_class_names (recursive) ─────────────────────────
+
+    #[test]
+    fn extract_class_names_simple() {
+        let names = PhpType::parse("User").extract_class_names();
+        assert_eq!(names, vec!["User"]);
+    }
+
+    #[test]
+    fn extract_class_names_scalar() {
+        let names = PhpType::parse("int").extract_class_names();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn extract_class_names_union() {
+        let names = PhpType::parse("User|Admin|null").extract_class_names();
+        assert_eq!(names, vec!["User", "Admin"]);
+    }
+
+    #[test]
+    fn extract_class_names_generic_recurses() {
+        let names = PhpType::parse("Collection<int, User>").extract_class_names();
+        assert_eq!(names, vec!["Collection", "User"]);
+    }
+
+    #[test]
+    fn extract_class_names_callable() {
+        let names = PhpType::parse("Closure(User): Admin").extract_class_names();
+        assert_eq!(names, vec!["User", "Admin"]);
+    }
+
+    #[test]
+    fn extract_class_names_nullable() {
+        let names = PhpType::parse("?User").extract_class_names();
+        assert_eq!(names, vec!["User"]);
+    }
+
+    #[test]
+    fn extract_class_names_no_duplicates() {
+        let names = PhpType::parse("User|User").extract_class_names();
+        assert_eq!(names, vec!["User"]);
+    }
+
+    // ── top_level_class_names ───────────────────────────────────
+
+    #[test]
+    fn top_level_class_names_simple() {
+        let names = PhpType::parse("User").top_level_class_names();
+        assert_eq!(names, vec!["User"]);
+    }
+
+    #[test]
+    fn top_level_class_names_generic_base_only() {
+        let names = PhpType::parse("Collection<int, User>").top_level_class_names();
+        assert_eq!(names, vec!["Collection"]);
+    }
+
+    #[test]
+    fn top_level_class_names_union() {
+        let names = PhpType::parse("User|Admin").top_level_class_names();
+        assert_eq!(names, vec!["User", "Admin"]);
+    }
+
+    #[test]
+    fn top_level_class_names_nullable() {
+        let names = PhpType::parse("?User").top_level_class_names();
+        assert_eq!(names, vec!["User"]);
+    }
+
+    #[test]
+    fn top_level_class_names_union_with_null() {
+        let names = PhpType::parse("User|null").top_level_class_names();
+        assert_eq!(names, vec!["User"]);
+    }
+
+    #[test]
+    fn top_level_class_names_scalar_excluded() {
+        let names = PhpType::parse("string|int").top_level_class_names();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn top_level_class_names_mixed_union() {
+        let names = PhpType::parse("string|User|int|Admin|null").top_level_class_names();
+        assert_eq!(names, vec!["User", "Admin"]);
+    }
+
+    #[test]
+    fn top_level_class_names_array_of_class() {
+        let names = PhpType::parse("User[]").top_level_class_names();
+        assert_eq!(names, vec!["User"]);
+    }
+
+    #[test]
+    fn top_level_class_names_array_shape_excluded() {
+        let names = PhpType::parse("array{name: string}").top_level_class_names();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn top_level_class_names_intersection() {
+        let names = PhpType::parse("User&JsonSerializable").top_level_class_names();
+        assert_eq!(names, vec!["User", "JsonSerializable"]);
+    }
+
+    #[test]
+    fn top_level_class_names_fqn() {
+        let names = PhpType::parse("\\App\\Models\\User").top_level_class_names();
+        assert_eq!(names, vec!["\\App\\Models\\User"]);
+    }
+
+    // ── substitute ──────────────────────────────────────────────────
+
+    fn make_subs(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn substitute_named_match() {
+        let ty = PhpType::parse("TValue");
+        let result = ty.substitute(&make_subs(&[("TValue", "User")]));
+        assert_eq!(result.to_string(), "User");
+    }
+
+    #[test]
+    fn substitute_named_no_match() {
+        let ty = PhpType::parse("SomeClass");
+        let result = ty.substitute(&make_subs(&[("TValue", "User")]));
+        assert_eq!(result.to_string(), "SomeClass");
+    }
+
+    #[test]
+    fn substitute_generic() {
+        let ty = PhpType::parse("Collection<TKey, TValue>");
+        let subs = make_subs(&[("TKey", "int"), ("TValue", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "Collection<int, User>");
+    }
+
+    #[test]
+    fn substitute_generic_base_is_template() {
+        let ty = PhpType::parse("TContainer<int>");
+        let subs = make_subs(&[("TContainer", "Collection")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "Collection<int>");
+    }
+
+    #[test]
+    fn substitute_union() {
+        let ty = PhpType::parse("TValue|null");
+        let subs = make_subs(&[("TValue", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "User|null");
+    }
+
+    #[test]
+    fn substitute_intersection() {
+        let ty = PhpType::parse("TFirst&TSecond");
+        let subs = make_subs(&[("TFirst", "Countable"), ("TSecond", "Iterator")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "Countable&Iterator");
+    }
+
+    #[test]
+    fn substitute_nullable() {
+        let ty = PhpType::parse("?TValue");
+        let subs = make_subs(&[("TValue", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "?User");
+    }
+
+    #[test]
+    fn substitute_array_shorthand() {
+        let ty = PhpType::parse("TValue[]");
+        let subs = make_subs(&[("TValue", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "User[]");
+    }
+
+    #[test]
+    fn substitute_array_shape() {
+        let ty = PhpType::parse("array{name: TValue, age: int}");
+        let subs = make_subs(&[("TValue", "string")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "array{name: string, age: int}");
+    }
+
+    #[test]
+    fn substitute_object_shape() {
+        let ty = PhpType::parse("object{item: TValue}");
+        let subs = make_subs(&[("TValue", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "object{item: User}");
+    }
+
+    #[test]
+    fn substitute_callable() {
+        let ty = PhpType::parse("Closure(TParam): TReturn");
+        let subs = make_subs(&[("TParam", "int"), ("TReturn", "string")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "Closure(int): string");
+    }
+
+    #[test]
+    fn substitute_callable_no_return() {
+        let ty = PhpType::parse("callable(TParam)");
+        let subs = make_subs(&[("TParam", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "callable(User)");
+    }
+
+    #[test]
+    fn substitute_class_string() {
+        let ty = PhpType::parse("class-string<T>");
+        let subs = make_subs(&[("T", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "class-string<User>");
+    }
+
+    #[test]
+    fn substitute_key_of() {
+        let ty = PhpType::parse("key-of<T>");
+        let subs = make_subs(&[("T", "array<string, int>")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "key-of<array<string, int>>");
+    }
+
+    #[test]
+    fn substitute_value_of() {
+        let ty = PhpType::parse("value-of<T>");
+        let subs = make_subs(&[("T", "array<string, User>")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "value-of<array<string, User>>");
+    }
+
+    #[test]
+    fn substitute_nested_generic() {
+        let ty = PhpType::parse("Collection<int, Promise<TValue>>");
+        let subs = make_subs(&[("TValue", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "Collection<int, Promise<User>>");
+    }
+
+    #[test]
+    fn substitute_empty_subs_unchanged() {
+        let ty = PhpType::parse("Collection<int, User>");
+        let subs = std::collections::HashMap::new();
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "Collection<int, User>");
+    }
+
+    #[test]
+    fn substitute_scalar_unchanged() {
+        let ty = PhpType::parse("int");
+        let subs = make_subs(&[("TValue", "User")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "int");
+    }
+
+    #[test]
+    fn substitute_literal_unchanged() {
+        let ty = PhpType::parse("42");
+        let subs = make_subs(&[("42", "User")]);
+        // Literal nodes are not substituted (only Named nodes are).
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "42");
+    }
+
+    #[test]
+    fn substitute_conditional() {
+        let ty = PhpType::parse("($x is T ? TTrue : TFalse)");
+        let subs = make_subs(&[("T", "string"), ("TTrue", "User"), ("TFalse", "null")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "$x is string ? User : null");
+    }
+
+    #[test]
+    fn substitute_complex_real_world() {
+        // Simulates resolving `Generator<TKey, TValue, TSend, TReturn>`
+        // with concrete types.
+        let ty = PhpType::parse("Generator<TKey, TValue, TSend, TReturn>");
+        let subs = make_subs(&[
+            ("TKey", "int"),
+            ("TValue", "User"),
+            ("TSend", "mixed"),
+            ("TReturn", "void"),
+        ]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "Generator<int, User, mixed, void>");
+    }
+
+    #[test]
+    fn substitute_replacement_is_complex_type() {
+        // When a template param is replaced with a union type.
+        let ty = PhpType::parse("array<int, TValue>");
+        let subs = make_subs(&[("TValue", "string|int")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "array<int, string|int>");
+    }
+
+    #[test]
+    fn substitute_union_flattens_nested() {
+        // When a union member is replaced with another union.
+        let ty = PhpType::parse("TValue|null");
+        let subs = make_subs(&[("TValue", "string|int")]);
+        let result = ty.substitute(&subs);
+        // Should flatten to a single union, not `(string|int)|null`.
+        match &result {
+            PhpType::Union(members) => assert_eq!(members.len(), 3),
+            other => panic!("expected Union, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn substitute_index_access() {
+        let ty = PhpType::parse("T[K]");
+        let subs = make_subs(&[("T", "array<string, int>"), ("K", "string")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "array<string, int>[string]");
+    }
+
+    #[test]
+    fn substitute_interface_string() {
+        let ty = PhpType::parse("interface-string<T>");
+        let subs = make_subs(&[("T", "Countable")]);
+        let result = ty.substitute(&subs);
+        assert_eq!(result.to_string(), "interface-string<Countable>");
     }
 }

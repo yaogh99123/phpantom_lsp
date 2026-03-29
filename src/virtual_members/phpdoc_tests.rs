@@ -89,7 +89,7 @@ fn provides_static_method_tags() {
     assert_eq!(result.methods.len(), 1);
     assert!(result.methods[0].is_static);
     assert_eq!(result.methods[0].name, "count");
-    assert_eq!(result.methods[0].return_type.as_deref(), Some("int"));
+    assert_eq!(result.methods[0].return_type_str().as_deref(), Some("int"));
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn method_tag_preserves_return_type() {
     let result = provider.provide(&class, &no_loader, None);
     assert_eq!(result.methods.len(), 1);
     assert_eq!(
-        result.methods[0].return_type.as_deref(),
+        result.methods[0].return_type_str().as_deref(),
         Some("\\Mockery\\MockInterface")
     );
 }
@@ -175,13 +175,13 @@ fn provides_property_read_and_write_tags() {
         .iter()
         .find(|p| p.name == "session")
         .unwrap();
-    assert_eq!(session.type_hint.as_deref(), Some("Session"));
+    assert_eq!(session.type_hint_str().as_deref(), Some("Session"));
     let title = result
         .properties
         .iter()
         .find(|p| p.name == "title")
         .unwrap();
-    assert_eq!(title.type_hint.as_deref(), Some("string"));
+    assert_eq!(title.type_hint_str().as_deref(), Some("string"));
 }
 
 #[test]
@@ -205,7 +205,7 @@ fn nullable_type_cleaned() {
     let result = provider.provide(&class, &no_loader, None);
     assert_eq!(result.properties.len(), 1);
     assert_eq!(
-        result.properties[0].type_hint.as_deref(),
+        result.properties[0].type_hint_str().as_deref(),
         Some("int"),
         "null|int should resolve to int via clean_type"
     );
@@ -410,7 +410,7 @@ fn mixin_leaves_this_return_type_as_is_for_consumer_resolution() {
     for (name, expected_ret) in &expected {
         let method = result.methods.iter().find(|m| m.name == *name).unwrap();
         assert_eq!(
-            method.return_type.as_deref(),
+            method.return_type_str().as_deref(),
             Some(*expected_ret),
             "method '{}' should keep its original return type for consumer resolution",
             name
@@ -519,7 +519,7 @@ fn first_mixin_wins_on_name_collision() {
     let result = provider.provide(&class, &class_loader, None);
     assert_eq!(result.methods.len(), 1);
     assert_eq!(
-        result.methods[0].return_type.as_deref(),
+        result.methods[0].return_type_str().as_deref(),
         Some("string"),
         "first mixin should win"
     );
@@ -550,7 +550,7 @@ fn method_tag_beats_mixin_method() {
     assert_eq!(result.methods.len(), 2);
     let do_stuff = result.methods.iter().find(|m| m.name == "doStuff").unwrap();
     assert_eq!(
-        do_stuff.return_type.as_deref(),
+        do_stuff.return_type_str().as_deref(),
         Some("string"),
         "@method tag should take precedence over mixin method"
     );
@@ -583,7 +583,7 @@ fn property_tag_beats_mixin_property() {
     assert_eq!(result.properties.len(), 2);
     let name = result.properties.iter().find(|p| p.name == "name").unwrap();
     assert_eq!(
-        name.type_hint.as_deref(),
+        name.type_hint_str().as_deref(),
         Some("string"),
         "@property tag should take precedence over mixin property"
     );

@@ -169,11 +169,14 @@ fn build_factory_model_methods_synthesizes_create_and_make() {
 
     let create = methods.iter().find(|m| m.name == "create").unwrap();
     assert!(!create.is_static);
-    assert_eq!(create.return_type.as_deref(), Some("App\\Models\\User"));
+    assert_eq!(
+        create.return_type_str().as_deref(),
+        Some("App\\Models\\User")
+    );
 
     let make = methods.iter().find(|m| m.name == "make").unwrap();
     assert!(!make.is_static);
-    assert_eq!(make.return_type.as_deref(), Some("App\\Models\\User"));
+    assert_eq!(make.return_type_str().as_deref(), Some("App\\Models\\User"));
 }
 
 #[test]
@@ -255,11 +258,14 @@ fn factory_provider_synthesizes_create_and_make() {
     assert_eq!(result.methods.len(), 2);
 
     let create = result.methods.iter().find(|m| m.name == "create").unwrap();
-    assert_eq!(create.return_type.as_deref(), Some("App\\Models\\User"));
+    assert_eq!(
+        create.return_type_str().as_deref(),
+        Some("App\\Models\\User")
+    );
     assert!(!create.is_static);
 
     let make = result.methods.iter().find(|m| m.name == "make").unwrap();
-    assert_eq!(make.return_type.as_deref(), Some("App\\Models\\User"));
+    assert_eq!(make.return_type_str().as_deref(), Some("App\\Models\\User"));
     assert!(!make.is_static);
 }
 
@@ -293,7 +299,7 @@ fn factory_provider_subdirectory_convention() {
 
     let create = result.methods.iter().find(|m| m.name == "create").unwrap();
     assert_eq!(
-        create.return_type.as_deref(),
+        create.return_type_str().as_deref(),
         Some("App\\Models\\Admin\\SuperUser")
     );
 }

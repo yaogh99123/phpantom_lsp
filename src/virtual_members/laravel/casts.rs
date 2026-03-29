@@ -140,9 +140,11 @@ pub(super) fn cast_type_to_php_type(
         //     the default native hint on the interface method.
         if let Some(get_method) = cast_class.methods.iter().find(|m| m.name == "get")
             && let Some(ref rt) = get_method.return_type
-            && rt != "mixed"
         {
-            return rt.clone();
+            let rt_str = rt.to_string();
+            if rt_str != "mixed" {
+                return rt_str;
+            }
         }
     }
 

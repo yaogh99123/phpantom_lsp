@@ -221,8 +221,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                 properties.push(PropertyInfo {
                     name,
                     name_offset: 0,
-                    type_hint: type_hint.clone(),
-                    type_hint_parsed: type_hint.as_deref().map(PhpType::parse),
+                    type_hint: type_hint.as_deref().map(PhpType::parse),
                     native_type_hint: None,
                     description: None,
                     is_static: false,
@@ -268,8 +267,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                         properties.push(PropertyInfo {
                             name,
                             name_offset: 0,
-                            type_hint: type_hint.clone(),
-                            type_hint_parsed: type_hint.as_deref().map(PhpType::parse),
+                            type_hint: type_hint.as_deref().map(PhpType::parse),
                             native_type_hint: None,
                             description: None,
                             is_static: false,
@@ -326,8 +324,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                             properties.push(PropertyInfo {
                                 name,
                                 name_offset: 0,
-                                type_hint: type_hint.clone(),
-                                type_hint_parsed: type_hint.as_deref().map(PhpType::parse),
+                                type_hint: type_hint.as_deref().map(PhpType::parse),
                                 native_type_hint: None,
                                 description: None,
                                 is_static: false,

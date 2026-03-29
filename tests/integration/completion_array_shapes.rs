@@ -1256,14 +1256,6 @@ fn test_clean_type_preserves_array_shape() {
     assert_eq!(clean_type("\\array{name: string}"), "\\array{name: string}");
 }
 
-#[test]
-fn test_base_class_name_strips_shape() {
-    use phpantom_lsp::docblock::base_class_name;
-
-    assert_eq!(base_class_name("array{name: string, age: int}"), "array");
-    assert_eq!(base_class_name("array{name: string}|null"), "array");
-}
-
 // ─── Array Shape Key Completion in Class Method Context ─────────────────────
 
 #[tokio::test]

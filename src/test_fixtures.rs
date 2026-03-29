@@ -103,7 +103,6 @@ pub fn make_constant(name: &str) -> ConstantInfo {
         name: name.to_string(),
         name_offset: 0,
         type_hint: None,
-        type_hint_parsed: None,
         visibility: Visibility::Public,
         deprecation_message: None,
         deprecated_replacement: None,
@@ -124,8 +123,7 @@ pub fn make_param(name: &str, type_hint: Option<&str>, is_required: bool) -> Par
     ParameterInfo {
         name: name.to_string(),
         is_required,
-        type_hint_parsed: type_hint.map(PhpType::parse),
-        type_hint: type_hint.map(|s| s.to_string()),
+        type_hint: type_hint.map(PhpType::parse),
         native_type_hint: type_hint.map(|s| s.to_string()),
         description: None,
         default_value: None,

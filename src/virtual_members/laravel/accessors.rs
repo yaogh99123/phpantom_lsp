@@ -4,7 +4,7 @@
 //! (Laravel 9+ `Attribute` cast) accessor patterns, mapping method
 //! signatures to virtual property names and types.
 
-use crate::docblock::types::parse_generic_args;
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, MethodInfo};
 
 use super::helpers::camel_to_snake;
@@ -54,11 +54,13 @@ pub(super) fn legacy_accessor_property_name(method_name: &str) -> String {
 /// equivalent.  For example, `fullName(): Attribute` produces
 /// `$full_name`.
 pub(super) fn is_modern_accessor(method: &MethodInfo) -> bool {
-    match method.return_type.as_deref() {
+    match method.return_type.as_ref() {
         Some(rt) => {
-            // Strip generic parameters (e.g. Attribute<string, never>)
-            let base = rt.split('<').next().unwrap_or(rt).trim();
-            base == ATTRIBUTE_CAST_FQN || base == "Attribute"
+            if let Some(base) = rt.base_name() {
+                base == ATTRIBUTE_CAST_FQN || base == "Attribute"
+            } else {
+                false
+            }
         }
         None => false,
     }
@@ -71,13 +73,13 @@ pub(super) fn is_modern_accessor(method: &MethodInfo) -> bool {
 /// (`string` in both examples).  Falls back to `"mixed"` when no
 /// generic parameter is present.
 pub(super) fn extract_modern_accessor_type(method: &MethodInfo) -> String {
-    if let Some(rt) = method.return_type.as_deref() {
-        let (_, args) = parse_generic_args(rt);
-        if let Some(first) = args.first() {
-            let trimmed = first.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
+    if let Some(rt) = method.return_type.as_ref()
+        && let PhpType::Generic(_, args) = rt
+        && let Some(first) = args.first()
+    {
+        let s = first.to_string();
+        if !s.is_empty() {
+            return s;
         }
     }
     "mixed".to_string()

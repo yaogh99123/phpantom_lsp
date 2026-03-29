@@ -9,16 +9,17 @@
 //! [`TagInfo`] infrastructure from [`crate::docblock::parser`], which
 //! delegates to `mago-docblock` for parsing.  Type *string* decomposition
 //! (unions, intersections, generics, callables, conditionals) remains
-//! manual via [`emit_type_spans`] — that will move to `mago-type-syntax`
-//! in M4.
+//! structured via [`emit_type_spans`] which uses `mago-type-syntax` to
+//! parse types and walk the AST with accurate span information.
 
 use mago_database::file::FileId;
 use mago_docblock::document::TagKind;
 use mago_span::{HasSpan, Position, Span};
 use mago_syntax::ast::*;
+use mago_type_syntax::ast as type_ast;
 
 use crate::docblock::parser::parse_docblock;
-use crate::docblock::types::{split_intersection_depth0, split_type_token, split_union_depth0};
+use crate::docblock::types::split_type_token;
 use crate::types::TemplateVariance;
 
 use super::{SymbolKind, SymbolSpan};
@@ -521,475 +522,448 @@ pub(super) fn emit_type_spans(
     token_file_offset: u32,
     spans: &mut Vec<SymbolSpan>,
 ) {
-    // Split on union `|` at depth 0.
-    let union_parts = split_union_depth0(type_token);
-    if union_parts.len() > 1 {
-        let mut offset = 0usize;
-        for part in &union_parts {
-            if let Some(pos) = type_token[offset..].find(part) {
-                let part_offset = offset + pos;
-                emit_type_spans(part.trim(), token_file_offset + part_offset as u32, spans);
-                offset = part_offset + part.len();
-            }
-        }
-        return;
-    }
-
-    // Split on intersection `&` at depth 0.
-    let intersection_parts = split_intersection_depth0(type_token);
-    if intersection_parts.len() > 1 {
-        let mut offset = 0usize;
-        for part in &intersection_parts {
-            if let Some(pos) = type_token[offset..].find(part) {
-                let part_offset = offset + pos;
-                emit_type_spans(part.trim(), token_file_offset + part_offset as u32, spans);
-                offset = part_offset + part.len();
-            }
-        }
-        return;
-    }
-
-    // Handle PHPStan conditional return types:
-    //   ($paramName is Type ? TrueType : FalseType)
-    //   ($paramName is not Type ? TrueType : FalseType)
-    if type_token.starts_with('(') && type_token.ends_with(')') {
-        let inner = &type_token[1..type_token.len() - 1];
-        // Look for ` is ` at depth 0 to identify a conditional type.
-        if let Some(is_pos) = find_keyword_depth0(inner, " is ") {
-            let after_is = &inner[is_pos + 4..];
-            // Skip optional `not ` keyword.
-            let (after_keyword, keyword_extra) = if let Some(rest) = after_is.strip_prefix("not ") {
-                (rest, 4usize)
-            } else {
-                (after_is, 0usize)
-            };
-            // Find ` ? ` at depth 0 to separate condition type from true branch.
-            if let Some(q_pos) = find_keyword_depth0(after_keyword, " ? ") {
-                let condition_type = after_keyword[..q_pos].trim();
-                let after_q = &after_keyword[q_pos + 3..];
-                // Find ` : ` at depth 0 to separate true branch from false branch.
-                if let Some(c_pos) = find_keyword_depth0(after_q, " : ") {
-                    let true_type = after_q[..c_pos].trim();
-                    let false_type = after_q[c_pos + 3..].trim();
-
-                    // Byte offset of the condition type within the original token.
-                    // token_file_offset points at `(`, +1 for `(`, +is_pos for `$param`,
-                    // +4 for ` is `, +keyword_extra for optional `not `.
-                    let cond_offset_in_inner = is_pos + 4 + keyword_extra;
-                    let cond_leading =
-                        after_keyword[..q_pos].len() - after_keyword[..q_pos].trim_start().len();
-                    let cond_file_offset =
-                        token_file_offset + 1 + (cond_offset_in_inner + cond_leading) as u32;
-                    if !condition_type.is_empty() {
-                        emit_type_spans(condition_type, cond_file_offset, spans);
-                    }
-
-                    // True type offset.
-                    let true_region = &after_q[..c_pos];
-                    let true_leading = true_region.len() - true_region.trim_start().len();
-                    let true_offset_in_inner = cond_offset_in_inner + q_pos + 3;
-                    let true_file_offset =
-                        token_file_offset + 1 + (true_offset_in_inner + true_leading) as u32;
-                    if !true_type.is_empty() {
-                        emit_type_spans(true_type, true_file_offset, spans);
-                    }
-
-                    // False type offset.
-                    let false_region = &after_q[c_pos + 3..];
-                    let false_leading = false_region.len() - false_region.trim_start().len();
-                    let false_offset_in_inner = true_offset_in_inner + c_pos + 3;
-                    let false_file_offset =
-                        token_file_offset + 1 + (false_offset_in_inner + false_leading) as u32;
-                    if !false_type.is_empty() {
-                        emit_type_spans(false_type, false_file_offset, spans);
-                    }
-                    return;
-                }
-            }
-        }
-
-        // Not a conditional type — this is a parenthesized group used for
-        // grouping in union/intersection/DNF types, e.g. `(\Closure(static): mixed)`
-        // or `(A&B)`.  Strip the outer parens and recurse into the inner content.
-        emit_type_spans(inner, token_file_offset + 1, spans);
-        return;
-    }
-
-    // Single type — strip nullable prefix.
-    let (type_name, extra_offset) = if let Some(rest) = type_token.strip_prefix('?') {
-        (rest, 1u32)
-    } else {
-        (type_token, 0u32)
-    };
-
-    if type_name.is_empty() {
-        return;
-    }
-
-    // ── Skip string literals ────────────────────────────────────────
-    // PHPStan conditional return types allow literal strings as the
-    // condition value, e.g. `($sig is "foo" ? A : B)`.  These are not
-    // class names and must not produce ClassReference spans.
-    if (type_name.starts_with('"') && type_name.ends_with('"'))
-        || (type_name.starts_with('\'') && type_name.ends_with('\''))
-    {
-        return;
-    }
-
-    // ── Skip numeric literals ───────────────────────────────────────
-    // Literal integers/floats (e.g. `123`, `-1`, `3.14`) can appear in
-    // conditional types and const expressions.  They are not class names.
-    if type_name
-        .strip_prefix('-')
-        .unwrap_or(type_name)
-        .starts_with(|c: char| c.is_ascii_digit())
-    {
+    if type_token.is_empty() {
         return;
     }
 
     // ── Strip PHPStan variance annotations ──────────────────────────
     // Generic type arguments may carry a variance prefix, e.g.
     // `Collection<int, covariant array{customer: Customer}>`.
-    // Strip the prefix and adjust the offset so the underlying type is
-    // processed correctly.
-    let (type_name, extra_offset) = if let Some(rest) = type_name.strip_prefix("covariant ") {
-        (rest, extra_offset + "covariant ".len() as u32)
-    } else if let Some(rest) = type_name.strip_prefix("contravariant ") {
-        (rest, extra_offset + "contravariant ".len() as u32)
-    } else {
-        (type_name, extra_offset)
-    };
+    // `mago-type-syntax` does not recognise these, so we strip them
+    // before parsing and build an offset map so that spans emitted
+    // from the cleaned string can be translated back to the original.
+    let (cleaned, variance_offset_map) = strip_variance_annotations(type_token);
+    let effective_token: &str = &cleaned;
 
-    if type_name.is_empty() {
-        return;
-    }
+    // Parse the type string using mago-type-syntax.  The span we
+    // provide starts at 0 so that all AST node offsets are relative
+    // to `effective_token`.
+    let parse_span = Span::new(
+        FileId::zero(),
+        Position::new(0),
+        Position::new(effective_token.len() as u32),
+    );
 
-    // Handle `$this` as a self-reference (equivalent to `static`).
-    // All other `$variable` tokens are parameter names leaked from
-    // `@param` lines (e.g. `@param array<int> &$data`), not types.
-    if type_name.starts_with('$') && type_name != "$this" {
-        return;
-    }
-    if type_name == "$this" {
-        let start = token_file_offset + extra_offset;
-        let end = start + type_name.len() as u32;
-        spans.push(SymbolSpan {
-            start,
-            end,
-            kind: SymbolKind::SelfStaticParent {
-                keyword: "static".to_string(),
-            },
-        });
-        return;
-    }
-
-    // Handle `static`, `self`, and `parent` keywords in docblock types.
-    // These are in NON_NAVIGABLE so they won't be emitted as ClassReference
-    // spans, but they should still produce SelfStaticParent spans so that
-    // hover works when they appear inside generic args (e.g. `Builder<static>`).
-    if type_name == "static" || type_name == "self" || type_name == "parent" {
-        let start = token_file_offset + extra_offset;
-        let end = start + type_name.len() as u32;
-        spans.push(SymbolSpan {
-            start,
-            end,
-            kind: SymbolKind::SelfStaticParent {
-                keyword: type_name.to_string(),
-            },
-        });
-        return;
-    }
-
-    // Handle callable types: `Closure(ParamType): ReturnType`,
-    // `callable(A, B): C`, `\Closure(): Pencil`, etc.
-    // Detect by finding `(` at depth 0 (angle/brace) that is *not* at
-    // position 0 (position-0 parens are the conditional-type case
-    // handled above).
-    if let Some(paren_pos) = find_callable_paren(type_name) {
-        let base_name = &type_name[..paren_pos];
-
-        // Emit span for the callable base name (e.g. `Closure`, `\Closure`).
-        let base_trimmed = base_name
-            .split('<')
-            .next()
-            .unwrap_or(base_name)
-            .split('{')
-            .next()
-            .unwrap_or(base_name);
-        let name_for_check = base_trimmed
-            .strip_prefix('\\')
-            .unwrap_or(base_trimmed)
-            .trim();
-        if is_navigable_type(name_for_check) {
-            let is_fqn = base_trimmed.starts_with('\\');
-            let name = base_trimmed
+    match mago_type_syntax::parse_str(parse_span, effective_token) {
+        Ok(ty) => {
+            let mut local_spans: Vec<SymbolSpan> = Vec::new();
+            emit_type_spans_from_ast(&ty, 0, &mut local_spans);
+            // Map cleaned-string offsets back to original-string
+            // offsets, then shift by token_file_offset.
+            for mut sp in local_spans {
+                if let Some(ref map) = variance_offset_map {
+                    sp.start = map
+                        .get(sp.start as usize)
+                        .copied()
+                        .unwrap_or(sp.start as usize) as u32;
+                    sp.end = map.get(sp.end as usize).copied().unwrap_or(sp.end as usize) as u32;
+                }
+                sp.start += token_file_offset;
+                sp.end += token_file_offset;
+                spans.push(sp);
+            }
+        }
+        Err(_) => {
+            // Parse failed — fall back to emitting a single span for
+            // the whole token if it looks like a navigable class name.
+            let trimmed = type_token.trim();
+            let base = trimmed
                 .strip_prefix('\\')
-                .unwrap_or(base_trimmed)
-                .trim()
-                .to_string();
-            let start = token_file_offset + extra_offset;
-            let end = start + base_trimmed.len() as u32;
-            spans.push(SymbolSpan {
-                start,
-                end,
-                kind: SymbolKind::ClassReference { name, is_fqn },
-            });
-        }
-
-        // Find matching `)` respecting nesting.
-        let inner_start = paren_pos + 1;
-        let bytes = type_name.as_bytes();
-        let mut depth = 1u32;
-        let mut close_paren = inner_start;
-        while close_paren < bytes.len() && depth > 0 {
-            match bytes[close_paren] {
-                b'(' => depth += 1,
-                b')' => depth -= 1,
-                _ => {}
-            }
-            if depth > 0 {
-                close_paren += 1;
+                .unwrap_or(trimmed)
+                .split('<')
+                .next()
+                .unwrap_or(trimmed);
+            if is_navigable_type(base) {
+                let is_fqn = trimmed.starts_with('\\');
+                let name = trimmed.strip_prefix('\\').unwrap_or(trimmed).to_string();
+                spans.push(SymbolSpan {
+                    start: token_file_offset,
+                    end: token_file_offset + trimmed.len() as u32,
+                    kind: SymbolKind::ClassReference { name, is_fqn },
+                });
             }
         }
+    }
+}
 
-        if depth == 0 {
-            // Recurse into parameter types inside `(...)`.
-            let inner = &type_name[inner_start..close_paren];
-            if !inner.trim().is_empty() {
-                let mut d = 0u32;
-                let mut arg_start_idx = 0usize;
-                let inner_bytes = inner.as_bytes();
-                for i in 0..=inner_bytes.len() {
-                    let at_end = i == inner_bytes.len();
-                    let is_comma = !at_end && inner_bytes[i] == b',' && d == 0;
-                    if (at_end && d == 0) || is_comma {
-                        let arg = &inner[arg_start_idx..i];
-                        let trimmed = arg.trim();
-                        if !trimmed.is_empty() {
-                            let leading_ws = arg.len() - arg.trim_start().len();
-                            let arg_file_offset = token_file_offset
-                                + extra_offset
-                                + (inner_start + arg_start_idx + leading_ws) as u32;
-                            emit_type_spans(trimmed, arg_file_offset, spans);
-                        }
-                        arg_start_idx = i + 1;
-                    } else if !at_end {
-                        match inner_bytes[i] {
-                            b'<' | b'(' | b'{' => d += 1,
-                            b'>' | b')' | b'}' if d > 0 => d -= 1,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            // Recurse into the return type after `): `.
-            let after_close = &type_name[close_paren + 1..];
-            let after_trimmed = after_close.trim_start();
-            if let Some(after_colon) = after_trimmed.strip_prefix(':') {
-                let ret_trimmed = after_colon.trim_start();
-                if !ret_trimmed.is_empty() {
-                    let ret_offset_in_type = type_name.len() - ret_trimmed.len();
-                    let ret_file_offset =
-                        token_file_offset + extra_offset + ret_offset_in_type as u32;
-                    emit_type_spans(ret_trimmed, ret_file_offset, spans);
-                }
-            }
-        }
-
-        return;
+/// Strip `covariant ` and `contravariant ` prefixes from generic type
+/// arguments so that `mago-type-syntax` can parse the type.
+///
+/// Returns `(cleaned_string, offset_map)`.  When no variance annotations
+/// are found, `offset_map` is `None` and `cleaned_string` is the original
+/// input (no allocation).  When annotations *are* stripped,
+/// `offset_map[i]` gives the byte offset in the original string that
+/// corresponds to byte `i` in the cleaned string, plus a one-past-end
+/// sentinel.
+fn strip_variance_annotations(s: &str) -> (String, Option<Vec<usize>>) {
+    // Fast path: no variance annotations at all.
+    if !s.contains("covariant ") && !s.contains("contravariant ") {
+        return (s.to_owned(), None);
     }
 
-    // Strip generic suffix and array suffix to get the base type name.
-    let base = type_name.split('<').next().unwrap_or(type_name);
-    let base = base.split('{').next().unwrap_or(base);
-    let base = base.strip_suffix("[]").unwrap_or(base);
+    let mut cleaned = String::with_capacity(s.len());
+    let mut offset_map: Vec<usize> = Vec::with_capacity(s.len() + 1);
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
 
-    let name_for_check = base.strip_prefix('\\').unwrap_or(base).trim();
+    while i < bytes.len() {
+        // Only strip variance keywords that appear after `<` or `,`
+        // at some nesting depth (i.e. inside generic parameters).
+        // We look for the pattern and check whether the preceding
+        // non-whitespace character is `<` or `,`.
+        let try_strip = |prefix: &str, pos: usize, src: &[u8]| -> bool {
+            if pos + prefix.len() > src.len() {
+                return false;
+            }
+            if &src[pos..pos + prefix.len()] != prefix.as_bytes() {
+                return false;
+            }
+            // Check that the preceding non-whitespace is `<` or `,`.
+            let mut j = pos;
+            while j > 0 {
+                j -= 1;
+                if !src[j].is_ascii_whitespace() {
+                    return src[j] == b'<' || src[j] == b',';
+                }
+            }
+            false
+        };
 
-    if is_navigable_type(name_for_check) {
-        let is_fqn = base.starts_with('\\');
-        let name = base.strip_prefix('\\').unwrap_or(base).trim().to_string();
-        let start = token_file_offset + extra_offset;
-        let end = start + base.len() as u32;
+        if try_strip("covariant ", i, bytes) {
+            i += "covariant ".len();
+        } else if try_strip("contravariant ", i, bytes) {
+            i += "contravariant ".len();
+        } else {
+            offset_map.push(i);
+            cleaned.push(bytes[i] as char);
+            i += 1;
+        }
+    }
 
+    // One-past-end sentinel.
+    offset_map.push(i);
+
+    (cleaned, Some(offset_map))
+}
+
+/// Walk a `mago_type_syntax` AST node and emit [`SymbolSpan`] entries
+/// for every navigable type reference (class names, `self`, `static`,
+/// `parent`, `$this`).
+///
+/// `base_offset` is added to every AST-local offset to produce
+/// file-level byte positions.
+fn emit_type_spans_from_ast(
+    ty: &type_ast::Type<'_>,
+    base_offset: u32,
+    spans: &mut Vec<SymbolSpan>,
+) {
+    match ty {
+        // ── Composite types ─────────────────────────────────────────
+        type_ast::Type::Union(u) => {
+            emit_type_spans_from_ast(&u.left, base_offset, spans);
+            emit_type_spans_from_ast(&u.right, base_offset, spans);
+        }
+        type_ast::Type::Intersection(i) => {
+            emit_type_spans_from_ast(&i.left, base_offset, spans);
+            emit_type_spans_from_ast(&i.right, base_offset, spans);
+        }
+        type_ast::Type::Nullable(n) => {
+            emit_type_spans_from_ast(&n.inner, base_offset, spans);
+        }
+        type_ast::Type::Parenthesized(p) => {
+            emit_type_spans_from_ast(&p.inner, base_offset, spans);
+        }
+
+        // ── Named / Reference types ─────────────────────────────────
+        type_ast::Type::Reference(r) => {
+            let name = r.identifier.value;
+            let id_start = base_offset + r.identifier.span.start.offset;
+            let id_end = base_offset + r.identifier.span.end.offset;
+
+            // Emit a span for the identifier itself.
+            emit_identifier_span(name, id_start, id_end, spans);
+
+            // Recurse into generic parameters if present.
+            if let Some(params) = &r.parameters {
+                emit_generic_params(params, base_offset, spans);
+            }
+        }
+
+        // ── Array-like types with optional generic parameters ───────
+        type_ast::Type::Array(a) => {
+            if let Some(params) = &a.parameters {
+                emit_generic_params(params, base_offset, spans);
+            }
+        }
+        type_ast::Type::NonEmptyArray(a) => {
+            if let Some(params) = &a.parameters {
+                emit_generic_params(params, base_offset, spans);
+            }
+        }
+        type_ast::Type::AssociativeArray(a) => {
+            if let Some(params) = &a.parameters {
+                emit_generic_params(params, base_offset, spans);
+            }
+        }
+        type_ast::Type::List(l) => {
+            if let Some(params) = &l.parameters {
+                emit_generic_params(params, base_offset, spans);
+            }
+        }
+        type_ast::Type::NonEmptyList(l) => {
+            if let Some(params) = &l.parameters {
+                emit_generic_params(params, base_offset, spans);
+            }
+        }
+        type_ast::Type::Iterable(i) => {
+            if let Some(params) = &i.parameters {
+                emit_generic_params(params, base_offset, spans);
+            }
+        }
+
+        // ── Slice: T[] ──────────────────────────────────────────────
+        type_ast::Type::Slice(s) => {
+            emit_type_spans_from_ast(&s.inner, base_offset, spans);
+        }
+
+        // ── Shape types ─────────────────────────────────────────────
+        type_ast::Type::Shape(s) => {
+            for field in &s.fields {
+                emit_type_spans_from_ast(&field.value, base_offset, spans);
+            }
+        }
+
+        // ── Object type (with optional shape) ───────────────────────
+        type_ast::Type::Object(o) => {
+            if let Some(props) = &o.properties {
+                for field in &props.fields {
+                    emit_type_spans_from_ast(&field.value, base_offset, spans);
+                }
+            }
+        }
+
+        // ── Callable types ──────────────────────────────────────────
+        type_ast::Type::Callable(c) => {
+            // Emit span for the callable keyword if it's navigable
+            // (e.g. `Closure` is a class, `callable` is not).
+            let kw_name = c.keyword.value;
+            let kw_start = base_offset + c.keyword.span.start.offset;
+            let kw_end = base_offset + c.keyword.span.end.offset;
+            emit_identifier_span(kw_name, kw_start, kw_end, spans);
+
+            // Recurse into parameter types and return type.
+            if let Some(spec) = &c.specification {
+                for param in &spec.parameters.entries {
+                    if let Some(param_type) = &param.parameter_type {
+                        emit_type_spans_from_ast(param_type, base_offset, spans);
+                    }
+                }
+                if let Some(ret) = &spec.return_type {
+                    emit_type_spans_from_ast(&ret.return_type, base_offset, spans);
+                }
+            }
+        }
+
+        // ── Conditional types ───────────────────────────────────────
+        type_ast::Type::Conditional(c) => {
+            // The subject is a variable ($param) — skip it.
+            // Recurse into the condition, then, and otherwise types.
+            emit_type_spans_from_ast(&c.target, base_offset, spans);
+            emit_type_spans_from_ast(&c.then, base_offset, spans);
+            emit_type_spans_from_ast(&c.otherwise, base_offset, spans);
+        }
+
+        // ── class-string / interface-string / enum-string / trait-string ─
+        type_ast::Type::ClassString(c) => {
+            if let Some(param) = &c.parameter {
+                emit_type_spans_from_ast(&param.entry.inner, base_offset, spans);
+            }
+        }
+        type_ast::Type::InterfaceString(i) => {
+            if let Some(param) = &i.parameter {
+                emit_type_spans_from_ast(&param.entry.inner, base_offset, spans);
+            }
+        }
+        type_ast::Type::EnumString(e) => {
+            if let Some(param) = &e.parameter {
+                emit_type_spans_from_ast(&param.entry.inner, base_offset, spans);
+            }
+        }
+        type_ast::Type::TraitString(t) => {
+            if let Some(param) = &t.parameter {
+                emit_type_spans_from_ast(&param.entry.inner, base_offset, spans);
+            }
+        }
+
+        // ── key-of / value-of ───────────────────────────────────────
+        type_ast::Type::KeyOf(k) => {
+            emit_type_spans_from_ast(&k.parameter.entry.inner, base_offset, spans);
+        }
+        type_ast::Type::ValueOf(v) => {
+            emit_type_spans_from_ast(&v.parameter.entry.inner, base_offset, spans);
+        }
+
+        // ── Index access: T[K] ─────────────────────────────────────
+        type_ast::Type::IndexAccess(i) => {
+            emit_type_spans_from_ast(&i.target, base_offset, spans);
+            emit_type_spans_from_ast(&i.index, base_offset, spans);
+        }
+
+        // ── int-mask / int-mask-of ──────────────────────────────────
+        type_ast::Type::IntMask(m) => {
+            for entry in &m.parameters.entries {
+                emit_type_spans_from_ast(&entry.inner, base_offset, spans);
+            }
+        }
+        type_ast::Type::IntMaskOf(m) => {
+            emit_type_spans_from_ast(&m.parameter.entry.inner, base_offset, spans);
+        }
+
+        // ── properties-of ───────────────────────────────────────────
+        type_ast::Type::PropertiesOf(p) => {
+            emit_type_spans_from_ast(&p.parameter.entry.inner, base_offset, spans);
+        }
+
+        // ── Negated / Posited literals ──────────────────────────────
+        type_ast::Type::Negated(_) | type_ast::Type::Posited(_) => {
+            // Numeric literals — not navigable.
+        }
+
+        // ── Variable ($this) ────────────────────────────────────────
+        type_ast::Type::Variable(v) => {
+            if v.value == "$this" {
+                let start = base_offset + v.span.start.offset;
+                let end = base_offset + v.span.end.offset;
+                spans.push(SymbolSpan {
+                    start,
+                    end,
+                    kind: SymbolKind::SelfStaticParent {
+                        keyword: "static".to_string(),
+                    },
+                });
+            }
+            // Other variables (parameter names leaked from @param) are skipped.
+        }
+
+        // ── Member / Alias references ───────────────────────────────
+        type_ast::Type::MemberReference(_) | type_ast::Type::AliasReference(_) => {
+            // These are rare PHPStan types — not navigable in our system.
+        }
+
+        // ── Keyword types (int, string, bool, void, etc.) ───────────
+        // All keyword types are non-navigable *except* `static`, `self`,
+        // and `parent` which should produce SelfStaticParent spans.
+        type_ast::Type::Mixed(k)
+        | type_ast::Type::NonEmptyMixed(k)
+        | type_ast::Type::Null(k)
+        | type_ast::Type::Void(k)
+        | type_ast::Type::Never(k)
+        | type_ast::Type::Resource(k)
+        | type_ast::Type::ClosedResource(k)
+        | type_ast::Type::OpenResource(k)
+        | type_ast::Type::True(k)
+        | type_ast::Type::False(k)
+        | type_ast::Type::Bool(k)
+        | type_ast::Type::Float(k)
+        | type_ast::Type::Int(k)
+        | type_ast::Type::PositiveInt(k)
+        | type_ast::Type::NegativeInt(k)
+        | type_ast::Type::NonPositiveInt(k)
+        | type_ast::Type::NonNegativeInt(k)
+        | type_ast::Type::String(k)
+        | type_ast::Type::StringableObject(k)
+        | type_ast::Type::ArrayKey(k)
+        | type_ast::Type::Numeric(k)
+        | type_ast::Type::Scalar(k)
+        | type_ast::Type::NumericString(k)
+        | type_ast::Type::NonEmptyString(k)
+        | type_ast::Type::NonEmptyLowercaseString(k)
+        | type_ast::Type::LowercaseString(k)
+        | type_ast::Type::NonEmptyUppercaseString(k)
+        | type_ast::Type::UppercaseString(k)
+        | type_ast::Type::TruthyString(k)
+        | type_ast::Type::NonFalsyString(k)
+        | type_ast::Type::UnspecifiedLiteralInt(k)
+        | type_ast::Type::UnspecifiedLiteralString(k)
+        | type_ast::Type::UnspecifiedLiteralFloat(k)
+        | type_ast::Type::NonEmptyUnspecifiedLiteralString(k) => {
+            // `static`, `self`, and `parent` are parsed as keywords by
+            // mago but should still produce SelfStaticParent spans.
+            let name = k.value;
+            if name == "static" || name == "self" || name == "parent" {
+                let start = base_offset + k.span.start.offset;
+                let end = base_offset + k.span.end.offset;
+                spans.push(SymbolSpan {
+                    start,
+                    end,
+                    kind: SymbolKind::SelfStaticParent {
+                        keyword: name.to_string(),
+                    },
+                });
+            }
+            // All other keywords (int, string, void, etc.) are non-navigable.
+        }
+
+        // ── Literal types ───────────────────────────────────────────
+        type_ast::Type::LiteralInt(_)
+        | type_ast::Type::LiteralFloat(_)
+        | type_ast::Type::LiteralString(_) => {
+            // Literals are not navigable.
+        }
+
+        // ── int range ───────────────────────────────────────────────
+        type_ast::Type::IntRange(_) => {
+            // int<min, max> — not navigable.
+        }
+
+        // ── Catch-all (non_exhaustive) ──────────────────────────────
+        _ => {}
+    }
+}
+
+/// Emit a span for a type identifier (class name, or self/static/parent).
+///
+/// Checks the `NON_NAVIGABLE` list and emits either a `ClassReference` or
+/// `SelfStaticParent` span as appropriate.
+fn emit_identifier_span(name: &str, start: u32, end: u32, spans: &mut Vec<SymbolSpan>) {
+    // Handle `self`, `static`, `parent` — they're class-like but get
+    // a special span kind.
+    if name == "static" || name == "self" || name == "parent" {
         spans.push(SymbolSpan {
             start,
             end,
-            kind: SymbolKind::ClassReference { name, is_fqn },
+            kind: SymbolKind::SelfStaticParent {
+                keyword: name.to_string(),
+            },
+        });
+        return;
+    }
+
+    // Check navigability (strips leading `\` for the check).
+    let check_name = name.strip_prefix('\\').unwrap_or(name).trim();
+    if is_navigable_type(check_name) {
+        let is_fqn = name.starts_with('\\');
+        let display_name = name.strip_prefix('\\').unwrap_or(name).trim().to_string();
+        spans.push(SymbolSpan {
+            start,
+            end,
+            kind: SymbolKind::ClassReference {
+                name: display_name,
+                is_fqn,
+            },
         });
     }
-
-    // Recurse into generic type arguments: `Foo<Bar, Baz>` → process `Bar, Baz`.
-    // Also recurse into array/object shape bodies: `array{key: Cls, other: int}`.
-    let brace_start = type_name.find('{');
-    if let Some(gen_start) = type_name.find('<') {
-        // Find the matching closing `>` (respecting nesting depth).
-        let inner_start = gen_start + 1;
-        let bytes = type_name.as_bytes();
-        let mut depth = 1u32;
-        let mut gen_end = inner_start;
-        while gen_end < bytes.len() && depth > 0 {
-            match bytes[gen_end] {
-                b'<' => depth += 1,
-                b'>' => depth -= 1,
-                _ => {}
-            }
-            if depth > 0 {
-                gen_end += 1;
-            }
-        }
-        if depth == 0 {
-            let inner = &type_name[inner_start..gen_end];
-            // Split on `,` at depth 0 to get individual type arguments.
-            let mut d = 0u32;
-            let mut arg_start_idx = 0usize;
-            let inner_bytes = inner.as_bytes();
-            for i in 0..=inner_bytes.len() {
-                let at_end = i == inner_bytes.len();
-                let is_comma = !at_end && inner_bytes[i] == b',' && d == 0;
-                if at_end && d == 0 || is_comma {
-                    let arg = &inner[arg_start_idx..i];
-                    let trimmed = arg.trim();
-                    if !trimmed.is_empty() {
-                        // Compute the offset of the trimmed arg within inner.
-                        let leading_ws = arg.len() - arg.trim_start().len();
-                        let arg_file_offset = token_file_offset
-                            + extra_offset
-                            + (inner_start + arg_start_idx + leading_ws) as u32;
-                        emit_type_spans(trimmed, arg_file_offset, spans);
-                    }
-                    arg_start_idx = i + 1;
-                } else if !at_end {
-                    match inner_bytes[i] {
-                        b'<' | b'(' | b'{' => d += 1,
-                        b'>' | b')' | b'}' if d > 0 => d -= 1,
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
-    // Recurse into array/object shape bodies: `array{key: Pen, debug: bool}`
-    // or `object{name: string, user: User}`.
-    // Each entry has the form `key: Type` or `key?: Type`.  We split on
-    // `,` at depth 0, then for each entry skip past the `:` to get the
-    // value type and recurse into it.
-    if let Some(brace_pos) = brace_start {
-        let inner_start = brace_pos + 1;
-        let bytes = type_name.as_bytes();
-        let mut depth = 1u32;
-        let mut brace_end = inner_start;
-        while brace_end < bytes.len() && depth > 0 {
-            match bytes[brace_end] {
-                b'{' => depth += 1,
-                b'}' => depth -= 1,
-                _ => {}
-            }
-            if depth > 0 {
-                brace_end += 1;
-            }
-        }
-        if depth == 0 {
-            let inner = &type_name[inner_start..brace_end];
-            // Split entries on `,` at depth 0.
-            let mut d = 0u32;
-            let mut entry_start = 0usize;
-            let inner_bytes = inner.as_bytes();
-            for i in 0..=inner_bytes.len() {
-                let at_end = i == inner_bytes.len();
-                let is_comma = !at_end && inner_bytes[i] == b',' && d == 0;
-                if (at_end && d == 0) || is_comma {
-                    let entry = &inner[entry_start..i];
-                    // Find the `:` separator (at depth 0) between key and value type.
-                    // The key may contain `?` (optional marker) but not `<`, `{`, etc.
-                    let mut colon_pos = None;
-                    let mut ed = 0u32;
-                    for (j, &b) in entry.as_bytes().iter().enumerate() {
-                        match b {
-                            b'<' | b'(' | b'{' => ed += 1,
-                            b'>' | b')' | b'}' if ed > 0 => ed -= 1,
-                            b':' if ed == 0 => {
-                                colon_pos = Some(j);
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                    if let Some(cp) = colon_pos {
-                        let value_part = &entry[cp + 1..];
-                        let value_trimmed = value_part.trim();
-                        if !value_trimmed.is_empty() {
-                            let leading_ws = value_part.len() - value_part.trim_start().len();
-                            let value_file_offset = token_file_offset
-                                + extra_offset
-                                + (inner_start + entry_start + cp + 1 + leading_ws) as u32;
-                            emit_type_spans(value_trimmed, value_file_offset, spans);
-                        }
-                    }
-                    entry_start = i + 1;
-                } else if !at_end {
-                    match inner_bytes[i] {
-                        b'<' | b'(' | b'{' => d += 1,
-                        b'>' | b')' | b'}' if d > 0 => d -= 1,
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
 }
 
-// ─── Callable / keyword helpers ─────────────────────────────────────────────
-
-/// Find the byte position of a `(` that starts a callable parameter list
-/// within a type string.  Returns `None` when there is no `(` at
-/// angle-bracket / brace depth 0 or when `(` is at position 0 (which
-/// indicates a conditional / grouped type, not a callable).
-fn find_callable_paren(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut depth_angle = 0i32;
-    let mut depth_brace = 0i32;
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'<' => depth_angle += 1,
-            b'>' if depth_angle > 0 => depth_angle -= 1,
-            b'{' => depth_brace += 1,
-            b'}' if depth_brace > 0 => depth_brace -= 1,
-            b'(' if depth_angle == 0 && depth_brace == 0 && i > 0 => return Some(i),
-            _ => {}
-        }
+/// Recurse into generic type parameters (`<T, U, V>`).
+fn emit_generic_params(
+    params: &type_ast::GenericParameters<'_>,
+    base_offset: u32,
+    spans: &mut Vec<SymbolSpan>,
+) {
+    for entry in &params.entries {
+        emit_type_spans_from_ast(&entry.inner, base_offset, spans);
     }
-    None
-}
-
-/// Find the byte position of `keyword` (e.g. `" is "`, `" ? "`, `" : "`)
-/// within `s` at parenthesis/angle-bracket depth 0.  Returns `None` when
-/// the keyword only appears inside nested delimiters.
-fn find_keyword_depth0(s: &str, keyword: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let kw_bytes = keyword.as_bytes();
-    let kw_len = kw_bytes.len();
-    if bytes.len() < kw_len {
-        return None;
-    }
-    let mut depth = 0i32;
-    for i in 0..=bytes.len() - kw_len {
-        match bytes[i] {
-            b'<' | b'(' | b'{' => depth += 1,
-            b'>' | b')' | b'}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-            }
-            _ => {}
-        }
-        if depth == 0 && &bytes[i..i + kw_len] == kw_bytes {
-            return Some(i);
-        }
-    }
-    None
 }
 
 // ─── @template tag extraction ───────────────────────────────────────────────

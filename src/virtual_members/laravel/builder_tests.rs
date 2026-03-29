@@ -93,7 +93,7 @@ fn builder_forwarding_maps_static_to_builder_self_type() {
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 1);
     assert_eq!(
-        result[0].return_type.as_deref(),
+        result[0].return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
         "static should map to Builder<ConcreteModel>"
     );
@@ -115,7 +115,7 @@ fn builder_forwarding_maps_this_to_builder_self_type() {
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 1);
     assert_eq!(
-        result[0].return_type.as_deref(),
+        result[0].return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
         "$this should map to Builder<ConcreteModel>"
     );
@@ -137,7 +137,7 @@ fn builder_forwarding_maps_self_to_builder_self_type() {
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 1);
     assert_eq!(
-        result[0].return_type.as_deref(),
+        result[0].return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
         "self should map to Builder<ConcreteModel>"
     );
@@ -159,7 +159,7 @@ fn builder_forwarding_maps_tmodel_to_concrete_class() {
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 1);
     assert_eq!(
-        result[0].return_type.as_deref(),
+        result[0].return_type_str().as_deref(),
         Some("App\\Models\\User|null"),
         "TModel should map to the concrete model class"
     );
@@ -184,7 +184,7 @@ fn builder_forwarding_maps_generic_collection_return() {
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 1);
     assert_eq!(
-        result[0].return_type.as_deref(),
+        result[0].return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>"),
         "Collection<int, TModel> should become Collection<int, User>"
     );
@@ -206,7 +206,7 @@ fn builder_forwarding_maps_static_in_union() {
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 1);
     assert_eq!(
-        result[0].return_type.as_deref(),
+        result[0].return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>|null"),
         "static|null should become Builder<User>|null"
     );
@@ -337,7 +337,7 @@ fn builder_forwarding_maps_parameter_types() {
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 1);
     assert_eq!(
-        result[0].parameters[0].type_hint.as_deref(),
+        result[0].parameters[0].type_hint_str().as_deref(),
         Some("App\\Models\\User"),
         "Parameter TModel should map to the concrete model class"
     );
@@ -446,6 +446,6 @@ fn builder_forwarding_preserves_non_template_return_types() {
 
     let result = build_builder_forwarded_methods(&user, &loader, None);
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0].return_type.as_deref(), Some("string"));
-    assert_eq!(result[1].return_type.as_deref(), Some("bool"));
+    assert_eq!(result[0].return_type_str().as_deref(), Some("string"));
+    assert_eq!(result[1].return_type_str().as_deref(), Some("bool"));
 }

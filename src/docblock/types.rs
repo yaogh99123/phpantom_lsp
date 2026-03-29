@@ -16,21 +16,14 @@
 // ─── Re-exports: type_strings ───────────────────────────────────────────────
 
 pub(crate) use super::type_strings::PHPDOC_TYPE_KEYWORDS;
-#[cfg(test)]
-pub(crate) use super::type_strings::SCALAR_TYPES;
-pub use super::type_strings::split_intersection_depth0;
-pub use super::type_strings::{base_class_name, clean_type, replace_self_in_type};
-pub(crate) use super::type_strings::{
-    is_scalar, normalize_nullable, split_generic_args, split_type_token, split_union_depth0,
-    strip_generics, strip_nullable,
-};
+pub use super::type_strings::clean_type;
+pub(crate) use super::type_strings::{split_generic_args, split_type_token};
 
 // ─── Re-exports: generics ───────────────────────────────────────────────────
 
 pub use super::generics::{
     extract_generic_key_type, extract_generic_value_type, extract_iterable_element_type,
 };
-pub(crate) use super::generics::{find_matching_close, parse_generic_args};
 
 // ─── Re-exports: shapes ─────────────────────────────────────────────────────
 

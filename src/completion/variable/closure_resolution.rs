@@ -59,7 +59,6 @@ thread_local! {
     static IN_CLOSURE_THIS_OVERRIDE: Cell<bool> = const { Cell::new(false) };
 }
 
-use crate::docblock::replace_self_in_type;
 use crate::parser::extract_hint_string;
 use crate::parser::with_parsed_program;
 use crate::types::{AccessKind, ClassInfo, FunctionInfo, MethodInfo, ResolvedType};
@@ -1380,7 +1379,11 @@ fn infer_callable_params_from_receiver(
         let receiver_fqn = receiver.fqn();
         params
             .into_iter()
-            .map(|ty| replace_self_in_type(&ty, &receiver_fqn))
+            .map(|ty| {
+                crate::php_type::PhpType::parse(&ty)
+                    .replace_self(&receiver_fqn)
+                    .to_string()
+            })
             .collect()
     } else {
         params
@@ -1422,7 +1425,11 @@ fn infer_callable_params_from_static_receiver(
         let owner_fqn = cls.fqn();
         params
             .into_iter()
-            .map(|ty| replace_self_in_type(&ty, &owner_fqn))
+            .map(|ty| {
+                crate::php_type::PhpType::parse(&ty)
+                    .replace_self(&owner_fqn)
+                    .to_string()
+            })
             .collect()
     } else {
         vec![]
@@ -1478,7 +1485,7 @@ fn extract_callable_params_at(
     let param = params.get(arg_idx);
     if let Some(p) = param
         && let Some(ref hint) = p.type_hint
-        && let Some(types) = crate::docblock::extract_callable_param_types(hint)
+        && let Some(types) = crate::docblock::extract_callable_param_types(&hint.to_string())
     {
         return types;
     }

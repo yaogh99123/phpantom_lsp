@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::inheritance::{apply_substitution, apply_substitution_to_conditional};
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, ELOQUENT_COLLECTION_FQN, MethodInfo, Visibility};
 use crate::virtual_members::ResolvedClassCache;
 
@@ -25,7 +26,51 @@ use super::ELOQUENT_BUILDER_FQN;
 /// Replace `\Illuminate\Database\Eloquent\Collection` with a custom
 /// collection class in a type string, preserving generic parameters.
 pub(super) fn replace_eloquent_collection(type_str: &str, custom_collection: &str) -> String {
-    type_str.replace(ELOQUENT_COLLECTION_FQN, custom_collection)
+    let parsed = PhpType::parse(type_str);
+    replace_collection_in_type(&parsed, custom_collection).to_string()
+}
+
+/// Recursively walk a `PhpType` tree and replace any `Generic` whose
+/// base name is the Eloquent Collection FQN with `custom_collection`.
+fn replace_collection_in_type(ty: &PhpType, custom_collection: &str) -> PhpType {
+    match ty {
+        PhpType::Generic(name, args) if name == ELOQUENT_COLLECTION_FQN => {
+            let new_args = args
+                .iter()
+                .map(|a| replace_collection_in_type(a, custom_collection))
+                .collect();
+            PhpType::Generic(custom_collection.to_string(), new_args)
+        }
+        PhpType::Generic(name, args) => {
+            let new_args = args
+                .iter()
+                .map(|a| replace_collection_in_type(a, custom_collection))
+                .collect();
+            PhpType::Generic(name.clone(), new_args)
+        }
+        PhpType::Union(members) => PhpType::Union(
+            members
+                .iter()
+                .map(|m| replace_collection_in_type(m, custom_collection))
+                .collect(),
+        ),
+        PhpType::Intersection(members) => PhpType::Intersection(
+            members
+                .iter()
+                .map(|m| replace_collection_in_type(m, custom_collection))
+                .collect(),
+        ),
+        PhpType::Nullable(inner) => PhpType::Nullable(Box::new(replace_collection_in_type(
+            inner,
+            custom_collection,
+        ))),
+        PhpType::Array(inner) => PhpType::Array(Box::new(replace_collection_in_type(
+            inner,
+            custom_collection,
+        ))),
+        // Named types, scalars, etc. — no collection to replace.
+        other => other.clone(),
+    }
 }
 
 /// Build static virtual methods by forwarding Eloquent Builder's public
@@ -77,7 +122,11 @@ pub(super) fn build_builder_forwarded_methods(
 
     // Build a substitution map: TModel → concrete model class name,
     // and static/$this/self → Builder<ConcreteModel>.
-    let builder_self_type = format!("{ELOQUENT_BUILDER_FQN}<{}>", class.name);
+    let builder_self_type = PhpType::Generic(
+        ELOQUENT_BUILDER_FQN.to_string(),
+        vec![PhpType::Named(class.name.clone())],
+    )
+    .to_string();
     let mut subs = HashMap::new();
     for param in &builder_class.template_params {
         subs.insert(param.clone(), class.name.clone());
@@ -114,14 +163,18 @@ pub(super) fn build_builder_forwarded_methods(
         // Apply template and self-type substitutions.
         if !subs.is_empty() {
             if let Some(ref mut ret) = forwarded.return_type {
-                *ret = apply_substitution(ret, &subs).into_owned();
+                let ret_str = ret.to_string();
+                let substituted = apply_substitution(&ret_str, &subs);
+                *ret = PhpType::parse(&substituted);
             }
             if let Some(ref mut cond) = forwarded.conditional_return {
                 apply_substitution_to_conditional(cond, &subs);
             }
             for param in &mut forwarded.parameters {
                 if let Some(ref mut hint) = param.type_hint {
-                    *hint = apply_substitution(hint, &subs).into_owned();
+                    let hint_str = hint.to_string();
+                    let substituted = apply_substitution(&hint_str, &subs);
+                    *hint = PhpType::parse(&substituted);
                 }
             }
         }
@@ -130,7 +183,8 @@ pub(super) fn build_builder_forwarded_methods(
         if let Some(coll) = class.laravel().and_then(|l| l.custom_collection.as_ref())
             && let Some(ref mut ret) = forwarded.return_type
         {
-            *ret = replace_eloquent_collection(ret, coll);
+            let ret_str = ret.to_string();
+            *ret = PhpType::parse(&replace_eloquent_collection(&ret_str, coll));
         }
 
         methods.push(forwarded);

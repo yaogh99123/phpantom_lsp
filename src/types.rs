@@ -343,19 +343,14 @@ pub struct ParameterInfo {
     pub name: String,
     /// Whether this parameter is required (no default value and not variadic).
     pub is_required: bool,
-    /// Effective type hint string after docblock override (e.g. "list<User>").
+    /// Effective type hint after docblock override (e.g. `Collection<User>`).
     ///
     /// When a `@param` tag is present in the docblock and is more specific
     /// than the native PHP type hint, this holds the docblock type.
     /// Otherwise it holds the native type hint unchanged.
-    pub type_hint: Option<String>,
-    /// Structured representation of [`type_hint`](Self::type_hint), produced
-    /// by [`PhpType::parse`] at extraction time.
     ///
-    /// `None` when `type_hint` is `None`.  Consumers that need to
-    /// inspect the type structurally should prefer this field over
-    /// string manipulation on `type_hint`.
-    pub type_hint_parsed: Option<PhpType>,
+    /// Call `.to_string()` when a display string is needed.
+    pub type_hint: Option<PhpType>,
     /// The native PHP type hint as written in source code (e.g. "array", "string").
     ///
     /// Preserved separately so that hover can show the actual PHP declaration
@@ -403,6 +398,15 @@ impl ParameterInfo {
             && self.is_reference == other.is_reference
             && self.closure_this_type == other.closure_this_type
     }
+
+    /// Return the type hint as a string, if present.
+    ///
+    /// Convenience wrapper around `self.type_hint.as_ref().map(|t| t.to_string())`.
+    /// Use this when you need a display string (hover, completion detail,
+    /// code generation).
+    pub fn type_hint_str(&self) -> Option<String> {
+        self.type_hint.as_ref().map(|t| t.to_string())
+    }
 }
 
 /// Stores extracted method information from a parsed PHP class.
@@ -418,19 +422,14 @@ pub struct MethodInfo {
     pub name_offset: u32,
     /// The parameters of the method.
     pub parameters: Vec<ParameterInfo>,
-    /// Effective return type hint after docblock override (e.g. "Collection<User>").
+    /// Effective return type after docblock override (e.g. `Collection<User>`).
     ///
     /// When a `@return` tag is present in the docblock and is more specific
     /// than the native PHP return type hint, this holds the docblock type.
     /// Otherwise it holds the native type hint unchanged.
-    pub return_type: Option<String>,
-    /// Structured representation of [`return_type`](Self::return_type), produced
-    /// by [`PhpType::parse`] at extraction time.
     ///
-    /// `None` when `return_type` is `None`.  Consumers that need to
-    /// inspect the return type structurally should prefer this field over
-    /// string manipulation on `return_type`.
-    pub return_type_parsed: Option<PhpType>,
+    /// Call `.to_string()` when a display string is needed.
+    pub return_type: Option<PhpType>,
     /// The native PHP return type hint as written in source code (e.g. "array", "self").
     ///
     /// Preserved separately so that hover can show the actual PHP declaration
@@ -473,7 +472,7 @@ pub struct MethodInfo {
     /// ```text
     /// @return ($abstract is class-string<TClass> ? TClass : mixed)
     /// ```
-    pub conditional_return: Option<ConditionalReturnType>,
+    pub conditional_return: Option<PhpType>,
     /// Deprecation message from the `@deprecated` PHPDoc tag.
     ///
     /// `None` means not deprecated. `Some("")` means deprecated without a
@@ -583,6 +582,15 @@ impl MethodInfo {
                 .all(|(a, b)| a.signature_eq(b))
     }
 
+    /// Return the return type as a string, if present.
+    ///
+    /// Convenience wrapper around `self.return_type.as_ref().map(|t| t.to_string())`.
+    /// Use this when you need a display string (hover, completion detail,
+    /// code generation).
+    pub fn return_type_str(&self) -> Option<String> {
+        self.return_type.as_ref().map(|t| t.to_string())
+    }
+
     /// Create a virtual `MethodInfo` with sensible defaults.
     ///
     /// The method is public, non-static, non-deprecated, with no
@@ -602,8 +610,7 @@ impl MethodInfo {
             name: name.to_string(),
             name_offset: 0,
             parameters: Vec::new(),
-            return_type: return_type.map(|s| s.to_string()),
-            return_type_parsed: return_type.map(PhpType::parse),
+            return_type: return_type.map(PhpType::parse),
             native_return_type: None,
             description: None,
             return_description: None,
@@ -643,14 +650,14 @@ pub struct PropertyInfo {
     /// When a `@var` tag is present in the docblock and is more specific
     /// than the native PHP type hint, this holds the docblock type.
     /// Otherwise it holds the native type hint unchanged.
-    pub type_hint: Option<String>,
-    /// Structured representation of [`type_hint`](Self::type_hint), produced
-    /// by [`PhpType::parse`] at extraction time.
+    /// Effective type hint after docblock override (e.g. `list<User>`).
     ///
-    /// `None` when `type_hint` is `None`.  Consumers that need to
-    /// inspect the type structurally should prefer this field over
-    /// string manipulation on `type_hint`.
-    pub type_hint_parsed: Option<PhpType>,
+    /// When a `@var` tag is present in the docblock and is more specific
+    /// than the native PHP type hint, this holds the docblock type.
+    /// Otherwise it holds the native type hint unchanged.
+    ///
+    /// Call `.to_string()` when a display string is needed.
+    pub type_hint: Option<PhpType>,
     /// The native PHP type hint as written in source code (e.g. "array", "string").
     ///
     /// Preserved separately so that hover can show the actual PHP declaration
@@ -711,6 +718,15 @@ impl PropertyInfo {
             && self.is_virtual == other.is_virtual
     }
 
+    /// Return the type hint as a string, if present.
+    ///
+    /// Convenience wrapper around `self.type_hint.as_ref().map(|t| t.to_string())`.
+    /// Use this when you need a display string (hover, completion detail,
+    /// code generation).
+    pub fn type_hint_str(&self) -> Option<String> {
+        self.type_hint.as_ref().map(|t| t.to_string())
+    }
+
     /// Create a virtual `PropertyInfo` with sensible defaults.
     ///
     /// The property is public, non-static, with no deprecation message and
@@ -728,8 +744,7 @@ impl PropertyInfo {
         Self {
             name: name.to_string(),
             name_offset: 0,
-            type_hint: type_hint.map(|s| s.to_string()),
-            type_hint_parsed: type_hint.map(PhpType::parse),
+            type_hint: type_hint.map(PhpType::parse),
             native_type_hint: None,
             description: None,
             is_static: false,
@@ -753,15 +768,10 @@ pub struct ConstantInfo {
     /// parsing.  A value of `0` means "not available" — callers should fall
     /// back to text search.
     pub name_offset: u32,
-    /// Optional type hint string (e.g. "string", "int").
-    pub type_hint: Option<String>,
-    /// Structured representation of [`type_hint`](Self::type_hint), produced
-    /// by [`PhpType::parse`] at extraction time.
+    /// Optional type hint (e.g. `string`, `int`).
     ///
-    /// `None` when `type_hint` is `None`.  Consumers that need to
-    /// inspect the type structurally should prefer this field over
-    /// string manipulation on `type_hint`.
-    pub type_hint_parsed: Option<PhpType>,
+    /// Call `.to_string()` when a display string is needed.
+    pub type_hint: Option<PhpType>,
     /// Visibility of the constant (public, protected, or private).
     pub visibility: Visibility,
     /// Deprecation message from the `@deprecated` PHPDoc tag.
@@ -822,6 +832,15 @@ impl ConstantInfo {
             && self.enum_value == other.enum_value
             && self.value == other.value
             && self.is_virtual == other.is_virtual
+    }
+
+    /// Return the type hint as a string, if present.
+    ///
+    /// Convenience wrapper around `self.type_hint.as_ref().map(|t| t.to_string())`.
+    /// Use this when you need a display string (hover, completion detail,
+    /// code generation).
+    pub fn type_hint_str(&self) -> Option<String> {
+        self.type_hint.as_ref().map(|t| t.to_string())
     }
 }
 
@@ -886,8 +905,8 @@ pub struct CompletionTarget {
 pub(crate) struct ResolvedCallableTarget {
     /// The parameters of the callable.
     pub parameters: Vec<ParameterInfo>,
-    /// Optional return type string.
-    pub return_type: Option<String>,
+    /// Optional return type.
+    pub return_type: Option<PhpType>,
 }
 /// Stores extracted information about a standalone PHP function.
 ///
@@ -905,12 +924,14 @@ pub struct FunctionInfo {
     pub name_offset: u32,
     /// The parameters of the function.
     pub parameters: Vec<ParameterInfo>,
-    /// Effective return type hint after docblock override (e.g. "Collection<User>").
+    /// Effective return type after docblock override (e.g. `Collection<User>`).
     ///
     /// When a `@return` tag is present in the docblock and is more specific
     /// than the native PHP return type hint, this holds the docblock type.
     /// Otherwise it holds the native type hint unchanged.
-    pub return_type: Option<String>,
+    ///
+    /// Call `.to_string()` when a display string is needed.
+    pub return_type: Option<PhpType>,
     /// The native PHP return type hint as written in source code (e.g. "array", "self").
     ///
     /// Preserved separately so that hover can show the actual PHP declaration
@@ -952,7 +973,7 @@ pub struct FunctionInfo {
     /// ```text
     /// @return ($abstract is class-string<TClass> ? TClass : \Illuminate\Foundation\Application)
     /// ```
-    pub conditional_return: Option<ConditionalReturnType>,
+    pub conditional_return: Option<PhpType>,
     /// Type assertions parsed from `@phpstan-assert` / `@psalm-assert`
     /// annotations in the function's docblock.
     ///
@@ -1015,6 +1036,17 @@ pub struct FunctionInfo {
     pub is_polyfill: bool,
 }
 
+impl FunctionInfo {
+    /// Return the return type as a string, if present.
+    ///
+    /// Convenience wrapper around `self.return_type.as_ref().map(|t| t.to_string())`.
+    /// Use this when you need a display string (hover, completion detail,
+    /// code generation).
+    pub fn return_type_str(&self) -> Option<String> {
+        self.return_type.as_ref().map(|t| t.to_string())
+    }
+}
+
 // ─── PHPStan Type Assertions ────────────────────────────────────────────────
 
 /// A type assertion annotation parsed from `@phpstan-assert` /
@@ -1049,58 +1081,6 @@ pub enum AssertionKind {
     /// returns `false` (i.e. inside the `else` body, or the `if` body of
     /// a negated condition).
     IfFalse,
-}
-
-// ─── PHPStan Conditional Return Types ───────────────────────────────────────
-
-/// A parsed PHPStan conditional return type expression.
-///
-/// PHPStan allows `@return` annotations that conditionally resolve to
-/// different types based on the value/type of a parameter.  For example:
-///
-/// ```text
-/// @return ($abstract is class-string<TClass> ? TClass
-///           : ($abstract is null ? \Illuminate\Foundation\Application : mixed))
-/// ```
-///
-/// This enum represents the recursive structure of such expressions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConditionalReturnType {
-    /// A concrete (terminal) type, e.g. `\Illuminate\Foundation\Application`
-    /// or `mixed`.
-    Concrete(String),
-
-    /// A conditional branch:
-    /// `($param is Condition ? ThenType : ElseType)`
-    Conditional {
-        /// The parameter name **without** the `$` prefix (e.g. `"abstract"`).
-        param_name: String,
-        /// The condition being checked.
-        condition: ParamCondition,
-        /// The type when the condition is satisfied.
-        then_type: Box<ConditionalReturnType>,
-        /// The type when the condition is not satisfied.
-        else_type: Box<ConditionalReturnType>,
-    },
-}
-
-/// The kind of condition in a PHPStan conditional return type.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParamCondition {
-    /// `$param is class-string<T>` — when the argument is a `::class` constant,
-    /// the return type is the class itself.
-    ClassString,
-
-    /// `$param is null` — typically used for parameters with `= null` defaults
-    /// to return a known concrete type when no argument is provided.
-    IsNull,
-
-    /// `$param is \SomeType` — a general type check (e.g. `\Closure`, `string`).
-    IsType(String),
-
-    /// `$param is "literal"` — when the condition checks against a literal
-    /// string value (e.g. `$signature is "foo"`).
-    LiteralString(String),
 }
 
 /// A trait `insteadof` adaptation.
@@ -1947,8 +1927,7 @@ mod tests {
         ConstantInfo {
             name: name.to_string(),
             name_offset: 0,
-            type_hint: Some("string".to_string()),
-            type_hint_parsed: None,
+            type_hint: Some(PhpType::parse("string")),
             visibility: Visibility::Public,
             deprecation_message: None,
             deprecated_replacement: None,
@@ -1966,8 +1945,7 @@ mod tests {
         ParameterInfo {
             name: name.to_string(),
             is_required: true,
-            type_hint: Some(type_hint.to_string()),
-            type_hint_parsed: None,
+            type_hint: Some(PhpType::parse(type_hint)),
             native_type_hint: None,
             description: None,
             default_value: None,
@@ -2145,7 +2123,7 @@ mod tests {
     #[test]
     fn method_signature_eq_detects_conditional_return() {
         let mut a = method("foo");
-        a.conditional_return = Some(ConditionalReturnType::Concrete("int".to_string()));
+        a.conditional_return = Some(PhpType::Named("int".to_string()));
         let b = method("foo");
         assert!(!a.signature_eq(&b));
     }
@@ -2427,7 +2405,7 @@ mod tests {
     #[test]
     fn class_signature_eq_methods_different_signature() {
         let mut m = method("foo");
-        m.return_type = Some("int".to_string());
+        m.return_type = Some(PhpType::parse("int"));
         let a = ClassInfo {
             name: "Foo".to_string(),
             methods: vec![m].into(),

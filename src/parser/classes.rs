@@ -145,7 +145,6 @@ use mago_syntax::ast::*;
 
 use crate::Backend;
 use crate::docblock;
-use crate::docblock::types::parse_generic_args;
 use crate::types::*;
 use crate::virtual_members::laravel::infer_relationship_from_body;
 
@@ -316,10 +315,12 @@ fn extract_custom_collection(
 /// Collection.
 fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Option<String> {
     let method = methods.iter().find(|m| m.name == "newCollection")?;
-    let return_type = method.return_type.as_deref()?;
+    let return_type_str = method.return_type.as_ref()?.to_string();
+    let return_type = return_type_str.as_str();
 
     // Strip generic parameters (e.g. `TaskCollection<int, static>` → `TaskCollection`).
-    let (base, _) = parse_generic_args(return_type);
+    let parsed = PhpType::parse(return_type);
+    let base = parsed.base_name().unwrap_or(return_type);
 
     // Compare without leading backslash for the standard Collection check,
     // but preserve the original form so that `resolve_name` in
@@ -1899,8 +1900,7 @@ impl Backend {
                                     name: prop_name,
                                     name_offset: prop_name_offset,
                                     native_type_hint: saved_native_hint,
-                                    type_hint_parsed: type_hint.as_deref().map(PhpType::parse),
-                                    type_hint,
+                                    type_hint: type_hint.map(|s| PhpType::parse(&s)),
                                     description: None,
                                     is_static: false,
                                     visibility: prop_visibility,
@@ -1935,11 +1935,11 @@ impl Backend {
                                 docblock::extract_param_raw_type_from_info(info, &param.name);
                             if let Some(ref doc_type) = param_doc_type {
                                 let effective = docblock::resolve_effective_type(
-                                    param.type_hint.as_deref(),
+                                    param.type_hint.as_ref().map(|t| t.to_string()).as_deref(),
                                     Some(doc_type),
                                 );
                                 if effective.is_some() {
-                                    param.type_hint = effective;
+                                    param.type_hint = effective.map(|s| PhpType::parse(&s));
                                 }
                             }
                         }
@@ -1971,8 +1971,7 @@ impl Backend {
                                 parameters.push(ParameterInfo {
                                     name: tag_name,
                                     is_required: false,
-                                    type_hint_parsed: type_hint.as_deref().map(PhpType::parse),
-                                    type_hint,
+                                    type_hint: type_hint.map(|s| PhpType::parse(&s)),
                                     native_type_hint: None,
                                     description,
                                     default_value: None,
@@ -2036,8 +2035,7 @@ impl Backend {
                         name_offset,
                         parameters,
                         native_return_type: native_return_type.clone(),
-                        return_type_parsed: return_type.as_deref().map(PhpType::parse),
-                        return_type,
+                        return_type: return_type.map(|s| PhpType::parse(&s)),
                         description: method_description,
                         return_description,
                         links,
@@ -2077,7 +2075,7 @@ impl Backend {
                             super::extract_language_level_type(attr_lists, ctx, ver)
                     {
                         for prop in &mut prop_infos {
-                            prop.type_hint = Some(override_type.clone());
+                            prop.type_hint = Some(PhpType::parse(&override_type));
                             prop.native_type_hint = Some(override_type.clone());
                         }
                     }
@@ -2126,10 +2124,11 @@ impl Backend {
                             info.as_ref().and_then(docblock::extract_var_type_from_info)
                         {
                             for prop in &mut prop_infos {
-                                prop.type_hint = docblock::resolve_effective_type(
-                                    prop.type_hint.as_deref(),
+                                let effective = docblock::resolve_effective_type(
+                                    prop.type_hint.as_ref().map(|t| t.to_string()).as_deref(),
                                     Some(&doc_type),
                                 );
+                                prop.type_hint = effective.map(|s| PhpType::parse(&s));
                             }
                         }
                         let description = info
@@ -2200,8 +2199,7 @@ impl Backend {
                         constants.push(ConstantInfo {
                             name: item.name.value.to_string(),
                             name_offset: item.name.span.start.offset,
-                            type_hint_parsed: type_hint.as_deref().map(PhpType::parse),
-                            type_hint: type_hint.clone(),
+                            type_hint: type_hint.as_deref().map(PhpType::parse),
                             visibility,
                             deprecation_message: deprecation_message.clone(),
                             deprecated_replacement: constant_deprecated_replacement.clone(),
@@ -2230,7 +2228,6 @@ impl Backend {
                         name: case_name,
                         name_offset: case_name_offset,
                         type_hint: None,
-                        type_hint_parsed: None,
                         visibility: Visibility::Public,
                         deprecation_message: None,
                         deprecated_replacement: None,

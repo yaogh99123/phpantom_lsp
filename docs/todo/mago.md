@@ -185,64 +185,358 @@ Modules in recommended migration order (least dependencies first):
    union collapsing (e.g. `User|null` → `User`) were kept on
    `clean_type` since `base_name()` returns `None` for unions.
 
-3. **`src/resolution.rs`** — `resolve_type_string`. Replace the
-   string-surgery approach (split on `|`, recurse, rejoin) with
-   tree traversal on `PhpType`.
+3. ⏭️ **`src/parser/ast_update.rs`** — `resolve_type_string`.
+
+   **Status:** Deferred. The `PhpType::resolve_names()` method is
+   implemented and tested (10 tests), but replacing the call sites
+   in `ast_update.rs` is deferred to Phase 5. The reason:
+   `PhpType::Display` produces `User | null` (spaces around `|`)
+   while the old code produces `User|null`. Since the resolved
+   strings are stored in `Option<String>` fields and consumed by
+   downstream string-based code, changing the format now would
+   cascade formatting differences throughout the codebase. Once
+   Phase 5 removes the string fields, `resolve_names` can be used
+   directly on `PhpType` values without going through strings.
+
+   **New `PhpType` helper methods** added in this step:
+   - `resolve_names(resolver)` — produce a new `PhpType` with all
+     class-like names resolved through a callback
+   - `is_keyword_type()` (module-level) — superset of `is_scalar_name`
+     that covers all PHPDoc pseudo-types and special keywords
 
 4. **`src/docblock/types.rs` and sub-modules** — The old string
    parsers. Once all consumers use `PhpType`, these become dead code
    and can be deleted.
 
-5. **`src/symbol_map/docblock.rs`** — `emit_type_spans`. Replace the
-   423-line recursive string decomposer with `PhpType` tree
-   traversal + span emission. (The tag-level migration is already
-   done; this is the type-level migration.)
+5. ✅ **`src/symbol_map/docblock.rs`** — `emit_type_spans`.
 
-6. **`src/diagnostics/`** — Type compatibility checks. Pattern match
-   on `PhpType` variants instead of string prefix checks.
+   **Status:** Complete. The 423-line recursive string decomposer
+   replaced with `mago-type-syntax` AST tree walker. All 3,001
+   library tests pass.
 
-7. **`src/code_actions/`** — Type-aware refactorings. Use `PhpType`
-   for type comparison, docblock generation, etc. Currently,
-   `ResolvedType::type_strings_joined` joins all resolved types
-   with `|`, which flattens intersection types (`A&B`) into unions
-   (`A|B`). With `PhpType::Intersection` this is preserved.
+   **What changed:**
 
-### Phase 4: Migrate the Laravel provider
+   - `emit_type_spans` now parses the type token with
+     `mago_type_syntax::parse_str` and delegates to
+     `emit_type_spans_from_ast` which walks the mago AST using
+     `HasSpan` for accurate byte offsets.
+   - New `emit_type_spans_from_ast` function handles all 69 mago
+     `Type` variants: `Reference` → `ClassReference` span on the
+     identifier, `Variable("$this")` → `SelfStaticParent`,
+     keyword types (`static`/`self`/`parent`) →
+     `SelfStaticParent`, composite types (Union, Intersection,
+     Nullable, Parenthesized) → recurse, generics → recurse into
+     parameters, callables → emit keyword span + recurse into
+     params and return type, shapes → recurse into field values,
+     conditionals → recurse into target/then/otherwise.
+   - New `emit_identifier_span` helper emits `ClassReference` or
+     `SelfStaticParent` based on navigability.
+   - New `emit_generic_params` helper recurses into generic
+     parameter entries.
+   - New `strip_variance_annotations` pre-processor strips
+     PHPStan `covariant `/ `contravariant ` prefixes from generic
+     arguments (which mago doesn't recognise) and builds an offset
+     map to translate cleaned-string positions back to original
+     positions.
+   - Parse-failure fallback emits a single `ClassReference` span
+     for the whole token if it looks navigable.
+   - Deleted `find_callable_paren` helper (54 lines).
+   - Deleted `find_keyword_depth0` helper (24 lines).
+   - Removed imports of `split_union_depth0`,
+     `split_intersection_depth0` from the file.
+   - Removed dead `split_union_depth0` re-export from
+     `docblock/types.rs`.
+   - Added `use mago_type_syntax::ast as type_ast` import.
+   - Updated module doc comment to reflect structured approach.
 
-The Laravel provider (`src/laravel/`) has its own type manipulation
-for Eloquent models, relationships, collections, and facades.
+6. ✅ **`src/diagnostics/`** — Type compatibility checks.
 
-1. **Eloquent attribute types** — Replace string-based cast-type
-   mapping with `PhpType` construction.
+   **Status:** Complete. All `clean_type` + `is_scalar` +
+   `strip_generics` + `PHPDOC_TYPE_KEYWORDS` patterns migrated to
+   `PhpType` methods. All 269 diagnostics tests pass.
 
-2. **Relationship return types** — Replace the string template
-   `"HasMany<{model}>"` with `PhpType::Generic("HasMany",
-   [PhpType::Named(model)])`.
+   **What changed:**
 
-3. **Collection generics** — Replace `format!("Collection<{},
-   {}>", key, value)` with `PhpType::Generic` construction.
+   - `resolve_scalar_subject_type` (5 sites) — replaced
+     `clean_type(&hint)` + `is_scalar(&cleaned)` with
+     `PhpType::all_members_primitive_scalar()` +
+     `PhpType::non_null_type()` for the display string.
+   - `resolve_unresolvable_class_subject` — replaced
+     `clean_type` + `strip_generics` + `is_scalar` +
+     `PHPDOC_TYPE_KEYWORDS` check with
+     `PhpType::all_members_scalar()` early exit +
+     `PhpType::non_null_type()` + `PhpType::base_name()`.
+   - Removed imports of `PHPDOC_TYPE_KEYWORDS`, `is_scalar`,
+     `strip_generics` from the file.
 
-4. **Facade accessor resolution** — The `getFacadeAccessor` →
-   class lookup produces a class name string. This stays as a string
-   (it's a class name, not a type expression), but the *return type*
-   it produces can be `PhpType::Named`.
+   **New `PhpType` helper methods** added in this step:
+   - `non_null_type()` — extract the non-null part of a type
+     (`User|null` → `User`, `?User` → `User`)
+   - `all_members_scalar()` — whether all non-null members are
+     scalar (replaces `clean_type` + `is_scalar`)
+   - `is_primitive_scalar()` / `all_members_primitive_scalar()` —
+     narrower scalar check excluding `mixed`, `object`, etc.
+     (for diagnostics that should only flag primitive scalars)
 
-### Phase 5: Remove string type fields
+7. ✅ **`src/code_actions/update_docblock.rs`** — Type comparison.
 
-Once all consumers read `_parsed` fields:
+   **Status:** Complete. `split_union_depth0` calls in
+   `is_type_contradiction` and `normalize_type_for_comparison`
+   migrated to `PhpType::parse()` + `union_members()`. The
+   `split_type_token` calls in `parse_doc_params_from_info` and
+   `parse_doc_return_from_info` are kept — they tokenize raw
+   docblock text (separating the type from the parameter
+   name/description), not type structure. All 44 update_docblock
+   tests pass.
 
-1. Remove `return_type: Option<String>` from `MethodInfo` (rename
-   `return_type_parsed` → `return_type`).
-2. Remove `type_hint: Option<String>` from `ParameterInfo`,
-   `PropertyInfo`, `ConstantInfo` (rename similarly).
-3. Remove `native_return_type: Option<String>` /
-   `native_type_hint: Option<String>` — these become
-   `PhpType::Named` values populated from the AST hint.
-4. Delete `src/docblock/type_strings.rs`, `generics.rs`, `shapes.rs`,
-   `callable_types.rs` — the old string parsers.
-5. Delete `ConditionalReturnType` enum (replaced by
-   `PhpType::Conditional`).
-6. Run the full test suite.
+   **What changed:**
+
+   - `is_type_contradiction` uses `PhpType::parse()` +
+     `union_members()` instead of `split_union_depth0`.
+   - `normalize_type_for_comparison` uses `PhpType::parse()` +
+     `union_members()` instead of `split_union_depth0`.
+   - Removed import of `split_union_depth0`.
+
+8. ✅ **`src/definition/type_definition.rs`** — Go-to-type-definition.
+
+   **Status:** Complete. All string-based type extraction replaced
+   with `PhpType` methods. All 11 unit tests + 22 integration
+   tests pass.
+
+   **What changed:**
+
+   - `resolve_member_type_names` uses `PhpType::parse().replace_self()`
+     + `top_level_class_names()` instead of
+     `replace_self_in_type` + `extract_class_names_from_type_string`.
+   - `resolve_function_return_type_names` uses
+     `PhpType::parse().top_level_class_names()`.
+   - `resolve_type_names_to_locations` uses `PhpType::parse().is_scalar()`
+     instead of `is_scalar()`.
+   - `resolve_variable_type_names` uses `PhpType::parse().top_level_class_names()`
+     and `PhpType::parse().is_scalar()`.
+   - Deleted local `extract_class_names_from_type_string` and
+     `split_top_level_union` functions (77 lines removed).
+   - Removed imports of `is_scalar`, `replace_self_in_type`.
+
+   **New `PhpType` helper methods** added in this step:
+   - `replace_self(class_name)` — produce a new `PhpType` with
+     `self`/`static`/`$this` replaced by the given class name
+   - `extract_class_names()` — recursively collect all class-like
+     names from the type tree
+   - `top_level_class_names()` — collect only outermost class names
+     (does not recurse into generics, callables, shapes, etc.)
+
+9. ✅ **`src/completion/types/resolution.rs`** — Core type-hint-to-class
+   resolution.
+
+   **Status:** Complete. Union/intersection splitting and generic
+   arg parsing migrated to `PhpType`. All 3,400+ tests pass.
+
+   **What changed:**
+
+   - Union splitting uses `PhpType::parse()` + pattern match on
+     `PhpType::Union` instead of `split_union_depth0`.
+   - Intersection splitting uses pattern match on
+     `PhpType::Intersection` instead of `split_intersection_depth0`.
+   - Object shape detection uses pattern match on
+     `PhpType::ObjectShape` instead of `is_object_shape` +
+     `parse_object_shape`.
+   - Generic arg extraction uses pattern match on
+     `PhpType::Generic` instead of `parse_generic_args`.
+   - `self<…>` / `static<…>` detection uses the same
+     `PhpType::Generic` match instead of `parse_generic_args`.
+   - Base class name extraction uses `base_hint` from the
+     `PhpType::Generic` match instead of `strip_generics`.
+   - Removed imports of `split_union_depth0`,
+     `split_intersection_depth0`, `parse_generic_args`,
+     `strip_generics`, and `crate::docblock`.
+
+10. ✅ **`src/resolution.rs`** — Class loading normalisation.
+
+    **Status:** Complete. `find_or_load_class` uses
+    `PhpType::parse().base_name()` instead of `strip_nullable` +
+    `strip_generics` for defensive type normalisation. All tests pass.
+
+11. ✅ **`src/completion/source/helpers.rs`** — LHS-to-class resolution.
+
+    **Status:** Complete. Two `clean_type` call sites in
+    `resolve_lhs_to_class` migrated to `PhpType::parse()` +
+    `non_null_type()` + `base_name()`. All tests pass.
+
+12. ✅ **`src/completion/variable/rhs_resolution.rs`** —
+    `extract_array_type_at_position`.
+
+    **Status:** Complete. Replaced `clean_type` +
+    `parse_generic_args` with `PhpType::parse()` + pattern matching
+    on `PhpType::Array` and `PhpType::Generic`. All tests pass.
+
+13. ✅ **`src/definition/member/mod.rs`** — Eloquent Builder model
+    extraction.
+
+    **Status:** Complete. `extract_model_from_builder_ret` uses
+    `PhpType::parse()` + pattern match on `PhpType::Generic`
+    instead of `parse_generic_args`. All tests pass.
+
+14. ✅ **`src/parser/classes.rs`** — Custom collection extraction.
+
+    **Status:** Complete. `extract_custom_collection_from_new_collection`
+    uses `PhpType::parse().base_name()` instead of
+    `parse_generic_args`. All tests pass.
+
+15. ✅ **`src/virtual_members/laravel/accessors.rs`** — Modern
+    accessor type extraction.
+
+    **Status:** Complete. `extract_modern_accessor_type` uses
+    `PhpType::parse()` + pattern match on `PhpType::Generic`
+    instead of `parse_generic_args`. Test updated for
+    `PhpType::Display` union spacing (`"string | null"`). All tests
+    pass.
+
+16. ✅ **`src/virtual_members/laravel/relationships.rs`** —
+    Relationship classification and related type extraction.
+
+    **Status:** Complete. `classify_relationship` uses
+    `PhpType::parse().base_name()` instead of `parse_generic_args`.
+    `extract_related_type` uses pattern match on
+    `PhpType::Generic` instead of `parse_generic_args`. All tests
+    pass.
+
+   **Dead code removed in this batch:**
+   - `parse_generic_args` in `docblock/generics.rs` — all external
+     callers migrated; function deleted.
+   - `parse_generic_args` re-export in `docblock/types.rs` — removed.
+   - `strip_generics` re-export in `docblock/types.rs` — removed.
+
+### Phase 4: Migrate the Laravel provider ✅
+
+The Laravel provider (`src/virtual_members/laravel/`) has its own
+type manipulation for Eloquent models, relationships, collections,
+and facades.
+
+1. ✅ **`src/virtual_members/laravel/accessors.rs`** — Modern
+   accessor detection.
+
+   **Status:** Complete. Ad-hoc `split('<')` generic stripping
+   replaced with `PhpType::parse().base_name()`. All tests pass.
+
+   **What changed:**
+
+   - `is_modern_accessor` uses `PhpType::parse(rt).base_name()`
+     instead of `rt.split('<').next().unwrap_or(rt).trim()`.
+
+2. ✅ **`src/virtual_members/laravel/relationships.rs`** —
+   Relationship property type construction and body inference.
+
+   **Status:** Complete. All `format!`-based type string
+   construction replaced with `PhpType` construction +
+   `.to_string()`. All 70 relationship tests pass.
+
+   **What changed:**
+
+   - `build_property_type` — Collection branch uses
+     `PhpType::Generic(collection_class, [PhpType::Named(inner)])`
+     instead of `format!("{collection_class}<{inner}>")`.
+   - `infer_relationship_from_body` — morphTo returns
+     `PhpType::Named(format!("\\{fqn}")).to_string()`,
+     generic relationships return
+     `PhpType::Generic(format!("\\{fqn}"), [PhpType::Named(class_arg)]).to_string()`,
+     bare relationships return
+     `PhpType::Named(format!("\\{fqn}")).to_string()`.
+
+3. ✅ **`src/virtual_members/laravel/builder.rs`** — Builder
+   self-type construction and collection replacement.
+
+   **Status:** Complete. Builder self-type uses `PhpType::Generic`
+   construction. `replace_eloquent_collection` uses a recursive
+   `PhpType` tree walk instead of naive `.replace()`. All builder
+   tests pass.
+
+   **What changed:**
+
+   - `builder_self_type` uses
+     `PhpType::Generic(ELOQUENT_BUILDER_FQN, [PhpType::Named(class.name)])`
+     instead of `format!("{ELOQUENT_BUILDER_FQN}<{}>", class.name)`.
+   - `replace_eloquent_collection` parses the type string into a
+     `PhpType` tree and recursively replaces any `Generic` node
+     whose base name matches the Eloquent Collection FQN.
+   - New `replace_collection_in_type` helper recursively walks
+     `PhpType` trees (Union, Intersection, Nullable, Generic,
+     Array) to find and replace collection references.
+
+4. ✅ **`src/virtual_members/laravel/scopes.rs`** — Default scope
+   return type.
+
+   **Status:** Complete. String constant replaced with
+   `PhpType::Generic` construction. All scope tests pass.
+
+   **What changed:**
+
+   - `DEFAULT_SCOPE_RETURN_TYPE` string constant replaced with
+     `default_scope_return_type()` function that constructs
+     `PhpType::Generic("…Builder", [PhpType::Named("static")])`.
+
+5. **Eloquent attribute types** — `cast_type_to_php_type` in
+   `casts.rs` returns simple type name strings (`"bool"`,
+   `"Carbon\\Carbon"`, etc.).  These are plain class/keyword
+   names, not composite type expressions.  They flow into
+   `PropertyInfo::virtual_property(column, Some(&php_type))`
+   which already parses them into `type_hint_parsed`.  No
+   migration needed — these are identity round-trips.
+
+6. **Facade accessor resolution** — The `getFacadeAccessor` →
+   class lookup produces a class name string.  This stays as a
+   string (it's a class name, not a type expression).
+
+   **`PhpType::Display` fix:** Changed union separator from
+   ` | ` to `|` and intersection separator from ` & ` to `&` in
+   `PhpType`'s `Display` implementation to match PHP convention.
+   Updated 9 tests across `php_type.rs`, `accessors_tests.rs`,
+   `builder_tests.rs`, `hover/tests.rs`, and
+   `tests/completion_laravel.rs` that had been adapted for the
+   spaced format.
+
+### Phase 5: Remove string type fields ✅
+
+All steps complete. The dual `String` / `PhpType` representation
+has been eliminated from the core data model:
+
+- `MethodInfo::return_type` is now `Option<PhpType>` (was
+  `Option<String>`). The redundant `return_type_parsed` field has
+  been removed.
+- `FunctionInfo::return_type` is now `Option<PhpType>`.
+- `ParameterInfo::type_hint` is now `Option<PhpType>` (was
+  `Option<String>`). The redundant `type_hint_parsed` field has
+  been removed.
+- `PropertyInfo::type_hint` is now `Option<PhpType>` (same).
+- `ConstantInfo::type_hint` is now `Option<PhpType>` (same).
+- `ResolvedCallableTarget::return_type` is now `Option<PhpType>`.
+
+Convenience methods `return_type_str()` and `type_hint_str()`
+(returning `Option<String>`) are provided on each struct for
+display sites that need a string.
+
+`apply_substitution_to_method` and `apply_substitution_to_property`
+now call `PhpType::substitute()` directly on the structured type
+tree, eliminating the parse/to_string round-trip.
+
+The `split_intersection_depth0` function (test-only, no production
+callers) has been deleted along with its re-exports and tests.
+
+Deleted types and functions: `ConditionalReturnType`,
+`ParamCondition`, `replace_self_in_type`, `is_scalar`,
+`SCALAR_TYPES`, `raw_type_is_nullable`, `strip_null_from_union`,
+`strip_generics`, `strip_nullable`, `normalize_nullable`,
+`find_matching_close`, `parse_conditional_expr`,
+`parse_type_or_conditional`, `find_token_at_depth`,
+`parse_condition`, `split_intersection_depth0`, and 5 local
+helpers in `inheritance.rs`.
+
+Remaining intra-docblock string helpers (`clean_type`,
+`split_union_depth0`, `split_generic_args`, `split_type_token`,
+`PHPDOC_TYPE_KEYWORDS`) are kept: they operate on raw docblock
+text (not struct fields) and have no `PhpType` equivalent.
+
+See `docs/todo/m4-phase5-scratch.md` for detailed step tracking.
 
 ---
 

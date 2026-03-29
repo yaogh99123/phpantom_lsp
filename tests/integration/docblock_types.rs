@@ -1156,7 +1156,7 @@ async fn test_parse_php_method_return_type_from_docblock() {
         .expect("Should have getConnection method");
 
     assert_eq!(
-        method.return_type.as_deref(),
+        method.return_type_str().as_deref(),
         Some("Connection"),
         "Method should have return type from @return docblock"
     );
@@ -1184,7 +1184,7 @@ async fn test_parse_php_property_type_from_docblock() {
         .expect("Should have logger property");
 
     assert_eq!(
-        prop.type_hint.as_deref(),
+        prop.type_hint_str().as_deref(),
         Some("Logger"),
         "Property should have type from @var docblock"
     );
@@ -1217,7 +1217,7 @@ async fn test_parse_php_docblock_override_compatibility() {
         .find(|p| p.name == "objectProp")
         .expect("Should have objectProp");
     assert_eq!(
-        object_prop.type_hint.as_deref(),
+        object_prop.type_hint_str().as_deref(),
         Some("Logger"),
         "object should be overridden by @var Logger"
     );
@@ -1228,7 +1228,7 @@ async fn test_parse_php_docblock_override_compatibility() {
         .find(|p| p.name == "intProp")
         .expect("Should have intProp");
     assert_eq!(
-        int_prop.type_hint.as_deref(),
+        int_prop.type_hint_str().as_deref(),
         Some("int"),
         "int should NOT be overridden by @var Logger"
     );
@@ -1239,7 +1239,7 @@ async fn test_parse_php_docblock_override_compatibility() {
         .find(|p| p.name == "mixedProp")
         .expect("Should have mixedProp");
     assert_eq!(
-        mixed_prop.type_hint.as_deref(),
+        mixed_prop.type_hint_str().as_deref(),
         Some("Logger"),
         "mixed should be overridden by @var Logger"
     );
@@ -1268,7 +1268,7 @@ async fn test_parse_functions_return_type_from_docblock() {
     assert_eq!(functions.len(), 1);
     assert_eq!(functions[0].name, "app");
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("Application"),
         "Function should have return type from @return docblock"
     );
@@ -1292,14 +1292,14 @@ async fn test_parse_functions_docblock_override_compatibility() {
 
     let make_app = functions.iter().find(|f| f.name == "makeApp").unwrap();
     assert_eq!(
-        make_app.return_type.as_deref(),
+        make_app.return_type_str().as_deref(),
         Some("Application"),
         "mixed should be overridden by @return Application"
     );
 
     let get_count = functions.iter().find(|f| f.name == "getCount").unwrap();
     assert_eq!(
-        get_count.return_type.as_deref(),
+        get_count.return_type_str().as_deref(),
         Some("int"),
         "int should NOT be overridden by @return Application"
     );
@@ -1318,7 +1318,7 @@ async fn test_docblock_return_nullable_union() {
     let functions = backend.parse_functions(php);
     assert_eq!(functions.len(), 1);
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("Application"),
         "@return Application|null should resolve to Application"
     );
@@ -1337,7 +1337,7 @@ async fn test_docblock_return_generic_type_stripped() {
     let functions = backend.parse_functions(php);
     assert_eq!(functions.len(), 1);
     assert_eq!(
-        functions[0].return_type.as_deref(),
+        functions[0].return_type_str().as_deref(),
         Some("Collection<int, Model>"),
         "@return Collection<int, Model> should preserve generic parameters"
     );
@@ -1389,7 +1389,7 @@ async fn test_parse_php_class_property_tags() {
         .find(|p| p.name == "latest_subscription_agreement_id")
         .expect("Should have latest_subscription_agreement_id property");
     assert_eq!(
-        id_prop.type_hint.as_deref(),
+        id_prop.type_hint_str().as_deref(),
         Some("int"),
         "null|int should resolve to int via clean_type"
     );
@@ -1401,7 +1401,7 @@ async fn test_parse_php_class_property_tags() {
         .find(|p| p.name == "mobile_verification_state")
         .expect("Should have mobile_verification_state property");
     assert_eq!(
-        state_prop.type_hint.as_deref(),
+        state_prop.type_hint_str().as_deref(),
         Some("UserMobileVerificationState")
     );
 }
@@ -1489,7 +1489,10 @@ async fn test_real_property_overrides_property_tag() {
 
     // After parsing, only the real declared property is present.
     assert_eq!(classes[0].properties.len(), 1);
-    assert_eq!(classes[0].properties[0].type_hint.as_deref(), Some("int"));
+    assert_eq!(
+        classes[0].properties[0].type_hint_str().as_deref(),
+        Some("int")
+    );
 
     // After resolve_class_fully, still only one — the virtual @property
     // is suppressed because a real property with the same name exists.
@@ -1507,7 +1510,7 @@ async fn test_real_property_overrides_property_tag() {
         "Real property should shadow the @property tag"
     );
     assert_eq!(
-        name_props[0].type_hint.as_deref(),
+        name_props[0].type_hint_str().as_deref(),
         Some("int"),
         "Real declared type should win over @property type"
     );
@@ -1541,7 +1544,7 @@ async fn test_parse_php_property_read_tag() {
         .iter()
         .find(|p| p.name == "session")
         .expect("Should have session property from @property-read");
-    assert_eq!(prop.type_hint.as_deref(), Some("Session"));
+    assert_eq!(prop.type_hint_str().as_deref(), Some("Session"));
 }
 
 /// Test: Goto definition on a magic property jumps to the `@property` line
@@ -1784,7 +1787,7 @@ async fn test_parse_php_class_method_tags() {
         .find(|m| m.name == "mock")
         .expect("Should have mock method from @method tag");
     assert_eq!(
-        mock_method.return_type.as_deref(),
+        mock_method.return_type_str().as_deref(),
         Some("\\Mockery\\MockInterface"),
         "FQN return type should preserve leading backslash"
     );
@@ -1808,7 +1811,7 @@ async fn test_parse_php_class_method_tags() {
         .iter()
         .find(|m| m.name == "getAmountUntilBonusCashIsTriggered")
         .expect("Should have getAmountUntilBonusCashIsTriggered method from @method tag");
-    assert_eq!(static_method.return_type.as_deref(), Some("Decimal"));
+    assert_eq!(static_method.return_type_str().as_deref(), Some("Decimal"));
     assert!(static_method.is_static);
     assert!(static_method.parameters.is_empty());
 }
@@ -2009,7 +2012,10 @@ async fn test_real_method_overrides_method_tag() {
 
     // After parsing, only the real declared method is present.
     assert_eq!(classes[0].methods.len(), 1);
-    assert_eq!(classes[0].methods[0].return_type.as_deref(), Some("int"));
+    assert_eq!(
+        classes[0].methods[0].return_type_str().as_deref(),
+        Some("int")
+    );
 
     // After resolve_class_fully, still only one — the virtual @method
     // is suppressed because a real method with the same name exists.
@@ -2028,7 +2034,7 @@ async fn test_real_method_overrides_method_tag() {
     );
 
     // The real declaration should win (return type int, not string).
-    assert_eq!(name_methods[0].return_type.as_deref(), Some("int"));
+    assert_eq!(name_methods[0].return_type_str().as_deref(), Some("int"));
 }
 
 /// Test: Goto definition on a magic method jumps to the `@method` line
@@ -2187,7 +2193,10 @@ async fn test_parse_php_trait_method_tags() {
     let merged = phpantom_lsp::resolve_class_fully(&classes[0], &no_loader);
     assert_eq!(merged.methods.len(), 1);
     assert_eq!(merged.methods[0].name, "greet");
-    assert_eq!(merged.methods[0].return_type.as_deref(), Some("string"));
+    assert_eq!(
+        merged.methods[0].return_type_str().as_deref(),
+        Some("string")
+    );
 }
 
 /// Test: `@method` tags on interfaces are provided lazily via `resolve_class_fully`.
@@ -2216,7 +2225,7 @@ async fn test_parse_php_interface_method_tags() {
     assert_eq!(merged.methods.len(), 1);
     assert_eq!(merged.methods[0].name, "create");
     assert!(merged.methods[0].is_static);
-    assert_eq!(merged.methods[0].return_type.as_deref(), Some("self"));
+    assert_eq!(merged.methods[0].return_type_str().as_deref(), Some("self"));
     assert_eq!(merged.methods[0].parameters.len(), 1);
     assert_eq!(merged.methods[0].parameters[0].name, "$attributes");
 }

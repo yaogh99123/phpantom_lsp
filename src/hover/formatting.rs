@@ -70,13 +70,13 @@ fn format_params_inner(params: &[ParameterInfo], use_native: bool) -> String {
         .iter()
         .map(|p| {
             let mut parts = Vec::new();
-            let hint = if use_native {
-                p.native_type_hint.as_ref()
+            let hint: Option<String> = if use_native {
+                p.native_type_hint.clone()
             } else {
-                p.type_hint.as_ref()
+                p.type_hint.as_ref().map(|t| t.to_string())
             };
             if let Some(th) = hint {
-                parts.push(th.clone());
+                parts.push(th);
             }
             if p.is_variadic {
                 parts.push(format!("...{}", p.name));
@@ -172,7 +172,8 @@ pub(super) fn build_param_return_section(
     let mut entries = Vec::new();
 
     for p in params {
-        let type_differs = match (p.type_hint.as_deref(), p.native_type_hint.as_deref()) {
+        let eff_str = p.type_hint_str();
+        let type_differs = match (eff_str.as_deref(), p.native_type_hint.as_deref()) {
             (Some(eff), Some(nat)) => !PhpType::parse(eff).equivalent(&PhpType::parse(nat)),
             (Some(eff), None) => eff != "mixed",
             _ => false,
@@ -185,7 +186,7 @@ pub(super) fn build_param_return_section(
 
         let mut entry = format!("**{}**", p.name);
         if type_differs {
-            if let Some(ref eff) = p.type_hint {
+            if let Some(ref eff) = eff_str {
                 entry.push_str(&format!(" `{}`", shorten_type_string(eff)));
             }
             if p.is_variadic {
@@ -368,9 +369,10 @@ pub(crate) fn hover_for_function(
     }
 
     // Build the readable param/return section as markdown.
+    let effective_return = func.return_type_str();
     if let Some(section) = build_param_return_section(
         &func.parameters,
-        func.return_type.as_deref(),
+        effective_return.as_deref(),
         func.native_return_type.as_deref(),
         func.return_description.as_deref(),
     ) {

@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Faster startup.** Stub loading during initialization is significantly faster.
+- **More accurate type operations.** Type substitution during generic resolution (e.g. `Collection<int, User>` inheriting from `Collection<TKey, TValue>`) now operates on the structured type tree instead of string manipulation, improving correctness for complex nested types.
 
 ### Fixed
 

@@ -1,4 +1,5 @@
 use crate::common::{create_test_backend, create_test_backend_with_function_stubs};
+use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -2118,7 +2119,7 @@ fn replace_deprecated_function_call_action_offered() {
                     name: "read_exif_data".to_string(),
                     name_offset: 0,
                     parameters: vec![],
-                    return_type: Some("array".to_string()),
+                    return_type: Some(PhpType::parse("array")),
                     native_return_type: None,
                     description: None,
                     return_description: None,

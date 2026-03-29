@@ -49,7 +49,7 @@ fn synthesizes_has_many_property() {
         .find(|p| p.name == "posts")
         .unwrap();
     assert_eq!(
-        rel_prop.type_hint.as_deref(),
+        rel_prop.type_hint_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Collection<Post>")
     );
     assert_eq!(rel_prop.visibility, Visibility::Public);
@@ -72,7 +72,7 @@ fn synthesizes_has_one_property() {
         .iter()
         .find(|p| p.name == "profile")
         .unwrap();
-    assert_eq!(rel_prop.type_hint.as_deref(), Some("Profile"));
+    assert_eq!(rel_prop.type_hint_str().as_deref(), Some("Profile"));
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn synthesizes_belongs_to_property() {
         .iter()
         .find(|p| p.name == "author")
         .unwrap();
-    assert_eq!(rel_prop.type_hint.as_deref(), Some("User"));
+    assert_eq!(rel_prop.type_hint_str().as_deref(), Some("User"));
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn synthesizes_morph_to_property() {
         .find(|p| p.name == "commentable")
         .unwrap();
     assert_eq!(
-        rel_prop.type_hint.as_deref(),
+        rel_prop.type_hint_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Model")
     );
     // MorphTo also gets a _count property
@@ -135,7 +135,7 @@ fn synthesizes_belongs_to_many_property() {
         .find(|p| p.name == "roles")
         .unwrap();
     assert_eq!(
-        rel_prop.type_hint.as_deref(),
+        rel_prop.type_hint_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Collection<Role>")
     );
 }
@@ -207,7 +207,7 @@ fn handles_fqn_relationship_return_types() {
         .find(|p| p.name == "posts")
         .unwrap();
     assert_eq!(
-        rel_prop.type_hint.as_deref(),
+        rel_prop.type_hint_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Collection<Post>")
     );
     assert!(result.properties.iter().any(|p| p.name == "posts_count"));
@@ -234,7 +234,7 @@ fn relationship_without_generics_and_singular_produces_nothing() {
         count_prop.is_some(),
         "Even without generics, a _count property should be produced"
     );
-    assert_eq!(count_prop.unwrap().type_hint.as_deref(), Some("int"));
+    assert_eq!(count_prop.unwrap().type_hint_str().as_deref(), Some("int"));
 }
 
 #[test]
@@ -253,7 +253,7 @@ fn collection_relationship_without_generics_uses_model_fallback() {
         .find(|p| p.name == "posts")
         .unwrap();
     assert_eq!(
-        rel_prop.type_hint.as_deref(),
+        rel_prop.type_hint_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Collection<Illuminate\\Database\\Eloquent\\Model>")
     );
     assert!(result.properties.iter().any(|p| p.name == "posts_count"));
@@ -292,7 +292,7 @@ fn provides_fqn_related_type_in_collection() {
         .find(|p| p.name == "posts")
         .unwrap();
     assert_eq!(
-        rel_prop.type_hint.as_deref(),
+        rel_prop.type_hint_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Collection<\\App\\Models\\Post>")
     );
     assert!(result.properties.iter().any(|p| p.name == "posts_count"));
@@ -315,7 +315,7 @@ fn provides_fqn_related_type_singular() {
         .find(|p| p.name == "profile")
         .unwrap();
     assert_eq!(
-        rel_prop.type_hint.as_deref(),
+        rel_prop.type_hint_str().as_deref(),
         Some("\\App\\Models\\Profile")
     );
 }
@@ -344,7 +344,7 @@ fn synthesizes_scope_as_both_static_and_instance() {
     assert_eq!(instance.name, "active");
     assert!(instance.parameters.is_empty());
     assert_eq!(
-        instance.return_type.as_deref(),
+        instance.return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 
@@ -352,7 +352,7 @@ fn synthesizes_scope_as_both_static_and_instance() {
     assert_eq!(static_m.name, "active");
     assert!(static_m.parameters.is_empty());
     assert_eq!(
-        static_m.return_type.as_deref(),
+        static_m.return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 }
@@ -382,7 +382,10 @@ fn synthesizes_scope_with_extra_params() {
     assert_eq!(instance.name, "ofType");
     assert_eq!(instance.parameters.len(), 1);
     assert_eq!(instance.parameters[0].name, "$type");
-    assert_eq!(instance.parameters[0].type_hint.as_deref(), Some("string"));
+    assert_eq!(
+        instance.parameters[0].type_hint_str().as_deref(),
+        Some("string")
+    );
 }
 
 #[test]
@@ -477,7 +480,7 @@ fn scope_with_custom_return_type() {
     let result = provider.provide(&user, &no_loader, None);
     let instance = result.methods.iter().find(|m| !m.is_static).unwrap();
     assert_eq!(
-        instance.return_type.as_deref(),
+        instance.return_type_str().as_deref(),
         Some("\\App\\Builders\\UserBuilder")
     );
 }
@@ -618,7 +621,7 @@ fn scope_attribute_with_custom_return_type() {
     let result = provider.provide(&user, &no_loader, None);
     let instance = result.methods.iter().find(|m| !m.is_static).unwrap();
     assert_eq!(
-        instance.return_type.as_deref(),
+        instance.return_type_str().as_deref(),
         Some("\\App\\Builders\\UserBuilder")
     );
 }
@@ -752,7 +755,7 @@ fn provide_scope_beats_builder_method_with_same_name() {
     );
     // The scope version has the default builder return type.
     assert_eq!(
-        static_wheres[0].return_type.as_deref(),
+        static_wheres[0].return_type_str().as_deref(),
         Some("Illuminate\\Database\\Eloquent\\Builder<static>"),
         "First static 'where' should be from the scope (added first)"
     );
@@ -788,7 +791,7 @@ fn synthesizes_legacy_accessor_property() {
             .map(|p| &p.name)
             .collect::<Vec<_>>()
     );
-    assert_eq!(prop.unwrap().type_hint.as_deref(), Some("string"));
+    assert_eq!(prop.unwrap().type_hint_str().as_deref(), Some("string"));
     assert!(!prop.unwrap().is_static);
 }
 
@@ -822,7 +825,7 @@ fn synthesizes_modern_accessor_property() {
             .map(|p| &p.name)
             .collect::<Vec<_>>()
     );
-    assert_eq!(prop.unwrap().type_hint.as_deref(), Some("mixed"));
+    assert_eq!(prop.unwrap().type_hint_str().as_deref(), Some("mixed"));
 }
 
 #[test]
@@ -851,7 +854,7 @@ fn synthesizes_modern_accessor_property_with_generic_type() {
         "Modern accessor fullName() returning Attribute<string, never> should produce property full_name",
     );
     assert_eq!(
-        prop.unwrap().type_hint.as_deref(),
+        prop.unwrap().type_hint_str().as_deref(),
         Some("string"),
         "Should extract first generic arg as the property type"
     );
@@ -877,7 +880,7 @@ fn synthesizes_modern_accessor_property_short_name_generic() {
     let result = provider.provide(&user, &loader, None);
     let prop = result.properties.iter().find(|p| p.name == "age");
     assert!(prop.is_some());
-    assert_eq!(prop.unwrap().type_hint.as_deref(), Some("int"));
+    assert_eq!(prop.unwrap().type_hint_str().as_deref(), Some("int"));
 }
 
 #[test]
@@ -1096,18 +1099,18 @@ fn synthesizes_cast_properties() {
 
     let is_admin = result.properties.iter().find(|p| p.name == "is_admin");
     assert!(is_admin.is_some(), "should produce is_admin property");
-    assert_eq!(is_admin.unwrap().type_hint.as_deref(), Some("bool"));
+    assert_eq!(is_admin.unwrap().type_hint_str().as_deref(), Some("bool"));
 
     let created_at = result.properties.iter().find(|p| p.name == "created_at");
     assert!(created_at.is_some(), "should produce created_at property");
     assert_eq!(
-        created_at.unwrap().type_hint.as_deref(),
+        created_at.unwrap().type_hint_str().as_deref(),
         Some("Carbon\\Carbon")
     );
 
     let options = result.properties.iter().find(|p| p.name == "options");
     assert!(options.is_some(), "should produce options property");
-    assert_eq!(options.unwrap().type_hint.as_deref(), Some("array"));
+    assert_eq!(options.unwrap().type_hint_str().as_deref(), Some("array"));
 }
 
 #[test]
@@ -1215,7 +1218,7 @@ fn cast_decimal_with_precision_synthesizes_float() {
         .iter()
         .find(|p| p.name == "price")
         .unwrap();
-    assert_eq!(prop.type_hint.as_deref(), Some("float"));
+    assert_eq!(prop.type_hint_str().as_deref(), Some("float"));
 }
 
 // ── Attribute default property synthesis tests ───────────────────────
@@ -1236,15 +1239,15 @@ fn synthesizes_attribute_default_properties() {
 
     let role = result.properties.iter().find(|p| p.name == "role");
     assert!(role.is_some(), "should produce role property");
-    assert_eq!(role.unwrap().type_hint.as_deref(), Some("string"));
+    assert_eq!(role.unwrap().type_hint_str().as_deref(), Some("string"));
 
     let is_active = result.properties.iter().find(|p| p.name == "is_active");
     assert!(is_active.is_some(), "should produce is_active property");
-    assert_eq!(is_active.unwrap().type_hint.as_deref(), Some("bool"));
+    assert_eq!(is_active.unwrap().type_hint_str().as_deref(), Some("bool"));
 
     let login_count = result.properties.iter().find(|p| p.name == "login_count");
     assert!(login_count.is_some(), "should produce login_count property");
-    assert_eq!(login_count.unwrap().type_hint.as_deref(), Some("int"));
+    assert_eq!(login_count.unwrap().type_hint_str().as_deref(), Some("int"));
 }
 
 #[test]
@@ -1286,7 +1289,7 @@ fn casts_take_priority_over_attribute_defaults() {
         "should have exactly one is_active property"
     );
     assert_eq!(
-        matching[0].type_hint.as_deref(),
+        matching[0].type_hint_str().as_deref(),
         Some("bool"),
         "casts type should win over attributes type"
     );
@@ -1373,7 +1376,7 @@ fn attribute_default_float_type() {
         .iter()
         .find(|p| p.name == "rating")
         .unwrap();
-    assert_eq!(prop.type_hint.as_deref(), Some("float"));
+    assert_eq!(prop.type_hint_str().as_deref(), Some("float"));
 }
 
 #[test]
@@ -1386,7 +1389,7 @@ fn attribute_default_null_type() {
 
     let result = provider.provide(&user, &no_loader, None);
     let prop = result.properties.iter().find(|p| p.name == "bio").unwrap();
-    assert_eq!(prop.type_hint.as_deref(), Some("null"));
+    assert_eq!(prop.type_hint_str().as_deref(), Some("null"));
 }
 
 #[test]
@@ -1403,7 +1406,7 @@ fn attribute_default_array_type() {
         .iter()
         .find(|p| p.name == "settings")
         .unwrap();
-    assert_eq!(prop.type_hint.as_deref(), Some("array"));
+    assert_eq!(prop.type_hint_str().as_deref(), Some("array"));
 }
 
 // ── Column name property synthesis tests ($fillable/$guarded/$hidden) ──
@@ -1424,15 +1427,15 @@ fn synthesizes_column_name_properties_as_mixed() {
 
     let name = result.properties.iter().find(|p| p.name == "name");
     assert!(name.is_some(), "should produce name property");
-    assert_eq!(name.unwrap().type_hint.as_deref(), Some("mixed"));
+    assert_eq!(name.unwrap().type_hint_str().as_deref(), Some("mixed"));
 
     let email = result.properties.iter().find(|p| p.name == "email");
     assert!(email.is_some(), "should produce email property");
-    assert_eq!(email.unwrap().type_hint.as_deref(), Some("mixed"));
+    assert_eq!(email.unwrap().type_hint_str().as_deref(), Some("mixed"));
 
     let password = result.properties.iter().find(|p| p.name == "password");
     assert!(password.is_some(), "should produce password property");
-    assert_eq!(password.unwrap().type_hint.as_deref(), Some("mixed"));
+    assert_eq!(password.unwrap().type_hint_str().as_deref(), Some("mixed"));
 }
 
 #[test]
@@ -1468,14 +1471,14 @@ fn casts_take_priority_over_column_names() {
         .collect();
     assert_eq!(matching.len(), 1, "should have exactly one is_admin");
     assert_eq!(
-        matching[0].type_hint.as_deref(),
+        matching[0].type_hint_str().as_deref(),
         Some("bool"),
         "casts type should win over column name mixed"
     );
 
     let name = result.properties.iter().find(|p| p.name == "name");
     assert!(name.is_some(), "column-only name should still appear");
-    assert_eq!(name.unwrap().type_hint.as_deref(), Some("mixed"));
+    assert_eq!(name.unwrap().type_hint_str().as_deref(), Some("mixed"));
 }
 
 #[test]
@@ -1496,14 +1499,14 @@ fn attributes_take_priority_over_column_names() {
         .collect();
     assert_eq!(matching.len(), 1, "should have exactly one role");
     assert_eq!(
-        matching[0].type_hint.as_deref(),
+        matching[0].type_hint_str().as_deref(),
         Some("string"),
         "attributes type should win over column name mixed"
     );
 
     let email = result.properties.iter().find(|p| p.name == "email");
     assert!(email.is_some(), "column-only email should still appear");
-    assert_eq!(email.unwrap().type_hint.as_deref(), Some("mixed"));
+    assert_eq!(email.unwrap().type_hint_str().as_deref(), Some("mixed"));
 }
 
 #[test]
@@ -1527,10 +1530,18 @@ fn all_three_sources_coexist() {
         .iter()
         .find(|p| p.name == "is_admin")
         .unwrap();
-    assert_eq!(is_admin.type_hint.as_deref(), Some("bool"), "from casts");
+    assert_eq!(
+        is_admin.type_hint_str().as_deref(),
+        Some("bool"),
+        "from casts"
+    );
 
     let role = result.properties.iter().find(|p| p.name == "role").unwrap();
-    assert_eq!(role.type_hint.as_deref(), Some("string"), "from attributes");
+    assert_eq!(
+        role.type_hint_str().as_deref(),
+        Some("string"),
+        "from attributes"
+    );
 
     let email = result
         .properties
@@ -1538,7 +1549,7 @@ fn all_three_sources_coexist() {
         .find(|p| p.name == "email")
         .unwrap();
     assert_eq!(
-        email.type_hint.as_deref(),
+        email.type_hint_str().as_deref(),
         Some("mixed"),
         "from column_names"
     );
@@ -1675,7 +1686,8 @@ fn builder_scope_substitutes_static_in_return_type() {
     assert_eq!(popular.name, "popular");
     // The default return type `\...\Builder<static>` should have
     // `static` substituted with the concrete model name.
-    let ret = popular.return_type.as_deref().unwrap();
+    let ret_str = popular.return_type_str();
+    let ret = ret_str.as_deref().unwrap();
     assert!(
         ret.contains("App\\Models\\Brand"),
         "return type should contain model name, got: {ret}"
@@ -1741,7 +1753,8 @@ fn builder_scope_with_custom_return_type() {
     assert_eq!(methods.len(), 1);
     let draft = &methods[0];
     assert_eq!(draft.name, "draft");
-    let ret = draft.return_type.as_deref().unwrap();
+    let ret_str = draft.return_type_str();
+    let ret = ret_str.as_deref().unwrap();
     assert_eq!(
         ret,
         "\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Post>"

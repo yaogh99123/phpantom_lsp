@@ -222,7 +222,7 @@ function getResult(): Result {
     );
     let info = info.unwrap();
     assert_eq!(
-        info.return_type.as_deref(),
+        info.return_type_str().as_deref(),
         Some("Result"),
         "return type should be resolved after lazy parse"
     );
@@ -263,7 +263,7 @@ fn autoload_function_index_does_not_override_already_parsed() {
     let info = backend.find_or_load_function(&["earlyFunc"]);
     assert!(info.is_some());
     assert_eq!(
-        info.unwrap().return_type.as_deref(),
+        info.unwrap().return_type_str().as_deref(),
         Some("string"),
         "already-parsed function should take priority over autoload index"
     );

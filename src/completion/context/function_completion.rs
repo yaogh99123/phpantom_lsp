@@ -203,8 +203,8 @@ impl Backend {
                 let fqn = key.clone();
                 let is_deprecated = info.deprecation_message.is_some();
 
-                let return_type = info
-                    .return_type
+                let return_type_string = info.return_type_str();
+                let return_type = return_type_string
                     .as_deref()
                     .or(info.native_return_type.as_deref())
                     .map(crate::hover::shorten_type_string);

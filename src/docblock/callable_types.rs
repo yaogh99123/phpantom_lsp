@@ -5,9 +5,8 @@
 //! as well as extracting specific generic parameters from PHP's
 //! `Generator<TKey, TValue, TSend, TReturn>` type.
 
-use super::type_strings::{
-    clean_type, is_scalar, split_generic_args, split_type_token, split_union_depth0, strip_generics,
-};
+use super::type_strings::{clean_type, split_generic_args, split_type_token, split_union_depth0};
+use crate::php_type::PhpType;
 
 /// Extract the return type from a callable/Closure type annotation.
 ///
@@ -241,9 +240,8 @@ pub fn extract_generator_send_type(raw_type: &str) -> Option<String> {
     // TSend is the 3rd parameter (index 2).
     let send_part = args.get(2)?;
     let cleaned = clean_type(send_part.trim());
-    let base_name = strip_generics(&cleaned);
 
-    if base_name.is_empty() || is_scalar(&base_name) {
+    if cleaned.is_empty() || PhpType::parse(&cleaned).is_scalar() {
         return None;
     }
     Some(cleaned)

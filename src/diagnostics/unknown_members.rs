@@ -60,7 +60,7 @@ use crate::completion::resolver::{
     Loaders, ResolutionCtx, resolve_target_classes, resolve_target_classes_expr,
 };
 use crate::completion::variable::resolution::resolve_variable_types;
-use crate::docblock::type_strings::{PHPDOC_TYPE_KEYWORDS, is_scalar, strip_generics};
+
 use crate::hover::variable_type::resolve_variable_type_string;
 use crate::inheritance::resolve_property_type_hint;
 use crate::subject_expr::SubjectExpr;
@@ -830,9 +830,12 @@ fn resolve_scalar_subject_type(
                 return None;
             }
             let raw_type = ResolvedType::type_strings_joined(&resolved);
-            let cleaned = crate::docblock::types::clean_type(&raw_type);
-            if is_scalar(&cleaned) {
-                Some(cleaned)
+            let parsed = crate::php_type::PhpType::parse(&raw_type);
+            if parsed.all_members_primitive_scalar() {
+                let display = parsed
+                    .non_null_type()
+                    .map_or_else(|| parsed.to_string(), |t| t.to_string());
+                Some(display)
             } else {
                 None
             }
@@ -849,9 +852,12 @@ fn resolve_scalar_subject_type(
                     // Check each union branch — if ALL branches are scalar, the
                     // type is scalar.  If any branch is a class, resolve_target_classes
                     // would have returned it, so we wouldn't be here.
-                    let cleaned = crate::docblock::types::clean_type(&hint);
-                    if is_scalar(&cleaned) {
-                        return Some(cleaned);
+                    let parsed = crate::php_type::PhpType::parse(&hint);
+                    if parsed.all_members_primitive_scalar() {
+                        let display = parsed
+                            .non_null_type()
+                            .map_or_else(|| parsed.to_string(), |t| t.to_string());
+                        return Some(display);
                     }
                     // Non-scalar, non-class type (e.g. a type alias we can't
                     // resolve) — treat as unresolvable.
@@ -879,11 +885,12 @@ fn resolve_scalar_subject_type(
                                 .iter()
                                 .find(|m| m.name.eq_ignore_ascii_case(method))
                                 && let Some(ref hint) = m.return_type
+                                && hint.all_members_primitive_scalar()
                             {
-                                let cleaned = crate::docblock::types::clean_type(hint);
-                                if is_scalar(&cleaned) {
-                                    return Some(cleaned);
-                                }
+                                let display = hint
+                                    .non_null_type()
+                                    .map_or_else(|| hint.to_string(), |t| t.to_string());
+                                return Some(display);
                             }
                         }
                     }
@@ -891,11 +898,12 @@ fn resolve_scalar_subject_type(
                     SubjectExpr::FunctionCall(fn_name) => {
                         if let Some(func_info) = function_loader(fn_name)
                             && let Some(ref hint) = func_info.return_type
+                            && hint.all_members_primitive_scalar()
                         {
-                            let cleaned = crate::docblock::types::clean_type(hint);
-                            if is_scalar(&cleaned) {
-                                return Some(cleaned);
-                            }
+                            let display = hint
+                                .non_null_type()
+                                .map_or_else(|| hint.to_string(), |t| t.to_string());
+                            return Some(display);
                         }
                     }
                     // Static method call: Foo::getInt()
@@ -909,11 +917,12 @@ fn resolve_scalar_subject_type(
                                 .iter()
                                 .find(|m| m.name.eq_ignore_ascii_case(method))
                                 && let Some(ref hint) = m.return_type
+                                && hint.all_members_primitive_scalar()
                             {
-                                let cleaned = crate::docblock::types::clean_type(hint);
-                                if is_scalar(&cleaned) {
-                                    return Some(cleaned);
-                                }
+                                let display = hint
+                                    .non_null_type()
+                                    .map_or_else(|| hint.to_string(), |t| t.to_string());
+                                return Some(display);
                             }
                         }
                     }
@@ -972,30 +981,32 @@ fn resolve_unresolvable_class_subject(
         SubjectExpr::CallExpr { callee, .. } => match callee.as_ref() {
             SubjectExpr::FunctionCall(fn_name) => {
                 let fi = function_loader(fn_name)?;
-                fi.return_type.clone()
+                fi.return_type_str()
             }
             _ => None,
         },
         _ => None,
     }?;
 
-    let cleaned = crate::docblock::types::clean_type(&raw_type);
-
-    // Skip scalars, mixed, void, never, array, callable, object, null,
-    // resource, iterable — these are not class names.
-    // Also skip PHPDoc pseudo-types like `class-string<T>`, `list<T>`,
-    // `non-empty-array<K, V>`, etc.  Strip generic parameters first so
-    // that `class-string<BackedEnum>` is recognised as `class-string`.
-    let base = strip_generics(&cleaned);
-    let base_lower = base.to_ascii_lowercase();
-    if is_scalar(&cleaned) || PHPDOC_TYPE_KEYWORDS.contains(&base_lower.as_str()) {
+    let parsed = crate::php_type::PhpType::parse(&raw_type);
+    if parsed.all_members_scalar() {
         return None;
     }
 
-    // The cleaned type looks like a class name.  If we can't resolve it,
+    // Extract the non-null type (e.g. `User|null` → `User`), then get
+    // the base class name.  `base_name()` returns `None` for scalars,
+    // PHPDoc pseudo-types (`class-string`, `list`, etc.), unions, and
+    // other non-class types — so we skip those automatically.
+    let effective = parsed.non_null_type().unwrap_or_else(|| parsed.clone());
+    let base = match effective.base_name() {
+        Some(name) => name.to_string(),
+        None => return None,
+    };
+
+    // The type looks like a class name.  If we can't resolve it,
     // the subject type is an unknown class.
-    if class_loader(&cleaned).is_none() {
-        Some(cleaned)
+    if class_loader(&base).is_none() {
+        Some(base)
     } else {
         None
     }

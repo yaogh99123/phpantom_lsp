@@ -523,7 +523,8 @@ impl Backend {
                         if !subs.is_empty()
                             && let Some(ref ret) = func_info.return_type
                         {
-                            let substituted = apply_substitution(ret, &subs);
+                            let ret_str = ret.to_string();
+                            let substituted = apply_substitution(&ret_str, &subs);
                             let classes: Vec<Arc<ClassInfo>> =
                                 super::type_resolution::type_hint_to_classes(
                                     &substituted,
@@ -541,8 +542,9 @@ impl Backend {
                     }
 
                     if let Some(ref ret) = func_info.return_type {
+                        let ret_str = ret.to_string();
                         return super::type_resolution::type_hint_to_classes(
-                            ret,
+                            &ret_str,
                             "",
                             ctx.all_classes,
                             ctx.class_loader,
@@ -634,9 +636,10 @@ impl Backend {
                     if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                         && let Some(ref ret) = invoke.return_type
                     {
+                        let ret_str = ret.to_string();
                         let classes: Vec<Arc<ClassInfo>> =
                             super::type_resolution::type_hint_to_classes(
-                                ret,
+                                &ret_str,
                                 "",
                                 ctx.all_classes,
                                 ctx.class_loader,
@@ -678,9 +681,10 @@ impl Backend {
                     if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                         && let Some(ref ret) = invoke.return_type
                     {
+                        let ret_str = ret.to_string();
                         let classes: Vec<Arc<ClassInfo>> =
                             super::type_resolution::type_hint_to_classes(
-                                ret,
+                                &ret_str,
                                 "",
                                 ctx.all_classes,
                                 ctx.class_loader,
@@ -764,8 +768,9 @@ impl Backend {
             if !template_subs.is_empty()
                 && let Some(ref ret) = method.return_type
             {
-                let substituted = apply_substitution(ret, template_subs);
-                if substituted.as_ref() != ret.as_str() {
+                let ret_str = ret.to_string();
+                let substituted = apply_substitution(&ret_str, template_subs);
+                if substituted.as_ref() != ret_str.as_str() {
                     let classes: Vec<Arc<ClassInfo>> =
                         super::type_resolution::type_hint_to_classes(
                             &substituted,
@@ -791,7 +796,8 @@ impl Backend {
                 // in the current file's use-map or local classes.
                 // Returning class_info preserves any generic substitutions
                 // already applied (e.g. Builder<User> stays Builder<User>).
-                let trimmed = ret.trim();
+                let ret_str = ret.to_string();
+                let trimmed = ret_str.trim();
                 // Match bare `self`/`static`/`$this` as well as generic
                 // forms like `self<RuleError>`, `static<T>`, etc.
                 let base = trimmed.split('<').next().unwrap_or(trimmed);
@@ -799,7 +805,7 @@ impl Backend {
                     return vec![Arc::new(class_info.clone())];
                 }
                 return super::type_resolution::type_hint_to_classes(
-                    ret,
+                    &ret_str,
                     &class_info.name,
                     all_classes,
                     class_loader,

@@ -755,15 +755,17 @@ impl Backend {
         // the Eloquent Builder and extract the first generic arg as
         // the model name.
         let extract_model_from_builder_ret = |ret: &str| -> Option<String> {
-            let (base, args) = crate::docblock::types::parse_generic_args(ret);
-            if args.is_empty() {
-                return None;
+            let parsed = crate::php_type::PhpType::parse(ret);
+            match &parsed {
+                crate::php_type::PhpType::Generic(base, args) if !args.is_empty() => {
+                    // Check that the base type is the Eloquent Builder.
+                    if base != ELOQUENT_BUILDER_FQN && base != "Builder" {
+                        return None;
+                    }
+                    Some(args[0].to_string())
+                }
+                _ => None,
             }
-            // Check that the base type is the Eloquent Builder.
-            if base != ELOQUENT_BUILDER_FQN && base != "Builder" {
-                return None;
-            }
-            args.into_iter().next().map(|s| s.to_string())
         };
 
         // When a scope declares a bare `Builder` return type (without
@@ -773,8 +775,8 @@ impl Backend {
         // the model name.  All scope methods on the same
         // Builder<Model> instance share the same model, so any match
         // is valid.
-        let model_name = scope_method
-            .return_type
+        let scope_ret_str = scope_method.return_type_str();
+        let model_name = scope_ret_str
             .as_deref()
             .and_then(&extract_model_from_builder_ret)
             .or_else(|| {
@@ -782,9 +784,8 @@ impl Backend {
                     if m.is_static {
                         return None;
                     }
-                    m.return_type
-                        .as_deref()
-                        .and_then(&extract_model_from_builder_ret)
+                    let ret_str = m.return_type_str();
+                    ret_str.as_deref().and_then(&extract_model_from_builder_ret)
                 })
             })?;
 

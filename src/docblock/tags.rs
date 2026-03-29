@@ -24,9 +24,8 @@ use mago_syntax::ast::*;
 use crate::types::{AssertionKind, PhpVersion, TypeAssertion};
 
 use super::parser::{DocblockInfo, collapse_newlines, parse_docblock_for_tags};
-use super::types::{
-    base_class_name, clean_type, is_scalar, normalize_nullable, split_type_token, strip_nullable,
-};
+use super::types::{clean_type, split_type_token};
+use crate::php_type::PhpType;
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -205,25 +204,36 @@ pub fn extract_mixin_tags_from_info(info: &DocblockInfo) -> Vec<(String, Vec<Str
         // generics like `Builder<TRelatedModel>` are treated as one unit).
         let (type_token, _remainder) = split_type_token(desc);
 
-        // Split into base class name and optional generic arguments.
-        let (base, generic_args) = if let Some(angle_pos) = type_token.find('<') {
-            let base_name = &type_token[..angle_pos];
-            let inner_generics = &type_token[angle_pos + 1..];
-            let inner_generics = inner_generics
-                .strip_suffix('>')
-                .unwrap_or(inner_generics)
-                .trim();
-            let args: Vec<String> = if inner_generics.is_empty() {
-                vec![]
-            } else {
-                super::types::split_generic_args(inner_generics)
-                    .into_iter()
-                    .map(|a| a.strip_prefix('\\').unwrap_or(a).to_string())
-                    .collect()
-            };
-            (base_class_name(base_name), args)
-        } else {
-            (base_class_name(type_token), vec![])
+        // Parse the type token into a structured PhpType and extract
+        // the base class name and optional generic arguments.
+        let parsed = PhpType::parse(type_token);
+        let (base, generic_args) = match &parsed {
+            PhpType::Generic(name, args) => {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| {
+                        let s = a.to_string();
+                        s.strip_prefix('\\').unwrap_or(&s).to_string()
+                    })
+                    .collect();
+                (name.clone(), arg_strs)
+            }
+            PhpType::Named(name) => (name.clone(), vec![]),
+            PhpType::Nullable(inner) => match inner.as_ref() {
+                PhpType::Named(name) => (name.clone(), vec![]),
+                PhpType::Generic(name, args) => {
+                    let arg_strs: Vec<String> = args
+                        .iter()
+                        .map(|a| {
+                            let s = a.to_string();
+                            s.strip_prefix('\\').unwrap_or(&s).to_string()
+                        })
+                        .collect();
+                    (name.clone(), arg_strs)
+                }
+                _ => continue,
+            },
+            _ => continue,
         };
 
         if !base.is_empty() {
@@ -1151,87 +1161,149 @@ fn strip_trailing_modifiers(s: &str) -> &str {
 /// bare `object`), and `false` when overriding would lose precision
 /// (e.g. both are scalars).
 pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
+    let doc_parsed = PhpType::parse(docblock_type);
+    let native_parsed = PhpType::parse(native_type);
+
     // If the docblock type is semantically equivalent to the native type
-    // after normalizing nullable syntax (`?X` ↔ `X|null`), there is no
-    // value in overriding — the docblock doesn't carry any extra
-    // information.  For example `callable|null` vs `?callable`, or
-    // `null|string` vs `?string`.
-    if normalize_nullable(docblock_type) == normalize_nullable(native_type) {
+    // (handles `?X` ↔ `X|null`, reordered unions, FQN vs short names),
+    // there is no value in overriding — the docblock doesn't carry any
+    // extra information.
+    if doc_parsed.equivalent(&native_parsed) {
         return false;
     }
 
-    // If the docblock type is itself a scalar, there's no value in
-    // overriding — it wouldn't help with class resolution anyway.
-    // However, a scalar base with generic parameters (e.g.
-    // `array<int, User>`, `iterable<string, Order>`) carries more
-    // type information than the bare native hint and should be kept
-    // so that downstream consumers (foreach element resolution, array
-    // destructuring, etc.) can extract the generic type arguments.
-    let clean_doc = strip_nullable(docblock_type);
-    if is_scalar(clean_doc) && !clean_doc.contains('<') && !clean_doc.contains('{') {
+    // Unwrap nullable wrappers for further analysis.  `?Foo` → `Foo`,
+    // `Foo|null` → `Foo`.  For non-nullable types, use as-is.
+    let doc_inner = unwrap_nullable(&doc_parsed);
+    let native_inner = unwrap_nullable(&native_parsed);
+
+    // If the docblock type is a bare, unparameterised primitive scalar
+    // (`int`, `string`, `bool`, etc.), there's no value in overriding.
+    // We intentionally exclude:
+    //  - PHPDoc pseudo-types (`non-empty-string`, `class-string`,
+    //    `positive-int`) — these are valid refinements.
+    //  - Parameterised types (`array<int>`, `int<0, max>`) — these
+    //    carry type information the native hint doesn't have.
+    //  - Shapes, callables, slices — these also carry extra info.
+    if is_bare_primitive_scalar(doc_inner) {
         return false;
     }
 
-    // Strip nullable wrapper from the native hint for analysis.
-    let clean_native = strip_nullable(native_type);
+    // Produce a lowercased base name for the native type's inner part
+    // (stripping nullable).  This is used for broad-type and refinement
+    // checks below.
+    let native_inner_str = native_inner.to_string();
+    let native_lower = native_inner_str.to_ascii_lowercase();
 
     // `array`, `iterable`, `callable`, and `Closure` are broad types
     // that docblocks commonly refine (e.g. `array` → `list<User>`,
     // `iterable` → `Collection<int, Order>`,
     // `callable` → `callable(Task): void`).
-    // Allow override for these even though they appear in SCALAR_TYPES
-    // (or are simple class names in the case of `Closure`).
-    let native_lower = clean_native.to_ascii_lowercase();
-    if native_lower == "array" || native_lower == "iterable" || native_lower == "callable" {
-        return true;
-    }
-    // `\Closure` / `Closure` is a class, not scalar, but docblocks
-    // often refine it with a callable signature like `Closure(int): bool`.
-    let native_base = clean_native.strip_prefix('\\').unwrap_or(clean_native);
-    if native_base == "Closure" {
+    if matches!(
+        native_lower.as_str(),
+        "array" | "iterable" | "callable" | "closure" | "\\closure"
+    ) {
         return true;
     }
 
     // If the native type is a union or intersection, check each component.
-    if clean_native.contains('|') || clean_native.contains('&') {
-        let parts: Vec<&str> = clean_native
-            .split(['|', '&'])
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        // If ALL parts are scalar, the docblock can't override.
-        // If ANY part is non-scalar, it's plausible to refine.
-        return !parts.iter().all(|p| is_scalar(strip_nullable(p)));
+    // If ALL parts are scalar, the docblock can't override.
+    // If ANY part is non-scalar, it's plausible to refine.
+    match native_inner {
+        PhpType::Union(members) | PhpType::Intersection(members) => {
+            return members.iter().any(|m| !m.is_scalar());
+        }
+        _ => {}
     }
 
-    // If the native type is a narrow scalar (not a broad container handled
-    // above), only allow override when the docblock type is a *compatible
-    // refinement*.  For example `string` → `class-string<Foo>` is valid,
-    // but `string` → `array<int>` is not — the types are fundamentally
-    // incompatible and the native declaration wins.
-    if is_scalar(clean_native) {
-        return is_compatible_refinement(clean_doc, &native_lower);
+    // If the native type is a narrow scalar (not a broad container
+    // handled above), only allow override when the docblock type is a
+    // *compatible refinement*.  For example `string` → `class-string<Foo>`
+    // is valid, but `string` → `array<int>` is not.
+    if native_inner.is_scalar() {
+        let doc_inner_str = doc_inner.to_string();
+        return is_compatible_refinement(&doc_inner_str, &native_lower);
     }
 
-    // If the docblock type carries generic parameters (e.g.
-    // `Collection<User>`) and the native type is a class, the docblock
-    // is refining the class with generic info — allow it.
-    if clean_doc.contains('<') || clean_doc.contains('{') {
+    // If the docblock type carries generic parameters or shape braces,
+    // it is refining the class with extra type info — allow it.
+    if has_parameterisation(doc_inner) {
         return true;
     }
 
     // PHPDoc pseudo-types like `class-string`, `non-empty-string`,
     // `positive-int`, `literal-string`, etc. refine their native
-    // scalar counterparts and should be allowed to override.
-    // These contain hyphens which never appear in native PHP types,
-    // so a hyphen in the base type name is a reliable indicator.
-    if clean_doc.contains('-') {
+    // scalar counterparts.  These contain hyphens which never appear
+    // in native PHP types.
+    let doc_inner_str = doc_inner.to_string();
+    if doc_inner_str.contains('-') {
         return true;
     }
 
     // Native type is a non-scalar class — docblock can always refine.
     true
+}
+
+/// Unwrap nullable wrappers from a `PhpType`.
+///
+/// `Nullable(X)` → `X`.  For non-nullable types, returns the type
+/// unchanged.  Note: `Union([X, Named("null")])` is NOT unwrapped
+/// here — the caller should use `non_null_type()` if needed.
+fn unwrap_nullable(ty: &PhpType) -> &PhpType {
+    match ty {
+        PhpType::Nullable(inner) => inner.as_ref(),
+        _ => ty,
+    }
+}
+
+/// Check whether a `PhpType` has generic parameters or shape braces.
+fn has_parameterisation(ty: &PhpType) -> bool {
+    matches!(
+        ty,
+        PhpType::Generic(_, _) | PhpType::ArrayShape(_) | PhpType::ObjectShape(_)
+    )
+}
+
+/// Check whether a `PhpType` is a bare, unparameterised primitive scalar.
+///
+/// Returns `true` for simple type names like `int`, `string`, `bool`,
+/// `void`, `null`, `array`, `callable`, `iterable`, `resource` (and
+/// aliases like `integer`, `double`, `boolean`).
+///
+/// Returns `false` for:
+/// - PHPDoc pseudo-types (`non-empty-string`, `class-string`, `positive-int`)
+/// - Parameterised types (`array<int>`, `int<0, max>`, `list<User>`)
+/// - Shapes, callables with signatures, slices (`Foo[]`)
+/// - Class names, unions, intersections, etc.
+fn is_bare_primitive_scalar(ty: &PhpType) -> bool {
+    matches!(ty, PhpType::Named(s) if is_bare_primitive_name(s))
+}
+
+/// Whether a type name is one of the basic PHP primitive / built-in names.
+///
+/// This is intentionally narrower than `PhpType::is_scalar()` — it
+/// excludes `mixed`, `object`, `self`, `static`, `parent`, `$this`,
+/// and all PHPDoc pseudo-types like `class-string`, `non-empty-string`.
+fn is_bare_primitive_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "int"
+            | "integer"
+            | "float"
+            | "double"
+            | "string"
+            | "bool"
+            | "boolean"
+            | "void"
+            | "never"
+            | "null"
+            | "false"
+            | "true"
+            | "array"
+            | "callable"
+            | "iterable"
+            | "resource"
+    )
 }
 
 /// Check whether a docblock type is a compatible refinement of a native
@@ -1289,12 +1361,16 @@ pub(crate) fn is_compatible_refinement(docblock_type: &str, native_lower: &str) 
         // `callable` / `Closure` are broad — any callable signature refines them.
         "callable" => true,
         "closure" => true,
-        // `object` is refined by any class name, or `callable-object`.
-        "object" => !is_scalar(&doc_base),
+        // `object` is refined by any class name, `callable-object`,
+        // or an object shape like `object{name: string, age: int}`.
+        "object" => !PhpType::parse(&doc_base).is_scalar() || docblock_type.contains('{'),
         // `mixed` can be refined by anything.
         "mixed" => true,
         // `resource` is refined by `closed-resource`, `open-resource`.
         "resource" => doc_base.contains("resource"),
+        // `self`, `static`, `parent`, `$this` — these are late-bound
+        // type references that any concrete class name refines.
+        "self" | "static" | "parent" | "$this" => !PhpType::parse(&doc_base).is_scalar(),
         // `void`, `never`, `null`, `true`, `false` — these are so narrow
         // that docblock refinement is never meaningful.
         "void" | "never" | "null" | "true" | "false" => false,

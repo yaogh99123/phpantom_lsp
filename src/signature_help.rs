@@ -244,17 +244,17 @@ fn shorten_type(ty: &str) -> String {
 /// Returns `None` when there is nothing to show (no description and the
 /// types are identical or absent).
 fn build_param_documentation(param: &ParameterInfo) -> Option<Documentation> {
-    let effective = param.type_hint.as_deref();
+    let effective = param.type_hint_str();
     let native = param.native_type_hint.as_deref();
     let desc = param.description.as_deref();
 
-    let show_effective = match (effective, native) {
+    let show_effective = match (effective.as_deref(), native) {
         (Some(e), Some(n)) => !crate::hover::types_equivalent(e, n),
         (Some(_), None) => true,
         _ => false,
     };
 
-    let shortened = effective.map(shorten_type);
+    let shortened = effective.as_deref().map(shorten_type);
     let value = match (show_effective, desc) {
         (true, Some(d)) => format!("`{}` {}", shortened.as_deref().unwrap_or(""), d),
         (true, None) => format!("`{}`", shortened.as_deref().unwrap_or("")),
@@ -335,7 +335,7 @@ impl From<crate::types::ResolvedCallableTarget> for ResolvedCallable {
     fn from(t: crate::types::ResolvedCallableTarget) -> Self {
         Self {
             parameters: t.parameters,
-            return_type: t.return_type,
+            return_type: t.return_type.map(|t| t.to_string()),
         }
     }
 }

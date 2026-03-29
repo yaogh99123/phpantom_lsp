@@ -814,7 +814,7 @@ fn resolve_call_raw_return_type(
                     .find(|m| m.name.eq_ignore_ascii_case(method))
                     && let Some(ref ret) = m.return_type
                 {
-                    return Some(ret.clone());
+                    return Some(ret.to_string());
                 }
             }
             None
@@ -828,7 +828,7 @@ fn resolve_call_raw_return_type(
                     .find(|m| m.name.eq_ignore_ascii_case(method))
                 && let Some(ref ret) = m.return_type
             {
-                return Some(ret.clone());
+                return Some(ret.to_string());
             }
             None
         }
@@ -836,7 +836,7 @@ fn resolve_call_raw_return_type(
             if let Some(fl) = ctx.function_loader
                 && let Some(func_info) = fl(fn_name)
             {
-                return func_info.return_type.clone();
+                return func_info.return_type_str();
             }
             None
         }

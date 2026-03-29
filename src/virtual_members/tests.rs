@@ -1,4 +1,5 @@
 use super::*;
+use crate::php_type::PhpType;
 use crate::test_fixtures::{make_class, make_method, make_property};
 use crate::types::{ClassLikeKind, ConstantInfo, Visibility};
 use std::sync::Arc;
@@ -44,7 +45,6 @@ fn virtual_members_not_empty_with_constant() {
             name: "FOO".to_string(),
             name_offset: 0,
             type_hint: None,
-            type_hint_parsed: None,
             visibility: Visibility::Public,
             deprecation_message: None,
             deprecated_replacement: None,
@@ -114,8 +114,8 @@ fn merge_does_not_overwrite_existing_method() {
 
     assert_eq!(class.methods.len(), 1);
     assert_eq!(
-        class.methods[0].return_type.as_deref(),
-        Some("string"),
+        class.methods[0].return_type,
+        Some(PhpType::parse("string")),
         "existing method should not be overwritten"
     );
 }
@@ -145,8 +145,8 @@ fn merge_allows_same_name_methods_with_different_staticness() {
         .find(|m| m.name == "active" && !m.is_static)
         .unwrap();
     assert_eq!(
-        instance.return_type.as_deref(),
-        Some("string"),
+        instance.return_type,
+        Some(PhpType::parse("string")),
         "existing instance method should not be overwritten"
     );
     let static_m = class
@@ -155,8 +155,8 @@ fn merge_allows_same_name_methods_with_different_staticness() {
         .find(|m| m.name == "active" && m.is_static)
         .unwrap();
     assert_eq!(
-        static_m.return_type.as_deref(),
-        Some("Builder"),
+        static_m.return_type,
+        Some(PhpType::parse("Builder")),
         "static variant should be added alongside instance"
     );
 }
@@ -182,8 +182,8 @@ fn merge_replaces_scope_attribute_method_with_virtual() {
 
     assert_eq!(class.methods.len(), 1);
     assert_eq!(
-        class.methods[0].return_type.as_deref(),
-        Some("Builder<static>"),
+        class.methods[0].return_type,
+        Some(PhpType::parse("Builder<static>")),
         "#[Scope] original should be replaced by virtual scope method"
     );
     assert_eq!(
@@ -210,8 +210,8 @@ fn merge_does_not_replace_non_scope_attribute_method() {
 
     assert_eq!(class.methods.len(), 1);
     assert_eq!(
-        class.methods[0].return_type.as_deref(),
-        Some("string"),
+        class.methods[0].return_type,
+        Some(PhpType::parse("string")),
         "non-#[Scope] method should not be replaced"
     );
 }
@@ -250,8 +250,8 @@ fn merge_replaces_scope_attribute_and_adds_static_variant() {
         .find(|m| m.name == "active" && !m.is_static)
         .unwrap();
     assert_eq!(
-        instance.return_type.as_deref(),
-        Some("Builder<static>"),
+        instance.return_type,
+        Some(PhpType::parse("Builder<static>")),
         "instance should be the virtual replacement"
     );
     assert_eq!(instance.visibility, Visibility::Public);
@@ -261,8 +261,8 @@ fn merge_replaces_scope_attribute_and_adds_static_variant() {
         .find(|m| m.name == "active" && m.is_static)
         .unwrap();
     assert_eq!(
-        static_m.return_type.as_deref(),
-        Some("Builder<static>"),
+        static_m.return_type,
+        Some(PhpType::parse("Builder<static>")),
         "static variant should be added"
     );
 }
@@ -287,8 +287,8 @@ fn merge_blocks_same_name_same_staticness() {
 
     assert_eq!(class.methods.len(), 1);
     assert_eq!(
-        class.methods[0].return_type.as_deref(),
-        Some("string"),
+        class.methods[0].return_type,
+        Some(PhpType::parse("string")),
         "existing static method should not be overwritten by virtual static"
     );
 }
@@ -310,8 +310,8 @@ fn merge_does_not_overwrite_existing_property() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("string"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("string")),
         "existing property should not be overwritten"
     );
 }
@@ -331,8 +331,8 @@ fn merge_replaces_mixed_property_with_specific_type() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("Decimal"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("Decimal")),
         "mixed-typed property should be replaced by a more specific type"
     );
 }
@@ -352,8 +352,8 @@ fn merge_replaces_untyped_property_with_specific_type() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("Decimal"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("Decimal")),
         "untyped property should be replaced by a more specific type"
     );
 }
@@ -372,7 +372,7 @@ fn merge_does_not_replace_mixed_with_mixed() {
     merge_virtual_members(&mut class, virtual_members);
 
     assert_eq!(class.properties.len(), 1);
-    assert_eq!(class.properties[0].type_hint.as_deref(), Some("mixed"));
+    assert_eq!(class.properties[0].type_hint, Some(PhpType::parse("mixed")));
 }
 
 #[test]
@@ -390,8 +390,8 @@ fn merge_does_not_replace_specific_type_with_mixed() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("string"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("string")),
         "specific type should not be overwritten by mixed"
     );
 }
@@ -411,8 +411,8 @@ fn merge_generic_type_beats_bare_type() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("array<string>"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("array<string>")),
         "generic type should replace bare type of the same base"
     );
 }
@@ -432,8 +432,8 @@ fn merge_bare_type_beats_mixed() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("array"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("array")),
         "bare type should replace mixed"
     );
 }
@@ -455,8 +455,8 @@ fn merge_bare_type_does_not_replace_generic() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("array<int>"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("array<int>")),
         "bare type should not replace a more specific generic type"
     );
 }
@@ -478,8 +478,8 @@ fn merge_same_specificity_preserves_first_writer() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("array<int>"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("array<int>")),
         "equal specificity should preserve the first writer, not merge or replace"
     );
 }
@@ -499,8 +499,8 @@ fn merge_mixed_does_not_replace_bare_type() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("array"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("array")),
         "mixed should not replace a bare type"
     );
 }
@@ -613,8 +613,8 @@ fn merge_generic_virtual_beats_native_bare() {
 
     assert_eq!(class.properties.len(), 1);
     assert_eq!(
-        class.properties[0].type_hint.as_deref(),
-        Some("array<string>"),
+        class.properties[0].type_hint,
+        Some(PhpType::parse("array<string>")),
         "generic virtual type should replace a property with only a bare native type"
     );
 }
@@ -720,13 +720,13 @@ fn apply_providers_in_priority_order() {
 
     let do_stuff = class.methods.iter().find(|m| m.name == "doStuff").unwrap();
     assert_eq!(
-        do_stuff.return_type.as_deref(),
-        Some("string"),
+        do_stuff.return_type,
+        Some(PhpType::parse("string")),
         "higher-priority provider should win"
     );
 
     let other = class.methods.iter().find(|m| m.name == "other").unwrap();
-    assert_eq!(other.return_type.as_deref(), Some("bool"));
+    assert_eq!(other.return_type, Some(PhpType::parse("bool")));
 }
 
 #[test]
@@ -761,8 +761,8 @@ fn apply_providers_real_members_beat_virtual() {
 
     assert_eq!(class.methods.len(), 1);
     assert_eq!(
-        class.methods[0].return_type.as_deref(),
-        Some("string"),
+        class.methods[0].return_type,
+        Some(PhpType::parse("string")),
         "real declared method should not be overwritten by virtual"
     );
 }
@@ -793,13 +793,13 @@ fn apply_providers_property_priority() {
 
     let name = class.properties.iter().find(|p| p.name == "name").unwrap();
     assert_eq!(
-        name.type_hint.as_deref(),
-        Some("string"),
+        name.type_hint,
+        Some(PhpType::parse("string")),
         "higher-priority provider property should win"
     );
 
     let email = class.properties.iter().find(|p| p.name == "email").unwrap();
-    assert_eq!(email.type_hint.as_deref(), Some("string"));
+    assert_eq!(email.type_hint, Some(PhpType::parse("string")));
 }
 
 /// When a higher-priority provider contributes a `mixed` property and
@@ -831,8 +831,8 @@ fn apply_providers_low_priority_overrides_mixed_from_high_priority() {
 
     let vat = class.properties.iter().find(|p| p.name == "vat").unwrap();
     assert_eq!(
-        vat.type_hint.as_deref(),
-        Some("Decimal"),
+        vat.type_hint,
+        Some(PhpType::parse("Decimal")),
         "PHPDoc @property type should replace mixed from Laravel provider"
     );
 }
@@ -867,8 +867,8 @@ fn apply_providers_low_priority_cannot_override_specific_from_high_priority() {
         .find(|p| p.name == "is_admin")
         .unwrap();
     assert_eq!(
-        prop.type_hint.as_deref(),
-        Some("bool"),
+        prop.type_hint,
+        Some(PhpType::parse("bool")),
         "higher-priority specific type should not be replaced"
     );
 }
@@ -903,8 +903,8 @@ fn apply_providers_generic_from_low_priority_beats_bare_from_high_priority() {
 
     let tags = class.properties.iter().find(|p| p.name == "tags").unwrap();
     assert_eq!(
-        tags.type_hint.as_deref(),
-        Some("array<string>"),
+        tags.type_hint,
+        Some(PhpType::parse("array<string>")),
         "generic type from PHPDoc should replace bare type from Laravel provider"
     );
 }
@@ -935,8 +935,8 @@ fn apply_providers_same_specificity_preserves_high_priority() {
 
     let tags = class.properties.iter().find(|p| p.name == "tags").unwrap();
     assert_eq!(
-        tags.type_hint.as_deref(),
-        Some("array<int>"),
+        tags.type_hint,
+        Some(PhpType::parse("array<int>")),
         "equal specificity should preserve higher-priority provider, not merge types"
     );
 }
@@ -1208,8 +1208,7 @@ fn resolve_class_fully_merges_transitive_interface_constants() {
     unit_value.constants.push(ConstantInfo {
         name: "JANUARY".to_string(),
         name_offset: 0,
-        type_hint: Some("int".to_string()),
-        type_hint_parsed: None,
+        type_hint: Some(PhpType::parse("int")),
         visibility: Visibility::Public,
         deprecation_message: None,
         deprecated_replacement: None,

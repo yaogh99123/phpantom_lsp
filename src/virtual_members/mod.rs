@@ -476,7 +476,7 @@ fn type_specificity(hint: &Option<String>) -> u8 {
 /// any type information, even when docblocks are absent.
 fn property_type_specificity(property: &PropertyInfo) -> u8 {
     // First check the effective type hint (may include docblock override)
-    let effective_score = type_specificity(&property.type_hint);
+    let effective_score = type_specificity(&property.type_hint_str());
 
     // If effective type is specific enough, use it
     if effective_score > 0 {
@@ -953,7 +953,7 @@ fn merge_interface_members_into(
                 existing.parameters.iter_mut().zip(&iface_method.parameters)
             {
                 let has_own_docblock_type = existing_param.type_hint.is_some()
-                    && existing_param.type_hint != existing_param.native_type_hint;
+                    && existing_param.type_hint_str() != existing_param.native_type_hint;
                 if !has_own_docblock_type && iface_param.type_hint.is_some() {
                     existing_param.type_hint = iface_param.type_hint.clone();
                 }

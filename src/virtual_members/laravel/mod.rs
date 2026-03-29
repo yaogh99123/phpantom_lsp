@@ -96,6 +96,7 @@ use casts::cast_type_to_php_type;
 pub use factory::LaravelFactoryProvider;
 pub(crate) use factory::{factory_to_model_fqn, model_to_factory_fqn};
 
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, PropertyInfo};
 
 use super::{ResolvedClassCache, VirtualMemberProvider, VirtualMembers};
@@ -290,7 +291,9 @@ fn inject_model_virtual_methods(
 
         // Substitute self-referencing return types.
         if let Some(ref mut ret) = forwarded.return_type {
-            *ret = apply_substitution(ret, &subs).into_owned();
+            let ret_str = ret.to_string();
+            let substituted = apply_substitution(&ret_str, &subs);
+            *ret = PhpType::parse(&substituted);
         }
 
         builder.methods.push(forwarded);
@@ -416,7 +419,10 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 let prop_name = legacy_accessor_property_name(&method.name);
                 properties.push(PropertyInfo {
                     deprecation_message: method.deprecation_message.clone(),
-                    ..PropertyInfo::virtual_property(&prop_name, method.return_type.as_deref())
+                    ..PropertyInfo::virtual_property(
+                        &prop_name,
+                        method.return_type_str().as_deref(),
+                    )
                 });
                 continue;
             }
@@ -433,7 +439,8 @@ impl VirtualMemberProvider for LaravelModelProvider {
             }
 
             // ── Relationship properties ─────────────────────────────
-            let return_type = match method.return_type.as_deref() {
+            let return_type_str = method.return_type_str();
+            let return_type = match return_type_str.as_deref() {
                 Some(rt) => rt,
                 None => continue,
             };
@@ -481,7 +488,8 @@ impl VirtualMemberProvider for LaravelModelProvider {
         // property with that name already exists (e.g. from an explicit
         // `@property` tag).
         for method in &class.methods {
-            let return_type = match method.return_type.as_deref() {
+            let return_type_str = method.return_type_str();
+            let return_type = match return_type_str.as_deref() {
                 Some(rt) => rt,
                 None => continue,
             };

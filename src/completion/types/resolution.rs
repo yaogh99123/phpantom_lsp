@@ -19,10 +19,6 @@
 ///   type alias reference (`from:ClassName:OriginalName`).
 use std::sync::Arc;
 
-use crate::docblock;
-use crate::docblock::types::{
-    parse_generic_args, split_intersection_depth0, split_union_depth0, strip_generics,
-};
 use crate::inheritance::apply_generic_args;
 use crate::php_type::PhpType;
 use crate::types::*;
@@ -114,12 +110,15 @@ fn type_hint_to_classes_depth(
         );
     }
 
-    // ── Union type: split on `|` at depth 0, respecting `<…>` nesting ──
-    let union_parts = split_union_depth0(hint);
-    if union_parts.len() > 1 {
+    // ── Parse the type hint into a structured PhpType ──────────────
+    let parsed = PhpType::parse(hint);
+
+    // ── Union type ─────────────────────────────────────────────────
+    if let PhpType::Union(ref members) = parsed {
         let mut results = Vec::new();
-        for part in union_parts {
-            let part = part.trim();
+        for member in members {
+            let part_str = member.to_string();
+            let part = part_str.trim();
             if part.is_empty() {
                 continue;
             }
@@ -137,16 +136,14 @@ fn type_hint_to_classes_depth(
         return results;
     }
 
-    // ── Intersection type: split on `&` at depth 0 and resolve each part ──
+    // ── Intersection type ──────────────────────────────────────────
     // `User&JsonSerializable` means the value satisfies *all* listed
     // types, so completions should include members from every part.
-    // Uses depth-aware splitting so that `&` inside `{…}` or `<…>`
-    // (e.g. `object{foo: A&B}`) is not treated as a top-level split.
-    let intersection_parts = split_intersection_depth0(hint);
-    if intersection_parts.len() > 1 {
+    if let PhpType::Intersection(ref members) = parsed {
         let mut results = Vec::new();
-        for part in intersection_parts {
-            let part = part.trim();
+        for member in members {
+            let part_str = member.to_string();
+            let part = part_str.trim();
             if part.is_empty() {
                 continue;
             }
@@ -166,25 +163,25 @@ fn type_hint_to_classes_depth(
     // Synthesise a ClassInfo with public properties from the shape
     // entries so that `$var->foo` resolves through normal property
     // resolution.  Object shape properties are read-only.
-    if docblock::types::is_object_shape(hint)
-        && let Some(entries) = docblock::parse_object_shape(hint)
-    {
+    if let PhpType::ObjectShape(ref entries) = parsed {
         let properties = SharedVec::from_vec(
             entries
-                .into_iter()
-                .map(|e| PropertyInfo {
-                    name: e.key,
-                    name_offset: 0,
-                    type_hint: Some(e.value_type.clone()),
-                    type_hint_parsed: Some(e.value_type).as_deref().map(PhpType::parse),
-                    native_type_hint: None,
-                    description: None,
-                    is_static: false,
-                    visibility: Visibility::Public,
-                    deprecation_message: None,
-                    deprecated_replacement: None,
-                    see_refs: Vec::new(),
-                    is_virtual: true,
+                .iter()
+                .map(|e| {
+                    let value_str = e.value_type.to_string();
+                    PropertyInfo {
+                        name: e.key.clone().unwrap_or_default(),
+                        name_offset: 0,
+                        type_hint: Some(PhpType::parse(&value_str)),
+                        native_type_hint: None,
+                        description: None,
+                        is_static: false,
+                        visibility: Visibility::Public,
+                        deprecation_message: None,
+                        deprecated_replacement: None,
+                        see_refs: Vec::new(),
+                        is_virtual: true,
+                    }
                 })
                 .collect(),
         );
@@ -213,26 +210,33 @@ fn type_hint_to_classes_depth(
             .collect();
     }
 
+    // ── Extract base name and generic args from the parsed type ────
+    // `Collection<int, User>` → base_hint = `Collection`, generic_args = ["int", "User"]
+    // `self<RuleError>`       → base_hint = `self`,       generic_args = ["RuleError"]
+    // `Foo`                   → base_hint = `Foo`,        generic_args = []
+    let (base_hint, raw_generic_args): (&str, Vec<String>) = match &parsed {
+        PhpType::Generic(name, args) => {
+            let arg_strings: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            (name.as_str(), arg_strings)
+        }
+        _ => (hint, Vec::new()),
+    };
+
     // ── `self<…>` / `static<…>` / `$this<…>` with generic args ────
     // When a docblock writes e.g. `@return self<RuleError>`, the hint
     // is `self<RuleError>` which doesn't match the bare `self` check
-    // above.  Parse generic args first, and if the base is one of the
-    // self-like keywords, resolve to the owning class so that the
-    // generic substitution path below can apply the type arguments.
-    {
-        let (base, _) = parse_generic_args(hint);
-        if base == "self" || base == "static" || base == "$this" {
-            // Rewrite the hint replacing the self-like keyword with the
-            // owning class name so the normal resolution path handles it.
-            let rewritten = format!("{}{}", owning_class_name, &hint[base.len()..]);
-            return type_hint_to_classes_depth(
-                &rewritten,
-                owning_class_name,
-                all_classes,
-                class_loader,
-                depth,
-            );
-        }
+    // above.  Rewrite the self-like keyword with the owning class name
+    // so the normal resolution path handles it.
+    if matches!(base_hint, "self" | "static" | "$this") && !raw_generic_args.is_empty() {
+        let args_str = raw_generic_args.join(", ");
+        let rewritten = format!("{}<{}>", owning_class_name, args_str);
+        return type_hint_to_classes_depth(
+            &rewritten,
+            owning_class_name,
+            all_classes,
+            class_loader,
+            depth,
+        );
     }
 
     // `parent` refers to the parent class of the owning class.
@@ -254,11 +258,6 @@ fn type_hint_to_classes_depth(
         return vec![];
     }
 
-    // ── Parse generic arguments (if any) ──
-    // `Collection<int, User>` → base_hint = `Collection`, generic_args = ["int", "User"]
-    // `Foo`                   → base_hint = `Foo`,        generic_args = []
-    let (base_hint, raw_generic_args) = parse_generic_args(hint);
-
     // ── Resolve static/self/$this inside generic arguments ────────
     // When a method returns e.g. `Builder<static>`, the generic arg
     // `static` must be resolved to the owning class name so that
@@ -277,9 +276,9 @@ fn type_hint_to_classes_depth(
         .collect();
     let generic_args: Vec<&str> = resolved_generic_args.iter().map(|s| s.as_str()).collect();
 
-    // For class lookup, strip any remaining generics from the base
-    // (should already be clean, but defensive) and use the short name.
-    let base_clean = strip_generics(base_hint);
+    // For class lookup, use the base name (already stripped of generics
+    // by the pattern match above) and get the short name.
+    let base_clean = base_hint.to_string();
     let short = short_name(&base_clean);
 
     // Try local (current-file) lookup by last segment.

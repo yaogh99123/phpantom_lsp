@@ -1,4 +1,5 @@
 use super::*;
+use crate::php_type::PhpType;
 
 #[test]
 fn extract_description_simple() {
@@ -52,8 +53,7 @@ fn format_params_with_types() {
     let params = vec![
         ParameterInfo {
             name: "$name".to_string(),
-            type_hint: Some("string".to_string()),
-            type_hint_parsed: None,
+            type_hint: Some(PhpType::parse("string")),
             native_type_hint: Some("string".to_string()),
             description: None,
             default_value: None,
@@ -64,8 +64,7 @@ fn format_params_with_types() {
         },
         ParameterInfo {
             name: "$age".to_string(),
-            type_hint: Some("int".to_string()),
-            type_hint_parsed: None,
+            type_hint: Some(PhpType::parse("int")),
             native_type_hint: Some("int".to_string()),
             description: None,
             default_value: None,
@@ -85,8 +84,7 @@ fn format_params_with_types() {
 fn format_params_variadic() {
     let params = vec![ParameterInfo {
         name: "$items".to_string(),
-        type_hint: Some("string".to_string()),
-        type_hint_parsed: None,
+        type_hint: Some(PhpType::parse("string")),
         native_type_hint: Some("string".to_string()),
         description: None,
         default_value: None,
@@ -102,8 +100,7 @@ fn format_params_variadic() {
 fn format_params_reference() {
     let params = vec![ParameterInfo {
         name: "$arr".to_string(),
-        type_hint: Some("array".to_string()),
-        type_hint_parsed: None,
+        type_hint: Some(PhpType::parse("array")),
         native_type_hint: Some("array".to_string()),
         description: None,
         default_value: None,
@@ -341,8 +338,7 @@ fn variable_hover_body_nullable_class_not_split() {
     // `Foo|null` has only one class-like type, so it should stay in a single block.
     let body = build_variable_hover_body("$x", "Foo|null", &|_| None, None);
     assert!(!body.contains("---"), "Foo|null should not split: {}", body);
-    // PhpType Display uses spaces around `|` in unions.
-    assert!(body.contains("$x = Foo | null"), "got: {}", body);
+    assert!(body.contains("$x = Foo|null"), "got: {}", body);
 }
 
 #[test]

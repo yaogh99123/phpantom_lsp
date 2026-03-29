@@ -78,7 +78,7 @@ async fn test_parse_php_extracts_properties() {
         .find(|p| p.name == "name")
         .unwrap();
     assert_eq!(
-        name_prop.type_hint.as_deref(),
+        name_prop.type_hint_str().as_deref(),
         Some("string"),
         "name property should have string type hint"
     );
@@ -89,7 +89,7 @@ async fn test_parse_php_extracts_properties() {
         .find(|p| p.name == "age")
         .unwrap();
     assert_eq!(
-        age_prop.type_hint.as_deref(),
+        age_prop.type_hint_str().as_deref(),
         Some("int"),
         "age property should have int type hint"
     );
@@ -153,14 +153,17 @@ async fn test_parse_php_extracts_method_return_type() {
     let greet = &classes[0].methods[0];
     assert_eq!(greet.name, "greet");
     assert_eq!(
-        greet.return_type.as_deref(),
+        greet.return_type_str().as_deref(),
         Some("string"),
         "greet should have return type 'string'"
     );
     assert_eq!(greet.parameters.len(), 1);
     assert_eq!(greet.parameters[0].name, "$name");
     assert!(greet.parameters[0].is_required);
-    assert_eq!(greet.parameters[0].type_hint.as_deref(), Some("string"));
+    assert_eq!(
+        greet.parameters[0].type_hint_str().as_deref(),
+        Some("string")
+    );
 
     let do_stuff = &classes[0].methods[1];
     assert_eq!(do_stuff.name, "doStuff");
@@ -190,13 +193,13 @@ async fn test_parse_php_method_parameter_info() {
     let input = &method.parameters[0];
     assert_eq!(input.name, "$input");
     assert!(input.is_required);
-    assert_eq!(input.type_hint.as_deref(), Some("string"));
+    assert_eq!(input.type_hint_str().as_deref(), Some("string"));
     assert!(!input.is_variadic);
 
     let count = &method.parameters[1];
     assert_eq!(count.name, "$count");
     assert!(count.is_required);
-    assert_eq!(count.type_hint.as_deref(), Some("int"));
+    assert_eq!(count.type_hint_str().as_deref(), Some("int"));
 
     let label = &method.parameters[2];
     assert_eq!(label.name, "$label");
@@ -204,7 +207,7 @@ async fn test_parse_php_method_parameter_info() {
         !label.is_required,
         "$label has a default value, should not be required"
     );
-    assert_eq!(label.type_hint.as_deref(), Some("?string"));
+    assert_eq!(label.type_hint_str().as_deref(), Some("?string"));
 
     let extras = &method.parameters[3];
     assert_eq!(extras.name, "$extras");
@@ -350,7 +353,7 @@ async fn test_parse_php_extracts_constants() {
     let max_retries = &classes[0].constants[1];
     assert_eq!(max_retries.name, "MAX_RETRIES");
     assert_eq!(
-        max_retries.type_hint.as_deref(),
+        max_retries.type_hint_str().as_deref(),
         Some("int"),
         "MAX_RETRIES should have int type hint"
     );
@@ -498,9 +501,15 @@ interface Loggable {
     assert_eq!(classes[0].name, "Loggable");
     assert_eq!(classes[0].methods.len(), 2);
     assert_eq!(classes[0].methods[0].name, "log");
-    assert_eq!(classes[0].methods[0].return_type.as_deref(), Some("void"));
+    assert_eq!(
+        classes[0].methods[0].return_type_str().as_deref(),
+        Some("void")
+    );
     assert_eq!(classes[0].methods[1].name, "getLogLevel");
-    assert_eq!(classes[0].methods[1].return_type.as_deref(), Some("int"));
+    assert_eq!(
+        classes[0].methods[1].return_type_str().as_deref(),
+        Some("int")
+    );
 }
 
 #[tokio::test]
@@ -617,7 +626,7 @@ interface Factory {
         .find(|m| m.name == "create")
         .unwrap();
     assert!(create.is_static);
-    assert_eq!(create.return_type.as_deref(), Some("static"));
+    assert_eq!(create.return_type_str().as_deref(), Some("static"));
 
     let build = classes[0]
         .methods
@@ -652,12 +661,12 @@ class Service {
     );
 
     let cart = cls.properties.iter().find(|p| p.name == "cart").unwrap();
-    assert_eq!(cart.type_hint.as_deref(), Some("IShoppingCart"));
+    assert_eq!(cart.type_hint_str().as_deref(), Some("IShoppingCart"));
     assert_eq!(cart.visibility, Visibility::Private);
     assert!(!cart.is_static);
 
     let logger = cls.properties.iter().find(|p| p.name == "logger").unwrap();
-    assert_eq!(logger.type_hint.as_deref(), Some("Logger"));
+    assert_eq!(logger.type_hint_str().as_deref(), Some("Logger"));
     assert_eq!(logger.visibility, Visibility::Protected);
     assert!(!logger.is_static);
 }
@@ -686,7 +695,7 @@ class ShoppingCartService {
     );
 
     let regular = cls.properties.iter().find(|p| p.name == "regular").unwrap();
-    assert_eq!(regular.type_hint.as_deref(), Some("IShoppingCart"));
+    assert_eq!(regular.type_hint_str().as_deref(), Some("IShoppingCart"));
     assert_eq!(regular.visibility, Visibility::Private);
 
     let promoted = cls
@@ -694,7 +703,7 @@ class ShoppingCartService {
         .iter()
         .find(|p| p.name == "promoted")
         .unwrap();
-    assert_eq!(promoted.type_hint.as_deref(), Some("IShoppingCart"));
+    assert_eq!(promoted.type_hint_str().as_deref(), Some("IShoppingCart"));
     assert_eq!(promoted.visibility, Visibility::Private);
 }
 
@@ -721,10 +730,10 @@ class Config {
     }
 
     let name = cls.properties.iter().find(|p| p.name == "name").unwrap();
-    assert_eq!(name.type_hint.as_deref(), Some("string"));
+    assert_eq!(name.type_hint_str().as_deref(), Some("string"));
 
     let value = cls.properties.iter().find(|p| p.name == "value").unwrap();
-    assert_eq!(value.type_hint.as_deref(), Some("int"));
+    assert_eq!(value.type_hint_str().as_deref(), Some("int"));
 }
 
 #[tokio::test]
@@ -775,11 +784,11 @@ class User {
 
     let name = cls.properties.iter().find(|p| p.name == "name").unwrap();
     assert_eq!(name.visibility, Visibility::Public);
-    assert_eq!(name.type_hint.as_deref(), Some("string"));
+    assert_eq!(name.type_hint_str().as_deref(), Some("string"));
 
     let id = cls.properties.iter().find(|p| p.name == "id").unwrap();
     assert_eq!(id.visibility, Visibility::Private);
-    assert_eq!(id.type_hint.as_deref(), Some("int"));
+    assert_eq!(id.type_hint_str().as_deref(), Some("int"));
 }
 
 // ─── Promoted Property @param Override Tests ────────────────────────────────
@@ -808,7 +817,7 @@ class UserService {
     let cls = &classes[0];
     let users = cls.properties.iter().find(|p| p.name == "users").unwrap();
     assert_eq!(
-        users.type_hint.as_deref(),
+        users.type_hint_str().as_deref(),
         Some("list<User>"),
         "@param list<User> should override native `array` for promoted property"
     );
@@ -817,7 +826,7 @@ class UserService {
     // Both native and docblock agree, so the result stays `string`.
     let name = cls.properties.iter().find(|p| p.name == "name").unwrap();
     assert_eq!(
-        name.type_hint.as_deref(),
+        name.type_hint_str().as_deref(),
         Some("string"),
         "Scalar @param string should keep native `string`"
     );
@@ -845,7 +854,7 @@ class Repository {
     let cls = &classes[0];
     let items = cls.properties.iter().find(|p| p.name == "items").unwrap();
     assert_eq!(
-        items.type_hint.as_deref(),
+        items.type_hint_str().as_deref(),
         Some("UserCollection"),
         "@param UserCollection should override native `object` for promoted property"
     );
@@ -869,10 +878,10 @@ class Service {
 
     let cls = &classes[0];
     let items = cls.properties.iter().find(|p| p.name == "items").unwrap();
-    assert_eq!(items.type_hint.as_deref(), Some("array"));
+    assert_eq!(items.type_hint_str().as_deref(), Some("array"));
 
     let name = cls.properties.iter().find(|p| p.name == "name").unwrap();
-    assert_eq!(name.type_hint.as_deref(), Some("string"));
+    assert_eq!(name.type_hint_str().as_deref(), Some("string"));
 }
 
 /// When the docblock has a `@param` for a non-promoted parameter, it should
@@ -898,11 +907,11 @@ class Service {
     let cls = &classes[0];
     // $logger has matching @param — both agree on LoggerInterface
     let logger = cls.properties.iter().find(|p| p.name == "logger").unwrap();
-    assert_eq!(logger.type_hint.as_deref(), Some("LoggerInterface"));
+    assert_eq!(logger.type_hint_str().as_deref(), Some("LoggerInterface"));
 
     // $data has no @param — should keep native `array`
     let data = cls.properties.iter().find(|p| p.name == "data").unwrap();
-    assert_eq!(data.type_hint.as_deref(), Some("array"));
+    assert_eq!(data.type_hint_str().as_deref(), Some("array"));
 }
 
 /// When a native hint is `int` (scalar) and @param says `UserId` (class),
@@ -928,7 +937,7 @@ class Service {
     let cls = &classes[0];
     let id = cls.properties.iter().find(|p| p.name == "id").unwrap();
     assert_eq!(
-        id.type_hint.as_deref(),
+        id.type_hint_str().as_deref(),
         Some("int"),
         "Native scalar `int` should not be overridden by docblock class `UserId`"
     );
@@ -957,7 +966,7 @@ class OrderService {
     let cls = &classes[0];
     let orders = cls.properties.iter().find(|p| p.name == "orders").unwrap();
     assert_eq!(
-        orders.type_hint.as_deref(),
+        orders.type_hint_str().as_deref(),
         Some("Collection<int, Order>"),
         "@param Collection<int, Order> should override native `object`"
     );
@@ -967,7 +976,7 @@ class OrderService {
     // foreach, so resolve_effective_type now keeps the docblock type.
     let config = cls.properties.iter().find(|p| p.name == "config").unwrap();
     assert_eq!(
-        config.type_hint.as_deref(),
+        config.type_hint_str().as_deref(),
         Some("array<string, mixed>"),
         "Docblock `array<string, mixed>` should override native `array` (generic params preserved)"
     );
@@ -989,15 +998,15 @@ async fn test_parse_functions_standalone() {
 
     let hello = functions.iter().find(|f| f.name == "hello").unwrap();
     assert!(hello.parameters.is_empty());
-    assert_eq!(hello.return_type.as_deref(), Some("void"));
+    assert_eq!(hello.return_type_str().as_deref(), Some("void"));
     assert!(hello.namespace.is_none());
 
     let add = functions.iter().find(|f| f.name == "add").unwrap();
     assert_eq!(add.parameters.len(), 2);
     assert_eq!(add.parameters[0].name, "$a");
-    assert_eq!(add.parameters[0].type_hint.as_deref(), Some("int"));
+    assert_eq!(add.parameters[0].type_hint_str().as_deref(), Some("int"));
     assert_eq!(add.parameters[1].name, "$b");
-    assert_eq!(add.return_type.as_deref(), Some("int"));
+    assert_eq!(add.return_type_str().as_deref(), Some("int"));
     assert!(add.namespace.is_none());
 }
 
@@ -1019,8 +1028,11 @@ async fn test_parse_functions_inside_namespace() {
     assert_eq!(delay.namespace.as_deref(), Some("Amp"));
     assert_eq!(delay.parameters.len(), 1);
     assert_eq!(delay.parameters[0].name, "$seconds");
-    assert_eq!(delay.parameters[0].type_hint.as_deref(), Some("float"));
-    assert_eq!(delay.return_type.as_deref(), Some("void"));
+    assert_eq!(
+        delay.parameters[0].type_hint_str().as_deref(),
+        Some("float")
+    );
+    assert_eq!(delay.return_type_str().as_deref(), Some("void"));
 
     let async_fn = functions.iter().find(|f| f.name == "async").unwrap();
     assert_eq!(async_fn.namespace.as_deref(), Some("Amp"));
@@ -1080,15 +1092,18 @@ async fn test_parse_functions_nullable_and_union_types() {
     assert_eq!(functions.len(), 2);
 
     let maybe = functions.iter().find(|f| f.name == "maybe").unwrap();
-    assert_eq!(maybe.parameters[0].type_hint.as_deref(), Some("?string"));
-    assert_eq!(maybe.return_type.as_deref(), Some("?int"));
+    assert_eq!(
+        maybe.parameters[0].type_hint_str().as_deref(),
+        Some("?string")
+    );
+    assert_eq!(maybe.return_type_str().as_deref(), Some("?int"));
 
     let either = functions.iter().find(|f| f.name == "either").unwrap();
     assert_eq!(
-        either.parameters[0].type_hint.as_deref(),
+        either.parameters[0].type_hint_str().as_deref(),
         Some("string|int")
     );
-    assert_eq!(either.return_type.as_deref(), Some("string|false"));
+    assert_eq!(either.return_type_str().as_deref(), Some("string|false"));
 }
 
 #[tokio::test]
@@ -1215,10 +1230,10 @@ async fn test_parse_functions_multiple_function_exists_guards() {
     assert!(names.contains(&"config"), "Should find config()");
 
     let app = functions.iter().find(|f| f.name == "app").unwrap();
-    assert_eq!(app.return_type.as_deref(), Some("mixed"));
+    assert_eq!(app.return_type_str().as_deref(), Some("mixed"));
 
     let config = functions.iter().find(|f| f.name == "config").unwrap();
-    assert_eq!(config.return_type.as_deref(), Some("mixed"));
+    assert_eq!(config.return_type_str().as_deref(), Some("mixed"));
 }
 
 #[tokio::test]
@@ -1248,7 +1263,7 @@ async fn test_parse_functions_inside_namespace_with_function_exists_guard() {
         Some("Illuminate\\Support"),
         "Should preserve namespace context"
     );
-    assert_eq!(functions[0].return_type.as_deref(), Some("mixed"));
+    assert_eq!(functions[0].return_type_str().as_deref(), Some("mixed"));
 }
 
 #[tokio::test]
@@ -1372,7 +1387,10 @@ async fn test_parse_php_extracts_enum_with_methods() {
     assert_eq!(classes[0].constants.len(), 4, "Should have 4 enum cases");
     assert_eq!(classes[0].methods.len(), 1, "Should have 1 method");
     assert_eq!(classes[0].methods[0].name, "color");
-    assert_eq!(classes[0].methods[0].return_type.as_deref(), Some("string"));
+    assert_eq!(
+        classes[0].methods[0].return_type_str().as_deref(),
+        Some("string")
+    );
 }
 
 #[tokio::test]

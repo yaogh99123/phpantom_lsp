@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::docblock::types::is_scalar;
+use crate::php_type::PhpType;
 use crate::symbol_map::extract_symbol_map;
 
 use bumpalo::Bump;
@@ -237,10 +237,11 @@ impl Backend {
                 let skip_names: Vec<String> = func.template_params.clone();
 
                 if let Some(ref ret) = func.return_type {
+                    let ret_str = ret.to_string();
                     let resolved =
-                        Self::resolve_type_string(ret, &use_map, &namespace, &skip_names);
-                    if resolved != *ret {
-                        func.return_type = Some(resolved);
+                        Self::resolve_type_string(&ret_str, &use_map, &namespace, &skip_names);
+                    if resolved != ret_str {
+                        func.return_type = Some(PhpType::parse(&resolved));
                     }
                 }
                 if let Some(ref ret) = func.native_return_type {
@@ -252,10 +253,11 @@ impl Backend {
                 }
                 for param in &mut func.parameters {
                     if let Some(ref hint) = param.type_hint {
+                        let hint_str = hint.to_string();
                         let resolved =
-                            Self::resolve_type_string(hint, &use_map, &namespace, &skip_names);
-                        if resolved != *hint {
-                            param.type_hint = Some(resolved);
+                            Self::resolve_type_string(&hint_str, &use_map, &namespace, &skip_names);
+                        if resolved != hint_str {
+                            param.type_hint = Some(PhpType::parse(&resolved));
                         }
                     }
                 }
@@ -788,26 +790,31 @@ impl Backend {
                 };
 
                 if let Some(ref ret) = method.return_type {
-                    let resolved = Self::resolve_type_string(ret, use_map, namespace, &method_skip);
-                    if resolved != *ret {
-                        method.return_type = Some(resolved);
+                    let ret_str = ret.to_string();
+                    let resolved =
+                        Self::resolve_type_string(&ret_str, use_map, namespace, &method_skip);
+                    if resolved != ret_str {
+                        method.return_type = Some(PhpType::parse(&resolved));
                     }
                 }
                 for param in &mut method.parameters {
                     if let Some(ref hint) = param.type_hint {
+                        let hint_str = hint.to_string();
                         let resolved =
-                            Self::resolve_type_string(hint, use_map, namespace, &method_skip);
-                        if resolved != *hint {
-                            param.type_hint = Some(resolved);
+                            Self::resolve_type_string(&hint_str, use_map, namespace, &method_skip);
+                        if resolved != hint_str {
+                            param.type_hint = Some(PhpType::parse(&resolved));
                         }
                     }
                 }
             }
             for prop in class.properties.make_mut() {
                 if let Some(ref hint) = prop.type_hint {
-                    let resolved = Self::resolve_type_string(hint, use_map, namespace, &skip_names);
-                    if resolved != *hint {
-                        prop.type_hint = Some(resolved);
+                    let hint_str = hint.to_string();
+                    let resolved =
+                        Self::resolve_type_string(&hint_str, use_map, namespace, &skip_names);
+                    if resolved != hint_str {
+                        prop.type_hint = Some(PhpType::parse(&resolved));
                     }
                 }
             }
@@ -959,14 +966,7 @@ impl Backend {
 
             // Resolve each type argument that is a class-like name
             for arg in type_args.iter_mut() {
-                if !is_scalar(arg)
-                    && *arg != "mixed"
-                    && *arg != "object"
-                    && *arg != "static"
-                    && *arg != "self"
-                    && *arg != "$this"
-                    && !skip_names.contains(arg)
-                {
+                if !PhpType::parse(arg).is_scalar() && !skip_names.contains(arg) {
                     *arg = Self::resolve_name(arg, use_map, namespace);
                 }
             }
@@ -997,59 +997,30 @@ impl Backend {
         skip_names: &[String],
     ) -> String {
         // Keywords that should never be resolved as class names.
-        // NOTE: native PHP types (int, string, array, etc.) are caught by
-        // `is_scalar()` elsewhere — only pseudo-types and special keywords
-        // that slip past that check need to be listed here.
+        // Most built-in types (int, string, array, mixed, self, static,
+        // etc.) are already caught by `PhpType::is_scalar()` above.
+        // This list only contains pseudo-types and special keywords that
+        // `is_scalar()` does not cover.
         const TYPE_KEYWORDS: &[&str] = &[
-            // ── Special keywords ────────────────────────────────────
-            "self",
-            "static",
-            "parent",
-            "$this",
-            "mixed",
-            "object",
-            "void",
-            "never",
-            "null",
-            "true",
-            "false",
+            // ── Misc pseudo-types ───────────────────────────────────
             "class",
-            "callable",
-            "scalar",
-            "numeric",
             "number",
             "empty",
             // ── Integer refinements ─────────────────────────────────
-            "positive-int",
-            "negative-int",
-            "non-negative-int",
-            "non-positive-int",
             "non-zero-int",
             "int-mask",
             "int-mask-of",
             // ── String refinements ──────────────────────────────────
-            "non-empty-string",
-            "numeric-string",
-            "non-falsy-string",
-            "truthy-string",
             "literal-string",
             "callable-string",
-            "lowercase-string",
             "uppercase-string",
-            "non-empty-lowercase-string",
             "non-empty-uppercase-string",
             "non-empty-literal-string",
             // ── Class-string variants ───────────────────────────────
-            "class-string",
-            "interface-string",
             "trait-string",
             "enum-string",
             // ── Array / list refinements ────────────────────────────
-            "list",
-            "non-empty-list",
-            "non-empty-array",
             "associative-array",
-            "array-key",
             // ── Scalar / mixed variants ─────────────────────────────
             "empty-scalar",
             "non-empty-scalar",
@@ -1104,7 +1075,7 @@ impl Backend {
                 }
 
                 let lower = word.to_ascii_lowercase();
-                if is_scalar(word)
+                if PhpType::parse(word).is_scalar()
                     || TYPE_KEYWORDS.contains(&lower.as_str())
                     || skip_names.iter().any(|s| s == word)
                 {

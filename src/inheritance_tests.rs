@@ -100,10 +100,9 @@ fn test_apply_substitution_dnf_parens() {
     let mut subs = HashMap::new();
     subs.insert("T".to_string(), "User".to_string());
 
-    assert_eq!(
-        apply_substitution("(T&Countable)", &subs),
-        "(User&Countable)"
-    );
+    // Standalone `(A&B)` normalizes to `A&B` — the parentheses are
+    // only semantically meaningful inside a union like `(A&B)|C`.
+    assert_eq!(apply_substitution("(T&Countable)", &subs), "User&Countable");
 }
 
 #[test]
@@ -322,8 +321,7 @@ fn test_apply_substitution_to_method_modifies_return_and_params() {
         parameters: vec![crate::types::ParameterInfo {
             name: "$key".to_string(),
             is_required: false,
-            type_hint: Some("TKey".to_string()),
-            type_hint_parsed: None,
+            type_hint: Some(PhpType::parse("TKey")),
             native_type_hint: Some("TKey".to_string()),
             description: None,
             default_value: None,
@@ -331,8 +329,7 @@ fn test_apply_substitution_to_method_modifies_return_and_params() {
             is_reference: false,
             closure_this_type: None,
         }],
-        return_type: Some("TValue".to_string()),
-        return_type_parsed: None,
+        return_type: Some(PhpType::parse("TValue")),
         native_return_type: None,
         description: None,
         return_description: None,
@@ -355,6 +352,6 @@ fn test_apply_substitution_to_method_modifies_return_and_params() {
 
     apply_substitution_to_method(&mut method, &subs);
 
-    assert_eq!(method.return_type.as_deref(), Some("Language"));
-    assert_eq!(method.parameters[0].type_hint.as_deref(), Some("int"));
+    assert_eq!(method.return_type, Some(PhpType::parse("Language")));
+    assert_eq!(method.parameters[0].type_hint, Some(PhpType::parse("int")));
 }
