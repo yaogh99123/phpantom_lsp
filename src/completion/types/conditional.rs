@@ -116,17 +116,17 @@ pub fn resolve_conditional_with_text_args_and_defaults(
             // Check if the conditional subject is a template parameter
             // with a default value (not a method $parameter).
             let target = param.as_str();
-            if !target.starts_with('$') {
-                if let Some(resolved) = try_resolve_with_template_default(
+            if !target.starts_with('$')
+                && let Some(resolved) = try_resolve_with_template_default(
                     target,
                     *negated,
                     condition,
                     then_type,
                     else_type,
                     template_defaults,
-                ) {
-                    return Some(resolved);
-                }
+                )
+            {
+                return Some(resolved);
             }
 
             // Find which parameter index corresponds to $param_name
@@ -431,17 +431,17 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
             // Check if the conditional subject is a template parameter
             // with a default value (not a method $parameter).
             let target = param.as_str();
-            if !target.starts_with('$') {
-                if let Some(resolved) = try_resolve_with_template_default(
+            if !target.starts_with('$')
+                && let Some(resolved) = try_resolve_with_template_default(
                     target,
                     *negated,
                     condition,
                     then_type,
                     else_type,
                     template_defaults,
-                ) {
-                    return Some(resolved);
-                }
+                )
+            {
+                return Some(resolved);
             }
 
             // Find which parameter index corresponds to param
@@ -633,17 +633,17 @@ pub fn resolve_conditional_without_args_and_defaults(
             // Check if the conditional subject is a template parameter
             // with a default value (not a method $parameter).
             let target = param.as_str();
-            if !target.starts_with('$') {
-                if let Some(resolved) = try_resolve_with_template_default(
+            if !target.starts_with('$')
+                && let Some(resolved) = try_resolve_with_template_default(
                     target,
                     *negated,
                     condition,
                     then_type,
                     else_type,
                     template_defaults,
-                ) {
-                    return Some(resolved);
-                }
+                )
+            {
+                return Some(resolved);
             }
 
             // Without arguments we check whether the parameter has a

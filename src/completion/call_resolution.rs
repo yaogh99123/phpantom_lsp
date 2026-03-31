@@ -89,6 +89,36 @@ pub(super) fn build_var_resolver<'a>(
     }
 }
 
+/// Check whether a [`PhpType`] is a self-referencing return type
+/// (`static`, `self`, or `$this`), possibly wrapped in `Nullable`
+/// or `Union` with `null`.
+///
+/// This catches bare forms (`static`), nullable forms (`?static`),
+/// union-with-null forms (`static|null`), and generic forms
+/// (`static<T>`).  The check is intentionally shallow — composite
+/// types like `array<int, static>` are NOT considered self-like
+/// because they require full type resolution to unwrap.
+fn is_self_like_type(ty: &PhpType) -> bool {
+    fn is_self_keyword(name: &str) -> bool {
+        matches!(name, "static" | "self" | "$this")
+    }
+
+    match ty {
+        PhpType::Named(n) => is_self_keyword(n),
+        PhpType::Generic(n, _) => is_self_keyword(n),
+        PhpType::Nullable(inner) => is_self_like_type(inner),
+        PhpType::Union(members) => {
+            // `static|null` — every non-null member is self-like.
+            let non_null: Vec<_> = members
+                .iter()
+                .filter(|m| !matches!(m, PhpType::Named(n) if n == "null"))
+                .collect();
+            !non_null.is_empty() && non_null.iter().all(|m| is_self_like_type(m))
+        }
+        _ => false,
+    }
+}
+
 impl Backend {
     /// Resolve an instance method base expression + method name to a
     /// [`ResolvedCallableTarget`].
@@ -805,14 +835,10 @@ impl Backend {
                 // in the current file's use-map or local classes.
                 // Returning class_info preserves any generic substitutions
                 // already applied (e.g. Builder<User> stays Builder<User>).
-                // Match bare `self`/`static`/`$this` as well as generic
-                // forms like `self<RuleError>`, `static<T>`, etc.
-                let is_self_like = match ret {
-                    PhpType::Named(n) => n == "static" || n == "self" || n == "$this",
-                    PhpType::Generic(n, _) => n == "static" || n == "self" || n == "$this",
-                    _ => false,
-                };
-                if is_self_like {
+                // Match bare `self`/`static`/`$this` as well as nullable
+                // (`?static`) and union (`static|null`) forms, plus
+                // generic wrappers like `self<RuleError>`, `static<T>`.
+                if is_self_like_type(ret) {
                     return vec![Arc::new(class_info.clone())];
                 }
                 return super::type_resolution::type_hint_to_classes_typed(

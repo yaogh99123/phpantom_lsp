@@ -1909,3 +1909,160 @@ class Test extends TestCase {
         id_diags
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Static return type resolution to concrete subclass (T20)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// When a parent class declares `public static function first(): ?static`,
+/// calling `ChildClass::first()` should resolve `static` to `ChildClass`,
+/// not the parent. No false-positive diagnostics should be emitted for
+/// members that exist on the child class.
+#[test]
+fn no_diagnostic_for_static_return_type_on_subclass_static_call() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Model {
+    /** @return ?static */
+    public static function first(): ?static { return null; }
+    public function save(): bool { return true; }
+}
+class AdminUser extends Model {
+    public function assignRole(string $role): void {}
+}
+class Seeder {
+    public function run(): void {
+        $admin = AdminUser::first();
+        $admin->assignRole('admin');
+        $admin->save();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        diags.is_empty(),
+        "No diagnostics expected when static return type resolves to subclass, got: {:?}",
+        diags
+    );
+}
+
+/// Same scenario but with a bare `static` return (non-nullable).
+#[test]
+fn no_diagnostic_for_bare_static_return_type_on_subclass() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Builder {
+    /** @return static */
+    public static function create(): static { return new static(); }
+    public function build(): void {}
+}
+class AppBuilder extends Builder {
+    public function setDebug(): void {}
+}
+class Factory {
+    public function make(): void {
+        $b = AppBuilder::create();
+        $b->setDebug();
+        $b->build();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        diags.is_empty(),
+        "No diagnostics expected for bare static return on subclass, got: {:?}",
+        diags
+    );
+}
+
+/// Chained static method calls: `Product::query()->where('x')->get()`
+/// where `query()` and `where()` both return `static`.
+#[test]
+fn no_diagnostic_for_static_return_chained_static_call() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Model {
+    /** @return static */
+    public static function query(): static { return new static(); }
+    /** @return static */
+    public function where(string $col): static { return $this; }
+    public function get(): array { return []; }
+}
+class Product extends Model {
+    public function applyDiscount(): void {}
+}
+class Controller {
+    public function index(): void {
+        $q = Product::query();
+        $q->where('active');
+        $q->applyDiscount();
+        $q->get();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        diags.is_empty(),
+        "No diagnostics expected for chained static return calls, got: {:?}",
+        diags
+    );
+}
+
+/// Cross-file variant: parent with `?static` return lives in a separate
+/// PSR-4 file. Accessing subclass-specific members after a static method
+/// call should not produce false-positive diagnostics.
+#[test]
+fn no_diagnostic_for_static_return_type_cross_file() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        &[
+            (
+                "src/Model.php",
+                r#"<?php
+namespace App;
+
+class Model {
+    /** @return ?static */
+    public static function first(): ?static { return null; }
+    public function save(): bool { return true; }
+}
+"#,
+            ),
+            (
+                "src/AdminUser.php",
+                r#"<?php
+namespace App;
+
+class AdminUser extends Model {
+    public function assignRole(string $role): void {}
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\AdminUser;
+
+class Seeder {
+    public function run(): void {
+        $admin = AdminUser::first();
+        $admin->assignRole('admin');
+        $admin->save();
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        diags.is_empty(),
+        "No diagnostics expected when static return type resolves to subclass cross-file, got: {:?}",
+        diags
+    );
+}

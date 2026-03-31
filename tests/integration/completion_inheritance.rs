@@ -1874,3 +1874,249 @@ async fn test_completion_deep_inheritance_through_stubs() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Static return type on static method called from subclass (T20) ─────────
+
+/// When a parent class declares `public static function first(): ?static`,
+/// calling `ChildClass::first()` should resolve `static` to `ChildClass`,
+/// not to the parent where `first()` is defined.
+#[tokio::test]
+async fn test_static_return_type_on_static_method_called_from_subclass() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///static_method_return.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Model {\n",
+        "    /** @return ?static */\n",
+        "    public static function first(): ?static { return null; }\n",
+        "    public function save(): bool { return true; }\n",
+        "}\n",
+        "class AdminUser extends Model {\n",
+        "    public function assignRole(string $role): void {}\n",
+        "}\n",
+        "class TestClass {\n",
+        "    public function test() {\n",
+        "        $admin = AdminUser::first();\n",
+        "        $admin->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        None => vec![],
+    };
+
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap())
+        .collect();
+
+    assert!(
+        !method_names.is_empty(),
+        "Should resolve type of $admin from AdminUser::first() returning ?static. Got no methods."
+    );
+    assert!(
+        method_names.contains(&"assignRole"),
+        "static return should resolve to AdminUser, including own method assignRole. Got: {:?}",
+        method_names
+    );
+    assert!(
+        method_names.contains(&"save"),
+        "Should include inherited save from Model. Got: {:?}",
+        method_names
+    );
+}
+
+/// Cross-file variant: `ChildClass::staticMethod()` where `staticMethod()`
+/// returns `static` and is defined on a parent in a separate PSR-4 file.
+#[tokio::test]
+async fn test_static_return_type_on_static_method_cross_file() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Model.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App;\n",
+                    "class Model {\n",
+                    "    /** @return ?static */\n",
+                    "    public static function first(): ?static { return null; }\n",
+                    "    public function save(): bool { return true; }\n",
+                    "}\n",
+                ),
+            ),
+            (
+                "src/AdminUser.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App;\n",
+                    "class AdminUser extends Model {\n",
+                    "    public function assignRole(string $role): void {}\n",
+                    "}\n",
+                ),
+            ),
+        ],
+    );
+
+    let uri = Url::parse("file:///app.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "use App\\AdminUser;\n",
+        "class Seeder {\n",
+        "    public function run() {\n",
+        "        $admin = AdminUser::first();\n",
+        "        $admin->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 5,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        None => vec![],
+    };
+
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap())
+        .collect();
+
+    assert!(
+        method_names.contains(&"assignRole"),
+        "Cross-file static method return should resolve to AdminUser. Got: {:?}",
+        method_names
+    );
+    assert!(
+        method_names.contains(&"save"),
+        "Should include inherited save cross-file. Got: {:?}",
+        method_names
+    );
+}
+
+/// Chained call after static method: `AdminUser::first()->save()` — the
+/// intermediate `first()` should resolve `static` to `AdminUser`.
+#[tokio::test]
+async fn test_static_return_type_static_method_chained() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///static_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Model {\n",
+        "    /** @return static */\n",
+        "    public static function query(): static { return new static(); }\n",
+        "    /** @return static */\n",
+        "    public function where(string $col): static { return $this; }\n",
+        "    public function get(): array { return []; }\n",
+        "}\n",
+        "class Product extends Model {\n",
+        "    public function applyDiscount(): void {}\n",
+        "}\n",
+        "Product::query()->where('active')->\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 11,
+                character: 37,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        None => vec![],
+    };
+
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.filter_text.as_deref().unwrap())
+        .collect();
+
+    assert!(
+        method_names.contains(&"applyDiscount"),
+        "Static chain should preserve Product type through query()->where(). Got: {:?}",
+        method_names
+    );
+    assert!(
+        method_names.contains(&"get"),
+        "Should include inherited get. Got: {:?}",
+        method_names
+    );
+}
