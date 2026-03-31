@@ -193,6 +193,178 @@ pub(crate) fn try_inject_builder_scopes(
     // The first (or only) generic arg is the model type.
     let model_arg = generic_args.first().unwrap();
 
+    inject_scopes_and_model_methods(result, model_arg, class_loader);
+}
+
+/// Inject scope methods and model virtual methods onto a class that has
+/// a `@mixin Builder<TRelatedModel>` inherited from an ancestor.
+///
+/// When a class like `HasMany<ProductTranslation>` inherits
+/// `@mixin Builder<TRelatedModel>` from grandparent `Relation`, the
+/// mixin expansion adds Builder's own methods but does NOT inject
+/// model-specific scopes.  Scopes are normally injected by
+/// [`try_inject_builder_scopes`] which only fires when the resolved
+/// class IS the Builder.
+///
+/// This function handles the inherited-mixin case: it walks the raw
+/// class's parent chain, finds `@mixin Builder<X>` declarations,
+/// applies the generic substitution map (built from the concrete
+/// type arguments at the call site) to resolve `X` to a concrete
+/// model name, and injects that model's scopes and `@method` virtual
+/// methods.
+pub(crate) fn try_inject_mixin_builder_scopes(
+    result: &mut ClassInfo,
+    raw_cls: &ClassInfo,
+    generic_args: &[&str],
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) {
+    use std::collections::HashMap;
+
+    use crate::php_type::PhpType;
+    use crate::types::MAX_INHERITANCE_DEPTH;
+    use crate::util::short_name;
+
+    if generic_args.is_empty() || raw_cls.template_params.is_empty() {
+        return;
+    }
+
+    // Build the substitution map from the class's own template params
+    // to the concrete generic args provided at the call site.
+    // e.g. for HasMany<ProductTranslation, Product>:
+    //   TRelatedModel → ProductTranslation, TDeclaringModel → Product
+    let mut root_subs: HashMap<String, PhpType> = HashMap::new();
+    for (i, param_name) in raw_cls.template_params.iter().enumerate() {
+        if let Some(arg) = generic_args.get(i) {
+            root_subs.insert(param_name.clone(), PhpType::parse(arg));
+        }
+    }
+
+    // Walk the parent chain looking for @mixin Builder<X> declarations.
+    // At each level, build a substitution map that maps the parent's
+    // template params to concrete types (threading through @extends
+    // generics), then check if the parent has a Builder mixin.
+    //
+    // We use `ClassRef` to avoid lifetime issues when alternating
+    // between a borrowed initial class and owned parent classes.
+    let mut current = crate::inheritance::ClassRef::Borrowed(raw_cls);
+    let mut active_subs = root_subs;
+    let mut depth = 0u32;
+
+    // Also check the class itself (it might directly declare @mixin Builder<X>).
+    loop {
+        // Check for Builder mixin on the current class.
+        if let Some(model_name) = find_builder_mixin_model(&current, &active_subs, raw_cls, class_loader) {
+            inject_scopes_and_model_methods(result, &model_name, class_loader);
+            return;
+        }
+
+        // Move to the parent class.
+        let parent_name = match current.parent_class.as_ref() {
+            Some(name) => name.clone(),
+            None => break,
+        };
+        depth += 1;
+        if depth > MAX_INHERITANCE_DEPTH {
+            break;
+        }
+        let parent = match class_loader(&parent_name) {
+            Some(p) => p,
+            None => break,
+        };
+
+        // Build the substitution map for this level by combining the
+        // child's @extends generics with the active substitutions.
+        let parent_short = short_name(&parent.name);
+        let type_args = current
+            .extends_generics
+            .iter()
+            .find(|(name, _)| short_name(name) == parent_short)
+            .map(|(_, args)| args);
+
+        if let Some(args) = type_args {
+            let mut level_subs = HashMap::new();
+            for (i, param_name) in parent.template_params.iter().enumerate() {
+                if let Some(arg) = args.get(i) {
+                    let resolved = arg.substitute(&active_subs);
+                    level_subs.insert(param_name.clone(), resolved);
+                }
+            }
+            active_subs = level_subs;
+        }
+        // If no @extends generics matched, the parent's template params
+        // are unbound and we can't resolve the mixin's model type, so
+        // we keep the current active_subs (they won't match parent
+        // template param names, which is correct — the substitution
+        // will be a no-op).
+
+        current = crate::inheritance::ClassRef::Owned(parent);
+    }
+}
+
+/// Check if a class declares `@mixin Builder<X>` and return the concrete
+/// model name after applying substitutions.
+///
+/// Returns `Some(model_name)` when `X` resolves to a concrete type (not
+/// a template parameter of the root class).  Returns `None` otherwise.
+fn find_builder_mixin_model(
+    class: &ClassInfo,
+    active_subs: &std::collections::HashMap<String, crate::php_type::PhpType>,
+    root_cls: &ClassInfo,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> Option<String> {
+    use crate::util::short_name;
+
+    for mixin_name in &class.mixins {
+        if short_name(mixin_name) != "Builder"
+            && mixin_name != ELOQUENT_BUILDER_FQN
+        {
+            continue;
+        }
+        // Verify it's actually the Eloquent Builder (not some other
+        // class named Builder).  If we can't load it, trust the FQN.
+        if let Some(ref mixin_cls) = class_loader(mixin_name) {
+            let fqn = match mixin_cls.file_namespace.as_deref() {
+                Some(ns) => format!("{ns}\\{}", mixin_cls.name),
+                None => mixin_cls.name.clone(),
+            };
+            if fqn != ELOQUENT_BUILDER_FQN && mixin_cls.name != ELOQUENT_BUILDER_FQN {
+                continue;
+            }
+        }
+
+        // Find the generic args for this mixin from mixin_generics.
+        let mixin_short = short_name(mixin_name);
+        let mixin_args = class
+            .mixin_generics
+            .iter()
+            .find(|(name, _)| name == mixin_name || short_name(name) == mixin_short)
+            .map(|(_, args)| args.as_slice());
+
+        // Get the first generic arg (the model type) and substitute.
+        if let Some(args) = mixin_args
+            && let Some(first_arg) = args.first()
+        {
+            let resolved = first_arg.substitute(active_subs);
+            let model_name = resolved.to_string();
+            // Only inject if we resolved to a concrete type
+            // (not still a template parameter name).
+            if !model_name.is_empty()
+                && !root_cls.template_params.contains(&model_name)
+            {
+                return Some(model_name);
+            }
+        }
+    }
+    None
+}
+
+/// Shared helper: inject scope methods and `@method` virtual methods
+/// from a model onto a class (Builder or a class with a Builder mixin).
+fn inject_scopes_and_model_methods(
+    result: &mut ClassInfo,
+    model_arg: &str,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) {
     // 1. Inject scope methods.
     let scope_methods = build_scope_methods_for_builder(model_arg, class_loader);
     for method in scope_methods {

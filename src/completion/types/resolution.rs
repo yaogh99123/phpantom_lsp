@@ -371,6 +371,20 @@ fn resolve_named_type(
                     class_loader,
                 );
 
+                // ── Inherited Builder mixin scope injection ────────
+                // When a class inherits `@mixin Builder<TRelatedModel>`
+                // from an ancestor (e.g. HasMany inherits it from
+                // Relation), the mixin expansion adds Builder's own
+                // methods but not model-specific scopes.  Now that
+                // generic args are concrete, resolve the model type
+                // and inject its scopes.
+                laravel::try_inject_mixin_builder_scopes(
+                    &mut result,
+                    &cls,
+                    &generic_args,
+                    class_loader,
+                );
+
                 vec![result]
             } else {
                 vec![cls]

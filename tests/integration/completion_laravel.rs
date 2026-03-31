@@ -10056,3 +10056,412 @@ class Setting extends Model {
         methods
     );
 }
+
+// ─── Mixin generic substitution through multi-level inheritance (T14) ───────
+
+/// Full relationship hierarchy stubs with `@template` and `@mixin` tags
+/// that mirror the real Laravel class structure.
+///
+/// The key ingredient is that `Relation` declares
+/// `@mixin \Illuminate\Database\Eloquent\Builder<TRelatedModel>` and the
+/// template parameter `TRelatedModel` flows through `HasOneOrMany` and
+/// `HasMany` via `@extends` generics.
+const RELATION_FULL_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TResult
+ * @mixin \\Illuminate\\Database\\Eloquent\\Builder<TRelatedModel>
+ */
+class Relation {
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /** @return static */
+    public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
+}
+";
+
+const HAS_ONE_OR_MANY_FULL_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TResult
+ * @extends Relation<TRelatedModel, TDeclaringModel, TResult>
+ */
+class HasOneOrMany extends Relation {}
+";
+
+const HAS_MANY_FULL_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @extends HasOneOrMany<TRelatedModel, TDeclaringModel, \\Illuminate\\Database\\Eloquent\\Collection<int, TRelatedModel>>
+ */
+class HasMany extends HasOneOrMany {}
+";
+
+const HAS_ONE_FULL_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @extends HasOneOrMany<TRelatedModel, TDeclaringModel, TRelatedModel|null>
+ */
+class HasOne extends HasOneOrMany {}
+";
+
+const BELONGS_TO_FULL_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @extends Relation<TRelatedModel, TDeclaringModel, TRelatedModel|null>
+ */
+class BelongsTo extends Relation {}
+";
+
+/// Build a workspace using the full relationship hierarchy stubs.
+fn make_workspace_full_relations(
+    app_files: &[(&str, &str)],
+) -> (phpantom_lsp::Backend, tempfile::TempDir) {
+    let mut files: Vec<(&str, &str)> = vec![
+        ("vendor/illuminate/Eloquent/Model.php", MODEL_PHP),
+        (
+            "vendor/illuminate/Concerns/BuildsQueries.php",
+            BUILDS_QUERIES_PHP,
+        ),
+        ("vendor/illuminate/Eloquent/Collection.php", COLLECTION_PHP),
+        ("vendor/illuminate/Eloquent/Builder.php", BUILDER_PHP),
+        ("vendor/illuminate/Query/Builder.php", QUERY_BUILDER_PHP),
+        (
+            "vendor/illuminate/Support/Collection.php",
+            SUPPORT_COLLECTION_PHP,
+        ),
+        // Full relationship hierarchy with @template + @mixin
+        (
+            "vendor/illuminate/Eloquent/Relations/Relation.php",
+            RELATION_FULL_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/HasOneOrMany.php",
+            HAS_ONE_OR_MANY_FULL_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/HasMany.php",
+            HAS_MANY_FULL_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/HasOne.php",
+            HAS_ONE_FULL_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/BelongsTo.php",
+            BELONGS_TO_FULL_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Attributes/Scope.php",
+            SCOPE_ATTR_PHP,
+        ),
+    ];
+    files.extend_from_slice(app_files);
+    create_psr4_workspace(COMPOSER_JSON, &files)
+}
+
+#[tokio::test]
+async fn test_scope_on_relationship_result_via_inherited_mixin() {
+    // $product->translations()->language($code) should resolve:
+    //   translations() → HasMany<ProductTranslation, Product>
+    //   HasMany inherits @mixin Builder<TRelatedModel> from Relation
+    //   After substitution: Builder<ProductTranslation>
+    //   language() is a scope on ProductTranslation → should be available
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $this->translations()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    // "$this->translations()->" at line 8, character 32
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 8, 32).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"language"),
+        "Scope from ProductTranslation should be available on HasMany<ProductTranslation> via inherited @mixin Builder<TRelatedModel>; got: {:?}",
+        methods
+    );
+    // Builder methods (from the @mixin) should also still work
+    assert!(
+        methods.contains(&"where"),
+        "Builder::where() should be available via @mixin; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"get"),
+        "Builder::get() should be available via @mixin; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "Builder::first() (from BuildsQueries trait) should be available via @mixin; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_on_relationship_chain_continues() {
+    // $this->translations()->language('en')->first() should resolve:
+    //   language() returns Builder<ProductTranslation>
+    //   first() returns ProductTranslation
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+    public function getLabel(): string { return ''; }
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $item = $this->translations()->language('en')->first();
+        $item->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    // "$item->" at line 9, character 15
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 9, 15).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getLabel"),
+        "After ->language('en')->first(), result should be ProductTranslation with getLabel(); got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_on_has_one_relationship_via_inherited_mixin() {
+    // HasOne also inherits @mixin Builder<TRelatedModel> from Relation
+    let profile_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Profile extends Model {
+    /** @param Builder<self> $query */
+    public function scopeVerified(Builder $query): void {}
+    public function getBio(): string { return ''; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasOne;
+class User extends Model {
+    /** @return HasOne<Profile, $this> */
+    public function profile(): HasOne { return $this->hasOne(Profile::class); }
+    public function test() {
+        $this->profile()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/Profile.php", profile_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    // "$this->profile()->" at line 8, character 26
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 26).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"verified"),
+        "Scope from Profile should be available on HasOne<Profile> via inherited @mixin; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"where"),
+        "Builder::where() should be available; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_on_belongs_to_relationship_via_inherited_mixin() {
+    // BelongsTo extends Relation directly (only one level of indirection)
+    let category_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Category extends Model {
+    /** @param Builder<self> $query */
+    public function scopeActive(Builder $query): void {}
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\BelongsTo;
+class Product extends Model {
+    /** @return BelongsTo<Category, $this> */
+    public function category(): BelongsTo { return $this->belongsTo(Category::class); }
+    public function test() {
+        $this->category()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/Category.php", category_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    // "$this->category()->" at line 8, character 27
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 8, 27).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"active"),
+        "Scope from Category should be available on BelongsTo<Category> via inherited @mixin; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_model_virtual_methods_on_relationship_via_inherited_mixin() {
+    // @method tags on the model should also be available on relationships
+    // via the inherited Builder @mixin, just like scopes
+    let customer_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+/**
+ * @method static Builder<static> withTrashed()
+ */
+class Customer extends Model {}
+";
+    let order_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Order extends Model {
+    /** @return HasMany<Customer, $this> */
+    public function customers(): HasMany { return $this->hasMany(Customer::class); }
+    public function test() {
+        $this->customers()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/Customer.php", customer_php),
+        ("src/Models/Order.php", order_php),
+    ]);
+
+    // "$this->customers()->" at line 8, character 28
+    let items = complete_at(&backend, &dir, "src/Models/Order.php", order_php, 8, 28).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"withTrashed"),
+        "@method virtual method from Customer should be available on HasMany<Customer> via inherited @mixin; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_attribute_on_relationship_via_inherited_mixin() {
+    // #[Scope]-attributed methods should also be injected through
+    // the inherited Builder @mixin
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Attributes\\Scope;
+class Post extends Model {
+    #[Scope]
+    public function published(Builder $query): void {}
+}
+";
+    let blog_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Blog extends Model {
+    /** @return HasMany<Post, $this> */
+    public function posts(): HasMany { return $this->hasMany(Post::class); }
+    public function test() {
+        $this->posts()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/Post.php", post_php),
+        ("src/Models/Blog.php", blog_php),
+    ]);
+
+    // "$this->posts()->" at line 8, character 24
+    let items = complete_at(&backend, &dir, "src/Models/Blog.php", blog_php, 8, 24).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"published"),
+        "#[Scope] method from Post should be available on HasMany<Post> via inherited @mixin; got: {:?}",
+        methods
+    );
+}
