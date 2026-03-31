@@ -495,3 +495,83 @@ fn test_inline_new_expression_method_chain() {
         "Expected subject 'Foo->bar()', got: {subject}"
     );
 }
+
+// ── T17: Property chain with array bracket access ───────────────
+
+#[test]
+fn test_property_chain_array_access_variable_key() {
+    // $this->cache[$key]->
+    let input = "$this->cache[$key]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "$this->cache[]",
+        "Subject should include the full property chain with bracket segment"
+    );
+}
+
+#[test]
+fn test_property_chain_array_access_numeric_index() {
+    // $this->translations[0]->
+    let input = "$this->translations[0]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "$this->translations[]",
+        "Subject should include the full property chain with bracket segment"
+    );
+}
+
+#[test]
+fn test_property_chain_array_access_string_literal_key() {
+    // $this->cache['myKey']->
+    let input = "$this->cache['myKey']->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "$this->cache['myKey']",
+        "Subject should preserve the string key in the bracket segment"
+    );
+}
+
+#[test]
+fn test_object_property_array_access() {
+    // $service->items[0]->
+    let input = "$service->items[0]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "$service->items[]",
+        "Subject should include the full object property chain with bracket segment"
+    );
+}
+
+#[test]
+fn test_nested_property_chain_array_access() {
+    // $this->nested->entries[0]->
+    let input = "$this->nested->entries[0]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "$this->nested->entries[]",
+        "Subject should include the full nested property chain with bracket segment"
+    );
+}
+
+#[test]
+fn test_nullsafe_property_chain_array_access() {
+    // $this?->cache[$key]->
+    let input = "$this?->cache[$key]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "$this->cache[]",
+        "Subject should include the property chain with bracket segment (? is stripped)"
+    );
+}

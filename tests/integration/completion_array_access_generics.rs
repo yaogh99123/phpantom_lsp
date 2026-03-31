@@ -420,3 +420,188 @@ async fn test_method_return_list_array_access() {
     let items = unwrap_items(result);
     assert_has_member(&items, "getLabel");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// T17: Array element type extraction from generic array property annotations
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Property typed as array<string, SomeClass> with bracket access ─────
+
+#[tokio::test]
+async fn test_property_generic_array_bracket_access() {
+    // $this->cache[$key]-> should resolve to IntCollection members
+    // when cache is typed as array<string, IntCollection>.
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_prop_generic_arr.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class IntCollection {\n",
+        "    public function contains(int $id): bool { return false; }\n",
+        "    public function count(): int { return 0; }\n",
+        "}\n",
+        "class SalesCampaignGroup {\n",
+        "    /** @var array<string, IntCollection> */\n",
+        "    private array $cache = [];\n",
+        "\n",
+        "    public function check(string $key, int $id): bool {\n",
+        "        return $this->cache[$key]->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 10, 39).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "contains");
+    assert_has_member(&items, "count");
+}
+
+// ─── Property typed as Collection<int, Model> with bracket access ───────
+
+#[tokio::test]
+async fn test_property_collection_generic_bracket_access() {
+    // $model->translations[0]-> should resolve to Translation members
+    // when translations is typed as Collection<int, Translation>.
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_prop_collection_arr.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Translation {\n",
+        "    public string $name;\n",
+        "    public function getLocale(): string { return ''; }\n",
+        "}\n",
+        "/**\n",
+        " * @template TKey\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Collection {\n",
+        "    /** @return TValue */\n",
+        "    public function first() {}\n",
+        "}\n",
+        "class Product {\n",
+        "    /** @var Collection<int, Translation> */\n",
+        "    public Collection $translations;\n",
+        "\n",
+        "    public function getTranslationName(): string {\n",
+        "        return $this->translations[0]->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 18, 42).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "name");
+    assert_has_member(&items, "getLocale");
+}
+
+// ─── Variable typed as array<string, SomeClass> with bracket access ─────
+
+#[tokio::test]
+async fn test_variable_generic_array_bracket_access_var_annotation() {
+    // /** @var array<string, Order> $orders */ $orders[$key]->
+    // should resolve to Order members.
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_var_generic_arr_key.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Order {\n",
+        "    public int $id;\n",
+        "    public function getTotal(): float { return 0.0; }\n",
+        "}\n",
+        "/** @var array<string, Order> $orders */\n",
+        "$orders = [];\n",
+        "$orders['abc']->\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 7, 16).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "id");
+    assert_has_member(&items, "getTotal");
+}
+
+// ─── Property typed as array<int, SomeClass> on non-$this object ────────
+
+#[tokio::test]
+async fn test_object_property_generic_array_bracket_access() {
+    // $service->items[$i]-> where $service->items is array<int, Widget>
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_obj_prop_generic_arr.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Widget {\n",
+        "    public string $label;\n",
+        "    public function render(): string { return ''; }\n",
+        "}\n",
+        "class WidgetService {\n",
+        "    /** @var array<int, Widget> */\n",
+        "    public array $items = [];\n",
+        "}\n",
+        "function test(WidgetService $service): void {\n",
+        "    $service->items[0]->\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 10, 24).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "label");
+    assert_has_member(&items, "render");
+}
+
+// ─── Property with string key bracket access and method chain ───────────
+
+#[tokio::test]
+async fn test_property_generic_array_bracket_access_then_method_chain() {
+    // $this->cache[$key]->first()-> should chain through the element type.
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_prop_arr_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Result {\n",
+        "    public string $value;\n",
+        "}\n",
+        "class ResultSet {\n",
+        "    public function first(): Result { return new Result(); }\n",
+        "}\n",
+        "class Cache {\n",
+        "    /** @var array<string, ResultSet> */\n",
+        "    private array $data = [];\n",
+        "\n",
+        "    public function lookup(string $key): void {\n",
+        "        $this->data[$key]->first()->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 12, 38).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "value");
+}
+
+// ─── Property typed as array<string, SomeClass> with string-literal key ─
+
+#[tokio::test]
+async fn test_property_generic_array_string_literal_key_access() {
+    // $this->cache['myKey']-> should resolve to IntCollection members
+    // even when the bracket index is a string literal (not a variable).
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_prop_generic_arr_strkey.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class IntCollection {\n",
+        "    public function contains(int $id): bool { return false; }\n",
+        "    public function count(): int { return 0; }\n",
+        "}\n",
+        "class CacheHolder {\n",
+        "    /** @var array<string, IntCollection> */\n",
+        "    private array $cache = [];\n",
+        "\n",
+        "    public function check(int $id): bool {\n",
+        "        return $this->cache['myKey']->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 10, 41).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "contains");
+    assert_has_member(&items, "count");
+}

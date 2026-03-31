@@ -454,44 +454,6 @@ chain failures).
 
 ---
 
-## T17. Array element type extraction from generic array annotations
-**Impact: Medium · Effort: Low-Medium**
-
-When a variable is annotated as `array<string, SomeClass>` or
-`Collection<int, SomeClass>`, accessing an element by index
-(`$array[$key]`, `$collection[0]`) should yield the value type
-(`SomeClass`). Currently, the element type is lost and member access
-on the result produces `unresolved_member_access` or
-`unknown_member` diagnostics.
-
-**Reproducer:**
-
-```php
-/** @var array<string, IntCollection> */
-private array $cache = [];
-
-// later:
-$this->cache[$key]->contains($id);
-// "subject type could not be resolved" on ->contains()
-```
-
-Also affects `$model->translations[0]->name` patterns where
-`translations` is a `Collection<int, Translation>` and bracket
-access loses the element type.
-
-**Where to fix:**
-- `src/completion/variable/rhs_resolution.rs` — when resolving
-  array/collection element access, extract the value type parameter
-  from the container's generic annotation.
-- `src/completion/resolver.rs` — may need to handle bracket-access
-  subjects during chain resolution.
-
-**Impact in shared codebase:** ~10 diagnostics (SalesCampaignGroup
-cache, ProductExport translations, PurchaseFileService DB::select
-results).
-
----
-
 ## T18. Method-level template parameter resolution at call sites
 **Impact: Medium · Effort: Medium**
 

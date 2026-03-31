@@ -317,9 +317,44 @@ fn extract_arrow_subject(chars: &[char], arrow_pos: usize) -> String {
         if !segments.is_empty() {
             let before = extract_simple_variable(chars, pos);
             if !before.is_empty() {
+                // When the extracted identifier has no `$` prefix, it
+                // may be a property name preceded by `->` or `?->`.
+                // For example, `$this->cache[$key]->` yields `cache`
+                // here.  Walk back through the arrow to capture the
+                // full property chain so the subject becomes
+                // `$this->cache[]` instead of just `cache[]`.
+                let base = if !before.starts_with('$') {
+                    let prop_start = pos - before.len();
+                    if prop_start >= 2
+                        && chars[prop_start - 2] == '-'
+                        && chars[prop_start - 1] == '>'
+                    {
+                        let chain = extract_arrow_subject(chars, prop_start - 2);
+                        if !chain.is_empty() {
+                            format!("{}->{}", chain, before)
+                        } else {
+                            before
+                        }
+                    } else if prop_start >= 3
+                        && chars[prop_start - 3] == '?'
+                        && chars[prop_start - 2] == '-'
+                        && chars[prop_start - 1] == '>'
+                    {
+                        let chain = extract_arrow_subject(chars, prop_start - 3);
+                        if !chain.is_empty() {
+                            format!("{}?->{}", chain, before)
+                        } else {
+                            before
+                        }
+                    } else {
+                        before
+                    }
+                } else {
+                    before
+                };
                 // Reverse so segments read left-to-right.
                 segments.reverse();
-                return format!("{}{}", before, segments.join(""));
+                return format!("{}{}", base, segments.join(""));
             }
 
             // ── Call expression base: `$c->items()[0]->` ─────────

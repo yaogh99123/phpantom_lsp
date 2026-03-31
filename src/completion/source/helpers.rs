@@ -429,7 +429,10 @@ fn walk_array_segments_and_resolve(
 
     for seg in segments {
         current = match seg {
-            BracketSegment::StringKey(key) => current.shape_value_type(key)?.clone(),
+            BracketSegment::StringKey(key) => current
+                .shape_value_type(key)
+                .or_else(|| current.extract_value_type(true))
+                .cloned()?,
             BracketSegment::ElementAccess => current.extract_value_type(true)?.clone(),
         };
 

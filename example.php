@@ -616,6 +616,35 @@ class ForeachArrayAccessDemo
 }
 
 
+// ── Property Array Access (generic annotations) ────────────────────────────
+
+class PropertyArrayAccessDemo
+{
+    /** @var array<string, Pen> */
+    private array $cache = [];
+
+    /** @var array<int, Pen> */
+    public array $items = [];
+
+    public function demo(): void
+    {
+        // Property typed as array<string, Pen> — variable key
+        $this->cache[$this->getKey()]->write();   // element type from generic annotation
+
+        // Property typed as array<string, Pen> — string-literal key
+        $this->cache['brushes']->color();         // element type from generic annotation
+
+        // Property typed as array<int, Pen> — numeric index
+        $this->items[0]->write();                 // element type from generic annotation
+
+        // Method chain after bracket access
+        $this->cache['tools']->rename('Fine')->write(); // chain through element type
+    }
+
+    private function getKey(): string { return 'k'; }
+}
+
+
 // ── Array Destructuring ────────────────────────────────────────────────────
 
 class ArrayDestructuringDemo

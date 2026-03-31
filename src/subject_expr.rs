@@ -221,6 +221,19 @@ impl SubjectExpr {
             };
         }
 
+        // ── Variable/property with bracket access: `$var['key']`,
+        //    `$this->cache[]`, `$obj->items['k']` ───────────────────
+        // Must be checked before the property chain so that
+        // `$this->cache[]` is parsed as `ArrayAccess { PropertyChain
+        // { This, "cache" }, [ElementAccess] }` instead of
+        // `PropertyChain { This, "cache[]" }`.
+        if subject.contains('[')
+            && subject.ends_with(']')
+            && let Some(result) = parse_variable_array_access(subject)
+        {
+            return result;
+        }
+
         // ── Property chain (split at last depth-0 arrow) ───────────
         if subject.contains("->")
             && let Some((base_str, prop)) = split_last_arrow_raw(subject)
@@ -230,14 +243,6 @@ impl SubjectExpr {
                 base: Box::new(base),
                 property: prop.to_string(),
             };
-        }
-
-        // ── Variable with bracket access: `$var['key']` ────────────
-        if subject.starts_with('$')
-            && subject.contains('[')
-            && let Some(result) = parse_variable_array_access(subject)
-        {
-            return result;
         }
 
         // ── Bare variable: `$var` ──────────────────────────────────

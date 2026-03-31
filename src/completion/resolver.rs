@@ -752,6 +752,28 @@ pub(crate) fn resolve_target_classes_expr(
             // Each is tried as a complete pipeline (raw type →
             // segment walk → ClassInfo); the first that succeeds
             // through all segments wins.
+
+            // ── Property chain raw type ─────────────────────────
+            // When the base is a property chain (e.g. `$this->cache`,
+            // `$obj->items`), resolve the owning class and extract
+            // the property's raw type hint.  This preserves generic
+            // parameters like `array<string, IntCollection>` or
+            // `Collection<int, Translation>` that would be lost if
+            // we resolved through `type_hint_to_classes` first.
+            let property_raw_type = if let SubjectExpr::PropertyChain {
+                base: prop_base,
+                property,
+            } = base.as_ref()
+            {
+                let owner_classes = resolve_target_classes_expr(prop_base, access_kind, ctx);
+                owner_classes.iter().find_map(|cls| {
+                    crate::inheritance::resolve_property_type_hint(cls, property, class_loader)
+                        .map(|ty| ty.to_string())
+                })
+            } else {
+                None
+            };
+
             let docblock_type = docblock::find_iterable_raw_type_in_source(
                 ctx.content,
                 ctx.cursor_offset as usize,
@@ -782,7 +804,10 @@ pub(crate) fn resolve_target_classes_expr(
                 }
             };
 
-            let candidates = docblock_type.into_iter().chain(ast_type);
+            let candidates = property_raw_type
+                .into_iter()
+                .chain(docblock_type)
+                .chain(ast_type);
 
             if let Some(resolved) = super::source::helpers::try_chained_array_access_with_candidates(
                 candidates,
