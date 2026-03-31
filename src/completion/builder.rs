@@ -614,8 +614,32 @@ pub(crate) fn build_union_completion_items(
     let mut occurrence_count: HashMap<String, usize> = HashMap::new();
 
     for target_class in candidates {
-        let merged =
+        let resolved =
             crate::virtual_members::resolve_class_fully_cached(target_class, class_loader, cache);
+
+        // Scope methods (and @method virtual methods from the model) are
+        // injected onto the candidate ClassInfo by `resolve_named_type`
+        // after generic substitution.  `resolve_class_fully_cached` uses
+        // a cache key without generic args, so a prior cache entry for
+        // the same class without generics will lack those injected
+        // methods.  Merge back any instance methods from the candidate
+        // that are missing from the resolved result so that scopes
+        // survive the re-resolution.
+        let merged = if target_class.methods.len() > resolved.methods.len() {
+            let mut patched = (*resolved).clone();
+            for method in target_class.methods.iter() {
+                if !patched
+                    .methods
+                    .iter()
+                    .any(|m| m.name == method.name && m.is_static == method.is_static)
+                {
+                    patched.methods.push(method.clone());
+                }
+            }
+            std::sync::Arc::new(patched)
+        } else {
+            resolved
+        };
 
         let self_or_ancestor = is_ancestor_of(current_class, target_class, class_loader);
 

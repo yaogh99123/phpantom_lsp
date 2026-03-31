@@ -10465,3 +10465,761 @@ class Blog extends Model {
         methods
     );
 }
+
+// ─── T14a: Realistic abstract-relation stubs with traits & alias syntax ─────
+
+const FORWARDS_CALLS_PHP: &str = "\
+<?php
+namespace Illuminate\\Support\\Traits;
+trait ForwardsCalls {
+    protected function forwardCallTo(mixed $object, string $method, array $parameters): mixed { return null; }
+    protected function forwardDecoratedCallTo(mixed $object, string $method, array $parameters): mixed { return null; }
+}
+";
+
+const MACROABLE_PHP: &str = "\
+<?php
+namespace Illuminate\\Support\\Traits;
+trait Macroable {
+    public static function hasMacro(string $name): bool { return false; }
+    public static function __callStatic(string $method, array $parameters): mixed { return null; }
+    public function __call(string $method, array $parameters): mixed { return null; }
+}
+";
+
+const INTERACTS_WITH_DICTIONARY_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations\\Concerns;
+trait InteractsWithDictionary {
+    protected function getDictionaryKey(mixed $attribute): string|int|null { return null; }
+}
+";
+
+const SUPPORTS_INVERSE_RELATIONS_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations\\Concerns;
+trait SupportsInverseRelations {
+    public function inverse(?string $relation = null): static { return $this; }
+}
+";
+
+const BUILDER_CONTRACT_PHP: &str = "\
+<?php
+namespace Illuminate\\Contracts\\Database\\Eloquent;
+/**
+ * @mixin \\Illuminate\\Database\\Eloquent\\Builder
+ */
+interface Builder {}
+";
+
+/// Abstract `Relation` matching real vendor: abstract class, uses traits
+/// with `Macroable::__call as macroCall` alias syntax, implements interface.
+const RELATION_ABSTRACT_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+
+use Illuminate\\Contracts\\Database\\Eloquent\\Builder as BuilderContract;
+use Illuminate\\Support\\Traits\\ForwardsCalls;
+use Illuminate\\Support\\Traits\\Macroable;
+
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TResult
+ * @mixin \\Illuminate\\Database\\Eloquent\\Builder<TRelatedModel>
+ */
+abstract class Relation implements BuilderContract {
+    use ForwardsCalls, Macroable {
+        Macroable::__call as macroCall;
+    }
+
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /** @return static */
+    public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
+
+    public function __call(string $method, array $parameters): mixed { return null; }
+}
+";
+
+/// Abstract `HasOneOrMany` matching real vendor: abstract class with traits.
+const HAS_ONE_OR_MANY_ABSTRACT_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+
+use Illuminate\\Database\\Eloquent\\Relations\\Concerns\\InteractsWithDictionary;
+use Illuminate\\Database\\Eloquent\\Relations\\Concerns\\SupportsInverseRelations;
+
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TResult
+ * @extends Relation<TRelatedModel, TDeclaringModel, TResult>
+ */
+abstract class HasOneOrMany extends Relation {
+    use InteractsWithDictionary, SupportsInverseRelations;
+}
+";
+
+/// Concrete `HasMany` matching real vendor structure.
+const HAS_MANY_ABSTRACT_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @extends HasOneOrMany<TRelatedModel, TDeclaringModel, \\Illuminate\\Database\\Eloquent\\Collection<int, TRelatedModel>>
+ */
+class HasMany extends HasOneOrMany {}
+";
+
+/// Concrete `HasOne` matching real vendor structure.
+const HAS_ONE_ABSTRACT_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @extends HasOneOrMany<TRelatedModel, TDeclaringModel, TRelatedModel|null>
+ */
+class HasOne extends HasOneOrMany {}
+";
+
+/// Concrete `BelongsTo` matching real vendor structure.
+const BELONGS_TO_ABSTRACT_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Relations;
+/**
+ * @template TRelatedModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @template TDeclaringModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @extends Relation<TRelatedModel, TDeclaringModel, TRelatedModel|null>
+ */
+class BelongsTo extends Relation {}
+";
+
+/// Build a workspace using the realistic abstract-relation stubs with traits
+/// and alias syntax, matching the real Laravel vendor structure.
+fn make_workspace_abstract_relations(
+    app_files: &[(&str, &str)],
+) -> (phpantom_lsp::Backend, tempfile::TempDir) {
+    let mut files: Vec<(&str, &str)> = vec![
+        ("vendor/illuminate/Eloquent/Model.php", MODEL_PHP),
+        (
+            "vendor/illuminate/Concerns/BuildsQueries.php",
+            BUILDS_QUERIES_PHP,
+        ),
+        ("vendor/illuminate/Eloquent/Collection.php", COLLECTION_PHP),
+        ("vendor/illuminate/Eloquent/Builder.php", BUILDER_PHP),
+        ("vendor/illuminate/Query/Builder.php", QUERY_BUILDER_PHP),
+        (
+            "vendor/illuminate/Support/Collection.php",
+            SUPPORT_COLLECTION_PHP,
+        ),
+        // Traits used by the abstract Relation
+        (
+            "vendor/illuminate/Support/Traits/ForwardsCalls.php",
+            FORWARDS_CALLS_PHP,
+        ),
+        (
+            "vendor/illuminate/Support/Traits/Macroable.php",
+            MACROABLE_PHP,
+        ),
+        // Traits used by abstract HasOneOrMany
+        (
+            "vendor/illuminate/Eloquent/Relations/Concerns/InteractsWithDictionary.php",
+            INTERACTS_WITH_DICTIONARY_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/Concerns/SupportsInverseRelations.php",
+            SUPPORTS_INVERSE_RELATIONS_PHP,
+        ),
+        // Interface implemented by Relation
+        (
+            "vendor/illuminate/Contracts/Builder.php",
+            BUILDER_CONTRACT_PHP,
+        ),
+        // Abstract relationship hierarchy with traits and alias syntax
+        (
+            "vendor/illuminate/Eloquent/Relations/Relation.php",
+            RELATION_ABSTRACT_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/HasOneOrMany.php",
+            HAS_ONE_OR_MANY_ABSTRACT_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/HasMany.php",
+            HAS_MANY_ABSTRACT_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/HasOne.php",
+            HAS_ONE_ABSTRACT_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Relations/BelongsTo.php",
+            BELONGS_TO_ABSTRACT_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Attributes/Scope.php",
+            SCOPE_ATTR_PHP,
+        ),
+    ];
+    files.extend_from_slice(app_files);
+    create_psr4_workspace(COMPOSER_JSON, &files)
+}
+
+#[tokio::test]
+async fn test_scope_on_has_many_with_abstract_relation() {
+    // T14a: When Relation is abstract with traits (ForwardsCalls, Macroable)
+    // and alias syntax `{ Macroable::__call as macroCall; }`, and HasOneOrMany
+    // is also abstract with traits, the @mixin Builder<TRelatedModel> on
+    // Relation should still propagate through the inheritance chain so that
+    // Builder methods and scope methods are available on HasMany.
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $this->translations()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_abstract_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    // "$this->translations()->" at line 8, character 32
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 8, 32).await;
+    let methods = method_names(&items);
+
+    // Scope from ProductTranslation should be available on the Builder
+    // obtained via HasMany's inherited @mixin Builder<TRelatedModel>
+    assert!(
+        methods.contains(&"language"),
+        "T14a: Scope from ProductTranslation should be available on HasMany<ProductTranslation> \
+         via inherited @mixin Builder<TRelatedModel> when Relation is abstract with traits; got: {:?}",
+        methods
+    );
+    // Builder methods (from the @mixin) should also still work
+    assert!(
+        methods.contains(&"where"),
+        "T14a: Builder::where() should be available via @mixin; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"get"),
+        "T14a: Builder::get() should be available via @mixin; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "T14a: Builder::first() (from BuildsQueries trait) should be available via @mixin; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_on_has_one_with_abstract_relation() {
+    // Same as above but through HasOne (two-level abstract inheritance)
+    let profile_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Profile extends Model {
+    /** @param Builder<self> $query */
+    public function scopeVerified(Builder $query): void {}
+    public function getBio(): string { return ''; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasOne;
+class User extends Model {
+    /** @return HasOne<Profile, $this> */
+    public function profile(): HasOne { return $this->hasOne(Profile::class); }
+    public function test() {
+        $this->profile()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_abstract_relations(&[
+        ("src/Models/Profile.php", profile_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 26).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"verified"),
+        "T14a: Scope from Profile should be available on HasOne<Profile> \
+         with abstract Relation; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"where"),
+        "T14a: Builder::where() should be available via @mixin on HasOne; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_chain_with_abstract_relation() {
+    // End-to-end: $this->translations()->language('en')->first() should
+    // resolve first() to ProductTranslation
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+    public function getLabel(): string { return ''; }
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $item = $this->translations()->language('en')->first();
+        $item->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_abstract_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 9, 15).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getLabel"),
+        "T14a: After ->language('en')->first(), result should be ProductTranslation \
+         with getLabel() when Relation is abstract with traits; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_belongs_to_with_abstract_relation() {
+    // BelongsTo extends Relation directly (single abstract parent)
+    let category_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Category extends Model {
+    /** @param Builder<self> $query */
+    public function scopeActive(Builder $query): void {}
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\BelongsTo;
+class Product extends Model {
+    /** @return BelongsTo<Category, $this> */
+    public function category(): BelongsTo { return $this->belongsTo(Category::class); }
+    public function test() {
+        $this->category()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_abstract_relations(&[
+        ("src/Models/Category.php", category_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 8, 27).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"active"),
+        "T14a: Scope from Category should be available on BelongsTo<Category> \
+         with abstract Relation; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_survives_cache_prewarm_abstract_relation() {
+    // T14a regression: When `HasMany` is resolved without generic args
+    // first (e.g. by opening a file that uses HasMany as a plain type),
+    // the resolved-class cache stores HasMany without scope injection.
+    // A subsequent completion on a variable assigned from
+    // `$this->translations()` (which carries generic args) must still
+    // show scopes.  This reproduces the real-world scenario where the
+    // LSP resolves HasMany for diagnostics before the user triggers
+    // completion.
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+}
+";
+    // A file that uses HasMany without generics — forces the cache to
+    // store HasMany as a plain class without scope injection.
+    let prewarm_php = "\
+<?php
+namespace App\\Util;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class RelationHelper {
+    public function inspect(HasMany $rel): void {
+        $rel->
+    }
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $rel = $this->translations();
+        $rel->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_abstract_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+        ("src/Util/RelationHelper.php", prewarm_php),
+    ]);
+
+    // Pre-warm the cache by opening and completing in the prewarm file.
+    // This resolves HasMany without generic args and caches it.
+    let _prewarm_items = complete_at(
+        &backend,
+        &dir,
+        "src/Util/RelationHelper.php",
+        prewarm_php,
+        5,
+        14,
+    )
+    .await;
+
+    // Now complete on the variable assigned from translations().
+    // The cache already has HasMany resolved without scopes.
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 9, 14).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"language"),
+        "T14a cache regression: Scope from ProductTranslation should be available on variable \
+         assigned from translations() even after cache was pre-warmed with plain HasMany; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"where"),
+        "T14a cache regression: Builder::where() should be available; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"get"),
+        "T14a cache regression: Builder::get() should be available; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "T14a cache regression: Builder::first() should be available; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_survives_cache_prewarm_full_relations() {
+    // Same test as above but with the simplified (non-abstract) full-relation
+    // stubs to isolate whether the cache issue is specific to abstract classes.
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+}
+";
+    let prewarm_php = "\
+<?php
+namespace App\\Util;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class RelationHelper {
+    public function inspect(HasMany $rel): void {
+        $rel->
+    }
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $rel = $this->translations();
+        $rel->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+        ("src/Util/RelationHelper.php", prewarm_php),
+    ]);
+
+    // Pre-warm the cache.
+    let _prewarm_items = complete_at(
+        &backend,
+        &dir,
+        "src/Util/RelationHelper.php",
+        prewarm_php,
+        5,
+        14,
+    )
+    .await;
+
+    // Now complete on the variable assigned from translations().
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 9, 14).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"language"),
+        "Cache regression: Scope from ProductTranslation should be available on variable \
+         assigned from translations() even after cache was pre-warmed (full relations); got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"where"),
+        "Cache regression: Builder::where() should be available (full relations); got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_inline_chain_survives_cache_prewarm() {
+    // Same cache-prewarm test but with an inline chain ($this->translations()->)
+    // instead of a variable assignment, to verify whether inline chains
+    // are also affected.
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+}
+";
+    let prewarm_php = "\
+<?php
+namespace App\\Util;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class RelationHelper {
+    public function inspect(HasMany $rel): void {
+        $rel->
+    }
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $this->translations()->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_abstract_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+        ("src/Util/RelationHelper.php", prewarm_php),
+    ]);
+
+    // Pre-warm the cache.
+    let _prewarm_items = complete_at(
+        &backend,
+        &dir,
+        "src/Util/RelationHelper.php",
+        prewarm_php,
+        5,
+        14,
+    )
+    .await;
+
+    // Now complete on inline chain.
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 8, 32).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"language"),
+        "Cache regression: Scope should be available on inline chain even after cache pre-warm; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"where"),
+        "Cache regression: Builder::where() on inline chain; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_on_has_many_variable_assignment_with_abstract_relation() {
+    // T14a: When the relationship result is assigned to a variable first
+    // (instead of chaining directly), scopes should still be available.
+    // This tests a different code path: variable resolution via
+    // resolve_rhs_method_call_inner instead of inline call-chain resolution.
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $rel = $this->translations();
+        $rel->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_abstract_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    // "$rel->" at line 9, character 14
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 9, 14).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"language"),
+        "T14a: Scope from ProductTranslation should be available on variable assigned from \
+         translations() via inherited @mixin Builder<TRelatedModel>; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"where"),
+        "T14a: Builder::where() should be available on variable; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"get"),
+        "T14a: Builder::get() should be available on variable; got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "T14a: Builder::first() should be available on variable; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_on_has_many_variable_assignment_full_relations() {
+    // Same as above but with the non-abstract (simplified) stubs to
+    // isolate whether the issue is abstract-specific or general.
+    let translation_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class ProductTranslation extends Model {
+    /** @param Builder<self> $query */
+    public function scopeLanguage(Builder $query, string $code): void {}
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasMany;
+class Product extends Model {
+    /** @return HasMany<ProductTranslation, $this> */
+    public function translations(): HasMany { return $this->hasMany(ProductTranslation::class); }
+    public function test() {
+        $rel = $this->translations();
+        $rel->
+    }
+}
+";
+
+    let (backend, dir) = make_workspace_full_relations(&[
+        ("src/Models/ProductTranslation.php", translation_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    // "$rel->" at line 9, character 14
+    let items = complete_at(&backend, &dir, "src/Models/Product.php", product_php, 9, 14).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"language"),
+        "Scope from ProductTranslation should be available on variable assigned from \
+         translations() via inherited @mixin Builder<TRelatedModel> (full relations); got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"where"),
+        "Builder::where() should be available on variable (full relations); got: {:?}",
+        methods
+    );
+}

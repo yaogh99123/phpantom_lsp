@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Scope methods missing from completion on relationship results.** When a relationship method like `$product->translations()` returned `HasMany<ProductTranslation>`, scope methods from the related model (e.g. `language()`, `published()`) appeared in hover but not in the completion dropdown. The resolved-class cache stored a version of `HasMany` without generic arguments, and the completion builder's re-resolution hit this cache entry, discarding the scope-injected methods. Completions now merge back any methods from the generically-resolved candidate that the cache entry lacks.
 - **Nullable `static` return types on inherited methods.** Methods returning `?static` or `static|null` now correctly resolve to the calling subclass instead of falling through to a name-based lookup that could fail for cross-file classes not in the current file's use-map.
 - **Template binding with nested generics.** `@param` types like `Wrapper<Collection<T>, V>` previously broke during template binding because generic arguments were split on commas without respecting nesting depth. Template binding and parameter extraction now use the structured type parser.
 - **`@property` and `@method` tags losing nullable types.** Tags like `@property int|null $foo` had their `|null` stripped by `clean_type()`, causing the property to appear as non-nullable. The full type is now preserved.
