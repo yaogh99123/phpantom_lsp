@@ -59,7 +59,7 @@ use parking_lot::Mutex;
 
 use crate::inheritance::{
     ClassRef, apply_substitution_to_method, apply_substitution_to_property,
-    resolve_class_with_inheritance,
+    enrich_method_from_ancestor, enrich_property_from_ancestor, resolve_class_with_inheritance,
 };
 use crate::php_type::PhpType;
 use crate::types::{ClassInfo, ConstantInfo, MethodInfo, PropertyInfo};
@@ -901,65 +901,24 @@ fn merge_interface_members_into(
 
         if let Some(idx) = existing_idx {
             let existing = &mut merged.methods.make_mut()[idx];
-            // Fill in missing return type from the interface.
-            if existing.return_type.is_none() && iface_method.return_type.is_some() {
-                existing.return_type = iface_method.return_type.clone();
-            }
-            // Fill in missing template information from the interface.
-            // When a class implements an interface with a generic method
-            // (e.g. `@template T` + `@param class-string<T>` + `@return T`),
-            // the implementing class's override typically lacks these
-            // docblock annotations.  Inheriting them lets the call-site
-            // resolver build template substitutions and resolve the
-            // concrete return type.
-            if existing.template_params.is_empty() && !iface_method.template_params.is_empty() {
-                existing.template_params = iface_method.template_params;
-                existing.template_param_bounds = iface_method.template_param_bounds;
-                existing.template_bindings = iface_method.template_bindings;
-                // Also inherit the return type if the interface provides
-                // one and we haven't already set it above — template
-                // return types like `T` only make sense when the template
-                // params are present.
-                if existing.return_type.is_none() {
-                    existing.return_type = iface_method.return_type;
-                }
-            }
-            // Fill in missing conditional return type from the interface.
-            if existing.conditional_return.is_none() && iface_method.conditional_return.is_some() {
-                existing.conditional_return = iface_method.conditional_return;
-            }
-            // Fill in missing type assertions from the interface.
-            if existing.type_assertions.is_empty() && !iface_method.type_assertions.is_empty() {
-                existing.type_assertions = iface_method.type_assertions;
-            }
-            // Fill in parameter docblock types from the interface.
-            // When the class parameter's type_hint equals its native_type_hint
-            // (meaning no @param docblock override was applied on the class),
-            // the interface's substituted type is more specific and should
-            // be used.  This handles cases like `map(object $entity)` where
-            // the interface declares `@param TEntity $entity` and @implements
-            // substitutes `TEntity` → `Boo`.
-            for (existing_param, iface_param) in
-                existing.parameters.iter_mut().zip(&iface_method.parameters)
-            {
-                let has_own_docblock_type =
-                    match (&existing_param.type_hint, &existing_param.native_type_hint) {
-                        (Some(eff), Some(nat)) => !eff.equivalent(nat),
-                        (Some(_), None) => true,
-                        _ => false,
-                    };
-                if !has_own_docblock_type && iface_param.type_hint.is_some() {
-                    existing_param.type_hint = iface_param.type_hint.clone();
-                }
-            }
+            // Delegate to the shared enrichment helper which handles
+            // return types, parameters, descriptions, template params,
+            // conditional returns, and type assertions uniformly.
+            enrich_method_from_ancestor(existing, &iface_method);
         } else {
             merged.methods.push(iface_method);
         }
     }
-    let existing_props: HashSet<String> =
-        merged.properties.iter().map(|p| p.name.clone()).collect();
+    // Merge interface properties — enrich existing ones, add new ones.
     for property in resolved_iface.properties.into_vec() {
-        if !existing_props.contains(&property.name) {
+        if let Some(existing) = merged
+            .properties
+            .make_mut()
+            .iter_mut()
+            .find(|p| p.name == property.name)
+        {
+            enrich_property_from_ancestor(existing, &property);
+        } else {
             merged.properties.push(property);
         }
     }

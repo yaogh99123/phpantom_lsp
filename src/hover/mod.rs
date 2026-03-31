@@ -558,33 +558,31 @@ impl Backend {
                 let mut seen_declaring_classes: Vec<String> = Vec::new();
 
                 for target_class in &candidates {
-                    // `resolve_target_classes` already returns fully-resolved
-                    // classes (via `type_hint_to_classes` which calls
-                    // `resolve_class_fully` and injects model-specific scope
-                    // methods).  Check the candidate directly first so that
-                    // model-specific members (e.g. Eloquent scope methods
-                    // injected onto Builder<Model>) are found even when the
-                    // FQN-keyed resolved_class_cache holds a stale or
-                    // differently-scoped entry for the same base class.
-                    //
-                    // Fall back to `resolve_class_fully_cached` only when
-                    // the member is not on the candidate — this covers
-                    // cases where the candidate was produced by a path that
-                    // skips full resolution (e.g. bare class name lookup).
+                    // Always use a fully-resolved class so that inherited
+                    // docblock types (return types, parameter types,
+                    // descriptions) are visible on hover.  The candidate
+                    // from `resolve_target_classes` may carry model-specific
+                    // scope methods that are not in the FQN-keyed cache, so
+                    // fall back to the candidate when the member is not
+                    // found on the fully-resolved version.
+                    let merged = crate::virtual_members::resolve_class_fully_cached(
+                        target_class,
+                        &class_loader,
+                        &self.resolved_class_cache,
+                    );
                     let find_result =
-                        Self::find_member_for_hover(target_class, member_name, *is_method_call);
+                        Self::find_member_for_hover(&merged, member_name, *is_method_call);
 
                     let (member_result, owner) = if find_result.is_some() {
-                        (find_result, target_class.clone())
+                        (find_result, merged)
                     } else {
-                        let merged = crate::virtual_members::resolve_class_fully_cached(
-                            target_class,
-                            &class_loader,
-                            &self.resolved_class_cache,
-                        );
+                        // Fall back to the candidate directly — it may
+                        // contain model-specific members (e.g. Eloquent
+                        // scope methods injected onto Builder<Model>)
+                        // that the FQN-keyed cache does not have.
                         let result =
-                            Self::find_member_for_hover(&merged, member_name, *is_method_call);
-                        (result, merged)
+                            Self::find_member_for_hover(target_class, member_name, *is_method_call);
+                        (result, target_class.clone())
                     };
 
                     let hover = match member_result {

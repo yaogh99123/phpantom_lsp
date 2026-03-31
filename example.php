@@ -410,6 +410,36 @@ class ImplementsGenericDemo
 }
 
 
+// ── Inherited Docblock Types ────────────────────────────────────────────────
+
+class InheritedDocblockDemo
+{
+    public function demo(): void
+    {
+        // Interface declares @return list<Pen>, implementor has only `: array`.
+        // The richer type propagates automatically.
+        $holder = new ScaffoldingConcreteHolder();
+        $holder->getPens()[0]->write();            // list<Pen> inherited from interface
+
+        // Parent class declares @return list<Pen>, child overrides with `: array`.
+        $child = new ScaffoldingChildHolder();
+        $child->getPens()[0]->write();             // list<Pen> inherited from parent
+
+        // When the child writes its own @return, it wins over the parent.
+        $cat = new ScaffoldingCatStore();
+        $cat->getAnimals()[0]->label();            // list<Pencil> from child's own docblock
+
+        // Parameter types propagate by position (child may rename params).
+        $box = new ScaffoldingPenBox();
+        $box->accept([new Pen()]);                 // @param list<Pen> inherited from interface
+
+        // Grandparent @return flows through the entire chain.
+        $deep = new ScaffoldingDeepChild();
+        $deep->getPens()[0]->write();              // list<Pen> from grandparent
+    }
+}
+
+
 // ── Conditional Return Types ────────────────────────────────────────────────
 
 class ConditionalReturnDemo
@@ -3019,6 +3049,63 @@ class TreeMapperImpl
 
 // ── Demo-Specific Scaffolding ───────────────────────────────────────────────
 
+// ── Inherited Docblock Scaffolding ──────────────────────────────────────────
+
+interface ScaffoldingPenHolderInterface
+{
+    /** @return list<Pen> */
+    public function getPens(): array;
+
+    /** @param list<Pen> $pens */
+    public function accept(array $pens): void;
+}
+
+class ScaffoldingConcreteHolder implements ScaffoldingPenHolderInterface
+{
+    public function getPens(): array { return [new Pen()]; }
+    public function accept(array $pens): void {}
+}
+
+class ScaffoldingPenBox implements ScaffoldingPenHolderInterface
+{
+    public function getPens(): array { return [new Pen()]; }
+    public function accept(array $items): void {}  // renamed param
+}
+
+class ScaffoldingBasePenHolder
+{
+    /** @return list<Pen> */
+    public function getPens(): array { return [new Pen()]; }
+}
+
+class ScaffoldingChildHolder extends ScaffoldingBasePenHolder
+{
+    public function getPens(): array { return [new Pen()]; }
+}
+
+class ScaffoldingMidHolder extends ScaffoldingBasePenHolder
+{
+    public function getPens(): array { return [new Pen()]; }
+}
+
+class ScaffoldingDeepChild extends ScaffoldingMidHolder
+{
+    public function getPens(): array { return [new Pen()]; }
+}
+
+class ScaffoldingAnimalStore
+{
+    /** @return list<Pen> */
+    public function getAnimals(): array { return [new Pen()]; }
+}
+
+class ScaffoldingCatStore extends ScaffoldingAnimalStore
+{
+    /** @return list<Pencil> */
+    public function getAnimals(): array { return [new Pencil()]; }
+}
+
+
 class ScaffoldingMotor
 {
     public function start(): void {}
@@ -5365,6 +5452,32 @@ function runDemoAssertions(): void
     $orderLine = new ScaffoldingOrderLine();
     $productRel = $orderLine->product();
     assert($productRel instanceof ScaffoldingMixinBelongsTo, 'OrderLine::product() must return ScaffoldingMixinBelongsTo');
+
+    // ── Inherited docblock type propagation ─────────────────────────────
+    $iHolder = new ScaffoldingConcreteHolder();
+    $iHolderPens = $iHolder->getPens();
+    assert(is_array($iHolderPens), 'ScaffoldingConcreteHolder::getPens() must return array');
+    assert($iHolderPens[0] instanceof Pen, 'ScaffoldingConcreteHolder::getPens()[0] must be Pen');
+
+    $iChild = new ScaffoldingChildHolder();
+    $iChildPens = $iChild->getPens();
+    assert(is_array($iChildPens), 'ScaffoldingChildHolder::getPens() must return array');
+    assert($iChildPens[0] instanceof Pen, 'ScaffoldingChildHolder::getPens()[0] must be Pen');
+
+    $iDeep = new ScaffoldingDeepChild();
+    $iDeepPens = $iDeep->getPens();
+    assert(is_array($iDeepPens), 'ScaffoldingDeepChild::getPens() must return array');
+    assert($iDeepPens[0] instanceof Pen, 'ScaffoldingDeepChild::getPens()[0] must be Pen');
+
+    $iCat = new ScaffoldingCatStore();
+    $iCatAnimals = $iCat->getAnimals();
+    assert(is_array($iCatAnimals), 'ScaffoldingCatStore::getAnimals() must return array');
+    assert($iCatAnimals[0] instanceof Pencil, 'ScaffoldingCatStore::getAnimals()[0] must be Pencil');
+
+    $iBox = new ScaffoldingPenBox();
+    $iBoxPens = $iBox->getPens();
+    assert(is_array($iBoxPens), 'ScaffoldingPenBox::getPens() must return array');
+    assert($iBoxPens[0] instanceof Pen, 'ScaffoldingPenBox::getPens()[0] must be Pen');
 
     // ── Constant type inference ─────────────────────────────────────────
     assert(ConstantTypeDemo::TIMEOUT === 30, 'ConstantTypeDemo::TIMEOUT must be 30');

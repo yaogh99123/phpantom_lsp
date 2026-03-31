@@ -2120,3 +2120,1286 @@ async fn test_static_return_type_static_method_chained() {
         method_names
     );
 }
+
+// ─── Inherited docblock type propagation (T1) ───────────────────────────────
+
+#[tokio::test]
+async fn test_hover_shows_inherited_interface_return_type() {
+    // Hover on `getPens` in `$holder->getPens()` should show `list<Pen>`
+    // even though the implementor only declares `: array`.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///hover_iface_ret.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "interface PenHolder {\n",                               // 2
+        "    /** @return list<Pen> */\n",                        // 3
+        "    public function getPens(): array;\n",               // 4
+        "}\n",                                                   // 5
+        "class Drawer implements PenHolder {\n",                 // 6
+        "    public function getPens(): array { return []; }\n", // 7
+        "}\n",                                                   // 8
+        "class Consumer {\n",                                    // 9
+        "    function demo(): void {\n",                         // 10
+        "        $holder = new Drawer();\n",                     // 11
+        "        $holder->getPens();\n",                         // 12
+        "    }\n",                                               // 13
+        "}\n",                                                   // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Hover on "getPens" at line 12: "        $holder->getPens();"
+    //                                 0123456789012345678
+    //                                          ^getPens starts at 18
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 20,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    };
+
+    let result = backend.hover(hover_params).await.unwrap();
+    assert!(result.is_some(), "Hover should return a result");
+
+    let hover = result.unwrap();
+    if let HoverContents::Markup(markup) = hover.contents {
+        let value = &markup.value;
+        assert!(
+            value.contains("list<Pen>"),
+            "Hover on getPens() should show inherited return type 'list<Pen>'. Got:\n{}",
+            value
+        );
+    } else {
+        panic!("Expected HoverContents::Markup");
+    }
+}
+
+#[tokio::test]
+async fn test_hover_shows_inherited_parent_return_type() {
+    // Hover on `getPens` in `$child->getPens()` should show `list<Pen>`
+    // inherited from the parent class.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///hover_parent_ret.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "class BasePenHolder {\n",                               // 2
+        "    /** @return list<Pen> */\n",                        // 3
+        "    public function getPens(): array { return []; }\n", // 4
+        "}\n",                                                   // 5
+        "class ChildHolder extends BasePenHolder {\n",           // 6
+        "    public function getPens(): array { return []; }\n", // 7
+        "}\n",                                                   // 8
+        "class Consumer {\n",                                    // 9
+        "    function demo(): void {\n",                         // 10
+        "        $child = new ChildHolder();\n",                 // 11
+        "        $child->getPens();\n",                          // 12
+        "    }\n",                                               // 13
+        "}\n",                                                   // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Hover on "getPens" at line 12: "        $child->getPens();"
+    //                                 0123456789012345678
+    //                                         ^getPens starts at 17
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 19,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    };
+
+    let result = backend.hover(hover_params).await.unwrap();
+    assert!(result.is_some(), "Hover should return a result");
+
+    let hover = result.unwrap();
+    if let HoverContents::Markup(markup) = hover.contents {
+        let value = &markup.value;
+        assert!(
+            value.contains("list<Pen>"),
+            "Hover on getPens() should show inherited return type 'list<Pen>'. Got:\n{}",
+            value
+        );
+    } else {
+        panic!("Expected HoverContents::Markup");
+    }
+}
+
+#[tokio::test]
+async fn test_hover_shows_inherited_param_type() {
+    // Hover on `accept` in `$box->accept(...)` should show `list<Pen>` for
+    // the parameter, inherited from the interface (with renamed param).
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///hover_iface_param.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                             // 0
+        "class Pen { public function write(): void {} }\n",    // 1
+        "interface PenAcceptor {\n",                           // 2
+        "    /** @param list<Pen> $pens */\n",                 // 3
+        "    public function accept(array $pens): void;\n",    // 4
+        "}\n",                                                 // 5
+        "class PenBox implements PenAcceptor {\n",             // 6
+        "    public function accept(array $items): void {}\n", // 7
+        "}\n",                                                 // 8
+        "class Consumer {\n",                                  // 9
+        "    function demo(): void {\n",                       // 10
+        "        $box = new PenBox();\n",                      // 11
+        "        $box->accept([]);\n",                         // 12
+        "    }\n",                                             // 13
+        "}\n",                                                 // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Hover on "accept" at line 12: "        $box->accept([]);"
+    //                                 012345678901234
+    //                                       ^accept starts at 15
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    };
+
+    let result = backend.hover(hover_params).await.unwrap();
+    assert!(result.is_some(), "Hover should return a result");
+
+    let hover = result.unwrap();
+    if let HoverContents::Markup(markup) = hover.contents {
+        let value = &markup.value;
+        assert!(
+            value.contains("list<Pen>"),
+            "Hover on accept() should show inherited param type 'list<Pen>'. Got:\n{}",
+            value
+        );
+    } else {
+        panic!("Expected HoverContents::Markup");
+    }
+}
+
+#[tokio::test]
+async fn test_interface_docblock_return_type_propagates_to_implementor() {
+    // Interface declares `@return list<Pen>`, implementor just has `: array`.
+    // The enriched return type should show `list<Pen>` on the implementor's method.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///iface_return.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Pen { public function write(): void {} }\n",
+        "interface PenHolder {\n",
+        "    /** @return list<Pen> */\n",
+        "    public function getPens(): array;\n",
+        "}\n",
+        "class Drawer implements PenHolder {\n",
+        "    public function getPens(): array { return []; }\n",
+        "    function test() {\n",
+        "        $this->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 9,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getPens"))
+                .expect("Should find getPens in completion");
+
+            let detail = get_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "Interface @return list<Pen> should propagate to implementor's \
+                 method detail, not just 'array'. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_parent_docblock_return_type_propagates_to_child() {
+    // Parent declares `@return list<Pen>`, child overrides with just `: array`.
+    // The enriched return type should show `list<Pen>` on the child's method.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///parent_return.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Pen { public function write(): void {} }\n",
+        "class BasePenHolder {\n",
+        "    /** @return list<Pen> */\n",
+        "    public function getPens(): array { return []; }\n",
+        "}\n",
+        "class ConcretePenHolder extends BasePenHolder {\n",
+        "    public function getPens(): array { return [new Pen()]; }\n",
+        "    function test() {\n",
+        "        $this->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 9,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getPens"))
+                .expect("Should find getPens in completion");
+
+            let detail = get_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "Parent @return list<Pen> should propagate to child's \
+                 method detail. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_child_own_docblock_return_type_wins_over_parent() {
+    // Both parent and child have docblock return types.
+    // The child's own docblock should win.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///child_wins.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Dog { public function bark(): void {} }\n",
+        "class Cat { public function meow(): void {} }\n",
+        "class AnimalStore {\n",
+        "    /** @return list<Dog> */\n",
+        "    public function getAnimals(): array { return []; }\n",
+        "}\n",
+        "class CatStore extends AnimalStore {\n",
+        "    /** @return list<Cat> */\n",
+        "    public function getAnimals(): array { return []; }\n",
+        "    function test() {\n",
+        "        $this->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 11,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_animals = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getAnimals"))
+                .expect("Should find getAnimals in completion");
+
+            let detail = get_animals.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Cat>"),
+                "Child's own @return list<Cat> should win over parent's list<Dog>. Got: {:?}",
+                detail
+            );
+            assert!(
+                !detail.contains("Dog"),
+                "Parent's Dog type should NOT leak through. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_parent_docblock_param_type_propagates_to_child() {
+    // Parent has `@param list<Pen> $pens`, child just has `: array $pens`.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///parent_param.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "class BasePenAcceptor {\n",                             // 2
+        "    /** @param list<Pen> $pens */\n",                   // 3
+        "    public function accept(array $pens): void {}\n",    // 4
+        "}\n",                                                   // 5
+        "class ConcretePenAcceptor extends BasePenAcceptor {\n", // 6
+        "    public function accept(array $pens): void {\n",     // 7
+        "        $pens[0]->\n",                                  // 8
+        "    }\n",                                               // 9
+        "}\n",                                                   // 10
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // "        $pens[0]->" — cursor at char 18
+    // 012345678901234567
+    //         $pens[0]->
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 8,
+                character: 18,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"write"),
+                "Parent @param list<Pen> should propagate to child, \
+                 enabling Pen member completion. Got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_interface_docblock_return_type_with_generics() {
+    // Interface with generics: `@implements Holder<FancyPen>` should
+    // substitute the template param before propagating.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///iface_generic.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                // 0
+        "class Pen { public function write(): void {} }\n",       // 1
+        "class FancyPen extends Pen {\n",                         // 2
+        "    public function engrave(): void {}\n",               // 3
+        "}\n",                                                    // 4
+        "/**\n",                                                  // 5
+        " * @template T\n",                                       // 6
+        " */\n",                                                  // 7
+        "interface Holder {\n",                                   // 8
+        "    /** @return list<T> */\n",                           // 9
+        "    public function getItems(): array;\n",               // 10
+        "}\n",                                                    // 11
+        "/** @implements Holder<FancyPen> */\n",                  // 12
+        "class FancyDrawer implements Holder {\n",                // 13
+        "    public function getItems(): array { return []; }\n", // 14
+        "    function test() {\n",                                // 15
+        "        $this->\n",                                      // 16
+        "    }\n",                                                // 17
+        "}\n",                                                    // 18
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 16,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_items = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getItems"))
+                .expect("Should find getItems in completion");
+
+            let detail = get_items.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<FancyPen>"),
+                "Generic @implements substitution should propagate through \
+                 interface return type enrichment. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_parent_docblock_return_type_propagates_cross_file() {
+    // Cross-file: parent in a PSR-4 file has `@return list<Pen>`,
+    // child in the open file just has `: array`.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Pen.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App;\n",
+                    "class Pen {\n",
+                    "    public function write(): void {}\n",
+                    "}\n",
+                ),
+            ),
+            (
+                "src/BasePenHolder.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App;\n",
+                    "class BasePenHolder {\n",
+                    "    /** @return list<Pen> */\n",
+                    "    public function getPens(): array { return []; }\n",
+                    "}\n",
+                ),
+            ),
+        ],
+    );
+
+    let uri = Url::parse("file:///app.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "use App\\BasePenHolder;\n",                             // 1
+        "class Drawer extends BasePenHolder {\n",                // 2
+        "    public function getPens(): array { return []; }\n", // 3
+        "    function test() {\n",                               // 4
+        "        $this->\n",                                     // 5
+        "    }\n",                                               // 6
+        "}\n",                                                   // 7
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 5,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getPens"))
+                .expect("Should find getPens in completion");
+
+            let detail = get_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "Cross-file parent @return list<Pen> should propagate to child. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_grandparent_docblock_return_type_propagates_through_chain() {
+    // Grandparent has `@return list<Pen>`, parent has no docblock, child has no docblock.
+    // The type should flow through the entire chain.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///grandparent_return.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "class GrandParent_ {\n",                                // 2
+        "    /** @return list<Pen> */\n",                        // 3
+        "    public function getPens(): array { return []; }\n", // 4
+        "}\n",                                                   // 5
+        "class Parent_ extends GrandParent_ {\n",                // 6
+        "    public function getPens(): array { return []; }\n", // 7
+        "}\n",                                                   // 8
+        "class Child_ extends Parent_ {\n",                      // 9
+        "    public function getPens(): array { return []; }\n", // 10
+        "    function test() {\n",                               // 11
+        "        $this->\n",                                     // 12
+        "    }\n",                                               // 13
+        "}\n",                                                   // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getPens"))
+                .expect("Should find getPens in completion");
+
+            let detail = get_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "Grandparent @return list<Pen> should propagate through \
+                 the entire chain to the child. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_interface_description_propagates_to_implementor() {
+    // Interface has description, implementor has none.
+    // Verify that the completion detail shows the enriched return type
+    // (description propagation works at the MethodInfo level, but hover
+    // may re-resolve from the local parse tree).
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///iface_desc.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "interface Describable {\n",                             // 2
+        "    /**\n",                                             // 3
+        "     * Get the pens.\n",                                // 4
+        "     * @return list<Pen> The pens in the holder\n",     // 5
+        "     */\n",                                             // 6
+        "    public function getPens(): array;\n",               // 7
+        "}\n",                                                   // 8
+        "class Person implements Describable {\n",               // 9
+        "    public function getPens(): array { return []; }\n", // 10
+        "    function test() {\n",                               // 11
+        "        $this->\n",                                     // 12
+        "    }\n",                                               // 13
+        "}\n",                                                   // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getPens"))
+                .expect("Should find getPens in completion");
+
+            let detail = get_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "Interface return type and description should propagate. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_parent_description_propagates_to_child() {
+    // Parent has a richer return type, child has none.
+    // Verify the enriched type flows through.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///parent_desc.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                // 0
+        "class Pen { public function write(): void {} }\n",       // 1
+        "class BaseRepo {\n",                                     // 2
+        "    /**\n",                                              // 3
+        "     * Find all pens.\n",                                // 4
+        "     * @return list<Pen> The found pens\n",              // 5
+        "     */\n",                                              // 6
+        "    public function findPens(): array { return []; }\n", // 7
+        "}\n",                                                    // 8
+        "class UserRepo extends BaseRepo {\n",                    // 9
+        "    public function findPens(): array { return []; }\n", // 10
+        "    function test() {\n",                                // 11
+        "        $this->\n",                                      // 12
+        "    }\n",                                                // 13
+        "}\n",                                                    // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let find_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("findPens"))
+                .expect("Should find findPens in completion");
+
+            let detail = find_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "Parent @return list<Pen> should propagate to child. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_no_return_type_at_all_inherits_from_interface() {
+    // Child method has no return type hint at all (neither native nor docblock).
+    // Interface has `@return list<Pen>`. Should still propagate.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///no_return.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                          // 0
+        "class Pen { public function write(): void {} }\n", // 1
+        "interface PenHolder {\n",                          // 2
+        "    /** @return list<Pen> */\n",                   // 3
+        "    public function getPens(): array;\n",          // 4
+        "}\n",                                              // 5
+        "class Drawer implements PenHolder {\n",            // 6
+        "    public function getPens() { return []; }\n",   // 7
+        "    function test() {\n",                          // 8
+        "        $this->\n",                                // 9
+        "    }\n",                                          // 10
+        "}\n",                                              // 11
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 9,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getPens"))
+                .expect("Should find getPens in completion");
+
+            let detail = get_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "When child has no return type at all, interface @return \
+                 should still propagate. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_return_type_detail_shows_enriched_type() {
+    // Verify that the completion detail for the method shows the enriched
+    // return type from the interface, not just `array`.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///detail_enriched.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Pen { public function write(): void {} }\n",
+        "interface PenHolder {\n",
+        "    /** @return list<Pen> */\n",
+        "    public function getPens(): array;\n",
+        "}\n",
+        "class Drawer implements PenHolder {\n",
+        "    public function getPens(): array { return []; }\n",
+        "    function test() {\n",
+        "        $this->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 9,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let get_pens = items
+                .iter()
+                .find(|i| i.filter_text.as_deref() == Some("getPens"))
+                .expect("Should find getPens in completion");
+
+            let detail = get_pens.detail.as_deref().unwrap_or("");
+            assert!(
+                detail.contains("list<Pen>"),
+                "Completion detail should show enriched return type 'list<Pen>', \
+                 not just 'array'. Got: {:?}",
+                detail
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_child_own_docblock_param_type_wins_over_interface() {
+    // Both interface and implementor have @param types.
+    // The child's own docblock should win.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///child_param_wins.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                              // 0
+        "class Dog { public function bark(): void {} }\n",      // 1
+        "class Cat { public function meow(): void {} }\n",      // 2
+        "interface AnimalAcceptor {\n",                         // 3
+        "    /** @param list<Dog> $animals */\n",               // 4
+        "    public function accept(array $animals): void;\n",  // 5
+        "}\n",                                                  // 6
+        "class CatAcceptor implements AnimalAcceptor {\n",      // 7
+        "    /** @param list<Cat> $animals */\n",               // 8
+        "    public function accept(array $animals): void {\n", // 9
+        "        $animals[0]->\n",                              // 10
+        "    }\n",                                              // 11
+        "}\n",                                                  // 12
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // "        $animals[0]->" — cursor at char 22
+    // 0123456789012345678901
+    //         $animals[0]->
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 10,
+                character: 22,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"meow"),
+                "Child's own @param list<Cat> should win over interface's list<Dog>. Got: {:?}",
+                method_names
+            );
+            assert!(
+                !method_names.contains(&"bark"),
+                "Interface's Dog type should NOT leak through. Got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_inherited_interface_return_type_enables_array_element_completion() {
+    // Interface declares `@return list<Pen>`, implementor has only `: array`.
+    // `$holder->getPens()[0]->` should complete Pen members.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///chain_iface.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "interface PenHolder {\n",                               // 2
+        "    /** @return list<Pen> */\n",                        // 3
+        "    public function getPens(): array;\n",               // 4
+        "}\n",                                                   // 5
+        "class Drawer implements PenHolder {\n",                 // 6
+        "    public function getPens(): array { return []; }\n", // 7
+        "}\n",                                                   // 8
+        "class Consumer {\n",                                    // 9
+        "    function demo(): void {\n",                         // 10
+        "        $d = new Drawer();\n",                          // 11
+        "        $d->getPens()[0]->\n",                          // 12
+        "    }\n",                                               // 13
+        "}\n",                                                   // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // "        $d->getPens()[0]->" cursor after final ->
+    // 0         1         2
+    // 0123456789012345678901234567
+    //         $d->getPens()[0]->
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 26,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"write"),
+                "Interface @return list<Pen> should propagate to implementor, \
+                 enabling Pen member completion on [0]->. Got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_inherited_parent_return_type_enables_array_element_completion() {
+    // Parent declares `@return list<Pen>`, child overrides with just `: array`.
+    // `$child->getPens()[0]->` should complete Pen members.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///chain_parent.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "class BasePenHolder {\n",                               // 2
+        "    /** @return list<Pen> */\n",                        // 3
+        "    public function getPens(): array { return []; }\n", // 4
+        "}\n",                                                   // 5
+        "class ChildHolder extends BasePenHolder {\n",           // 6
+        "    public function getPens(): array { return []; }\n", // 7
+        "}\n",                                                   // 8
+        "class Consumer {\n",                                    // 9
+        "    function demo(): void {\n",                         // 10
+        "        $c = new ChildHolder();\n",                     // 11
+        "        $c->getPens()[0]->\n",                          // 12
+        "    }\n",                                               // 13
+        "}\n",                                                   // 14
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // "        $c->getPens()[0]->" cursor after final ->
+    // 0         1         2
+    // 01234567890123456789012345
+    //         $c->getPens()[0]->
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 26,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"write"),
+                "Parent @return list<Pen> should propagate to child, \
+                 enabling Pen member completion on [0]->. Got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_inherited_grandparent_return_type_enables_array_element_completion() {
+    // Grandparent has `@return list<Pen>`, middle and child have only `: array`.
+    // `$deep->getPens()[0]->` should complete Pen members.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///chain_grandparent.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Pen { public function write(): void {} }\n",      // 1
+        "class GrandBase {\n",                                   // 2
+        "    /** @return list<Pen> */\n",                        // 3
+        "    public function getPens(): array { return []; }\n", // 4
+        "}\n",                                                   // 5
+        "class Mid extends GrandBase {\n",                       // 6
+        "    public function getPens(): array { return []; }\n", // 7
+        "}\n",                                                   // 8
+        "class Deep extends Mid {\n",                            // 9
+        "    public function getPens(): array { return []; }\n", // 10
+        "}\n",                                                   // 11
+        "class Consumer {\n",                                    // 12
+        "    function demo(): void {\n",                         // 13
+        "        $d = new Deep();\n",                            // 14
+        "        $d->getPens()[0]->\n",                          // 15
+        "    }\n",                                               // 16
+        "}\n",                                                   // 17
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // "        $d->getPens()[0]->" cursor after final ->
+    // 0         1         2
+    // 0123456789012345678901234567
+    //         $d->getPens()[0]->
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 15,
+                character: 26,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"write"),
+                "Grandparent @return list<Pen> should propagate through \
+                 the entire chain, enabling Pen completion on [0]->. Got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                       | Impact | Effort |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
-| T14 | [Mixin generic substitution through multi-level inheritance](todo/type-inference.md#t14-mixin-generic-substitution-through-multi-level-inheritance) | High | Medium |
 | H6  | [`return.type` / `return.void` / `missingType.return` — fix return type](todo/phpstan-actions.md#h6-returntype--update-return-type-to-match-actual-returns) | Medium | Low    |
 |     | **Release 0.7.0**                                                                                                                          |        |        |
 
@@ -32,7 +31,6 @@ within the same impact tier.
 | #   | Item                                                                                                 | Impact | Effort |
 | --- | ---------------------------------------------------------------------------------------------------- | ------ | ------ |
 |     | Clear [refactoring gate](todo/refactor.md)                                                           | —      | —      |
-| T1  | [Inherited docblock type propagation](todo/type-inference.md#t1-inherited-docblock-type-propagation) | High   | Medium |
 | D8  | [Undefined variable diagnostic](todo/diagnostics.md#d8-undefined-variable-diagnostic)                | High   | Medium |
 | D11 | [Invalid class-like kind in context](todo/diagnostics.md#d11-invalid-class-like-kind-in-context)     | Medium | Low    |
 | D4  | Unused variable warning                                                                              | Medium | Medium |

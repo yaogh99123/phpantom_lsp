@@ -837,7 +837,15 @@ fn resolve_call_raw_return_type(
         SubjectExpr::MethodCall { base, method } => {
             let base_classes = resolve_target_classes_expr(base, AccessKind::Arrow, ctx);
             for cls in &base_classes {
-                if let Some(m) = cls
+                // Use a fully-resolved class so that inherited docblock
+                // return types (e.g. `list<Pen>` from an interface or
+                // parent) are visible instead of the bare native hint.
+                let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
+                    cls,
+                    ctx.class_loader,
+                    ctx.resolved_class_cache,
+                );
+                if let Some(m) = merged
                     .methods
                     .iter()
                     .find(|m| m.name.eq_ignore_ascii_case(method))
@@ -850,14 +858,20 @@ fn resolve_call_raw_return_type(
         }
         SubjectExpr::StaticMethodCall { class, method } => {
             let owner = resolve_static_owner_class(class, ctx);
-            if let Some(ref cls) = owner
-                && let Some(m) = cls
+            if let Some(ref cls) = owner {
+                let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
+                    cls,
+                    ctx.class_loader,
+                    ctx.resolved_class_cache,
+                );
+                if let Some(m) = merged
                     .methods
                     .iter()
                     .find(|m| m.name.eq_ignore_ascii_case(method))
-                && let Some(ref ret) = m.return_type
-            {
-                return Some(ret.to_string());
+                    && let Some(ref ret) = m.return_type
+                {
+                    return Some(ret.to_string());
+                }
             }
             None
         }

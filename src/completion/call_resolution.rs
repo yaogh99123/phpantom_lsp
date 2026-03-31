@@ -142,41 +142,33 @@ impl Backend {
         };
 
         for owner in &owner_classes {
-            // `resolve_target_classes` already returns fully-resolved
-            // classes (via `type_hint_to_classes` which calls
-            // `resolve_class_fully` and injects model-specific scope
-            // methods).  Check the candidate directly first so that
-            // model-specific members (e.g. Eloquent scope methods
-            // injected onto Builder<Model>) are found even when the
-            // FQN-keyed resolved_class_cache holds a stale or
-            // differently-scoped entry for the same base class.
-            if let Some(m) = owner
-                .methods
-                .iter()
-                .find(|m| m.name.eq_ignore_ascii_case(method_name))
-            {
-                // Skip #[Scope]-attributed methods on unresolved
-                // classes — the raw parsed method still has the
-                // `$query` parameter that the virtual member provider
-                // strips.  Fall through to full resolution so the
-                // synthesized scope method is used instead.
-                if !m.has_scope_attribute {
-                    return Some(ResolvedCallableTarget {
-                        parameters: m.parameters.clone(),
-                        return_type: m.return_type.clone(),
-                    });
-                }
-            }
-
-            // Fall back to full resolution for candidates that were
-            // produced by a path that skips full resolution (e.g.
-            // bare class name lookup).
+            // Always use a fully-resolved class so that inherited
+            // docblock types (return types, parameter types,
+            // descriptions) are visible in signature help.  The
+            // candidate from `resolve_target_classes` may not have
+            // gone through `resolve_class_fully` (e.g. bare `new X`
+            // instantiation without generics).
             let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
                 owner,
                 rctx.class_loader,
                 rctx.resolved_class_cache,
             );
             if let Some(m) = merged
+                .methods
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(method_name))
+            {
+                return Some(ResolvedCallableTarget {
+                    parameters: m.parameters.clone(),
+                    return_type: m.return_type.clone(),
+                });
+            }
+
+            // Fall back to the candidate directly — it may contain
+            // model-specific members (e.g. Eloquent scope methods
+            // injected onto Builder<Model>) that the FQN-keyed
+            // cache does not have.
+            if let Some(m) = owner
                 .methods
                 .iter()
                 .find(|m| m.name.eq_ignore_ascii_case(method_name))

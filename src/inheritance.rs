@@ -83,13 +83,166 @@ impl MergeDedup {
 
 use crate::php_type::PhpType;
 use crate::types::{
-    ClassInfo, MAX_INHERITANCE_DEPTH, MAX_TRAIT_DEPTH, MethodInfo, PropertyInfo, TraitAlias,
-    TraitPrecedence, Visibility,
+    ClassInfo, MAX_INHERITANCE_DEPTH, MAX_TRAIT_DEPTH, MethodInfo, ParameterInfo, PropertyInfo,
+    TraitAlias, TraitPrecedence, Visibility,
 };
 use crate::util::short_name;
 use crate::virtual_members::laravel::{
     extends_eloquent_model, factory_to_model_fqn, model_to_factory_fqn,
 };
+
+// ─── Docblock Enrichment ────────────────────────────────────────────────────
+
+/// Whether a child's effective type equals its native type, meaning no
+/// docblock override was applied.
+///
+/// Returns `true` when the child wrote no `@return` / `@var` / `@param`
+/// tag (so the effective type is just the native hint).  Returns `false`
+/// when the child provided its own docblock type — in that case the
+/// child's type is an intentional override and should not be replaced.
+fn lacks_docblock_override(effective: &Option<PhpType>, native: &Option<PhpType>) -> bool {
+    match (effective, native) {
+        // No effective type at all — nothing to override.
+        (None, _) => true,
+        // Effective type present but no native type — the child wrote
+        // a docblock-only type (e.g. `@return list<Pen>` with no native
+        // hint).  That is an intentional override.
+        (Some(_), None) => false,
+        // Both present — if they are equivalent, the child didn't write
+        // a docblock (the effective type is just the native hint echoed).
+        (Some(eff), Some(nat)) => eff.equivalent(nat),
+    }
+}
+
+/// Whether an ancestor's type is richer than the child's native type.
+///
+/// Returns `true` when the ancestor has an effective type that differs
+/// from its own native type (meaning the ancestor wrote a docblock).
+fn ancestor_has_richer_type(effective: &Option<PhpType>, native: &Option<PhpType>) -> bool {
+    match (effective, native) {
+        // Ancestor has an effective type but no native type — it came
+        // from a docblock (e.g. interface method with `@return list<Pen>`
+        // and no native hint).
+        (Some(_), None) => true,
+        // Both present — richer if they differ (docblock overrides native).
+        (Some(eff), Some(nat)) => !eff.equivalent(nat),
+        // No effective type — nothing richer to offer.
+        _ => false,
+    }
+}
+
+/// Enrich a child method with docblock information from an ancestor method.
+///
+/// Propagates return types, parameter types, descriptions, template
+/// parameters, conditional return types, and type assertions from the
+/// ancestor when the child lacks its own docblock overrides.
+///
+/// **Return type rule:** If the child's `return_type` equals its
+/// `native_return_type` (no docblock), and the ancestor's `return_type`
+/// differs from its `native_return_type` (has docblock), copy the
+/// ancestor's `return_type` to the child.  If the child has no
+/// `return_type` at all, always inherit the ancestor's.
+///
+/// **Parameter rule:** Match by position (not by name, since the child
+/// may rename parameters).  Same effective-vs-native comparison as
+/// return types.
+///
+/// **Description rule:** Inherit `description` and `return_description`
+/// when the child has `None`.
+pub(crate) fn enrich_method_from_ancestor(existing: &mut MethodInfo, ancestor: &MethodInfo) {
+    // ── Return type ─────────────────────────────────────────────
+    // Propagate when (a) the child has no return type at all, or
+    // (b) the child's effective type equals its native type (no
+    // docblock override) and the ancestor has a richer docblock type.
+    if existing.return_type.is_none() && ancestor.return_type.is_some()
+        || lacks_docblock_override(&existing.return_type, &existing.native_return_type)
+            && ancestor_has_richer_type(&ancestor.return_type, &ancestor.native_return_type)
+    {
+        existing.return_type = ancestor.return_type.clone();
+    }
+
+    // ── Template parameters ─────────────────────────────────────
+    if existing.template_params.is_empty() && !ancestor.template_params.is_empty() {
+        existing.template_params = ancestor.template_params.clone();
+        existing.template_param_bounds = ancestor.template_param_bounds.clone();
+        existing.template_bindings = ancestor.template_bindings.clone();
+        // Template return types like `T` only make sense when the
+        // template params are present — inherit the return type too
+        // if we haven't already set it.
+        if existing.return_type.is_none() {
+            existing.return_type = ancestor.return_type.clone();
+        }
+    }
+
+    // ── Conditional return type ─────────────────────────────────
+    if existing.conditional_return.is_none() && ancestor.conditional_return.is_some() {
+        existing.conditional_return = ancestor.conditional_return.clone();
+    }
+
+    // ── Type assertions ─────────────────────────────────────────
+    if existing.type_assertions.is_empty() && !ancestor.type_assertions.is_empty() {
+        existing.type_assertions = ancestor.type_assertions.clone();
+    }
+
+    // ── Parameters (by position) ────────────────────────────────
+    enrich_parameters_from_ancestor(&mut existing.parameters, &ancestor.parameters);
+
+    // ── Descriptions ────────────────────────────────────────────
+    if existing.description.is_none() && ancestor.description.is_some() {
+        existing.description = ancestor.description.clone();
+    }
+    if existing.return_description.is_none() && ancestor.return_description.is_some() {
+        existing.return_description = ancestor.return_description.clone();
+    }
+}
+
+/// Enrich child parameters from ancestor parameters, matched by position.
+///
+/// When a child parameter's `type_hint` equals its `native_type_hint`
+/// (no docblock override) and the ancestor parameter has a richer type,
+/// copy the ancestor's `type_hint`.  Also inherit `description` when
+/// the child parameter has none.
+fn enrich_parameters_from_ancestor(
+    existing_params: &mut [ParameterInfo],
+    ancestor_params: &[ParameterInfo],
+) {
+    for (existing_param, ancestor_param) in existing_params.iter_mut().zip(ancestor_params) {
+        // Type hint enrichment
+        if lacks_docblock_override(&existing_param.type_hint, &existing_param.native_type_hint)
+            && ancestor_param.type_hint.is_some()
+        {
+            existing_param.type_hint = ancestor_param.type_hint.clone();
+        }
+        // Description enrichment
+        if existing_param.description.is_none() && ancestor_param.description.is_some() {
+            existing_param.description = ancestor_param.description.clone();
+        }
+    }
+}
+
+/// Enrich a child property with docblock information from an ancestor
+/// property.
+///
+/// Propagates type hints and descriptions from the ancestor when the
+/// child lacks its own docblock overrides.  The same
+/// effective-vs-native comparison is used as for method return types.
+pub(crate) fn enrich_property_from_ancestor(existing: &mut PropertyInfo, ancestor: &PropertyInfo) {
+    // ── Type hint ───────────────────────────────────────────────
+    // Same logic as method return types: propagate when the child
+    // has no type or has only the native hint without a docblock
+    // override, and the ancestor provides a richer type.
+    if existing.type_hint.is_none() && ancestor.type_hint.is_some()
+        || lacks_docblock_override(&existing.type_hint, &existing.native_type_hint)
+            && ancestor_has_richer_type(&ancestor.type_hint, &ancestor.native_type_hint)
+    {
+        existing.type_hint = ancestor.type_hint.clone();
+    }
+
+    // ── Description ─────────────────────────────────────────────
+    if existing.description.is_none() && ancestor.description.is_some() {
+        existing.description = ancestor.description.clone();
+    }
+}
 
 /// Resolve a class together with all inherited members from its parent
 /// chain.
@@ -240,34 +393,55 @@ pub(crate) fn resolve_class_with_inheritance(
             &mut dedup,
         );
 
-        // Merge parent methods — skip private, skip if child already has one with same name
+        // Merge parent methods — skip private.
+        // When the child already has a method with the same name,
+        // enrich it with the parent's richer docblock types instead
+        // of silently discarding the parent's type information.
         for method in &parent.methods {
             if method.visibility == Visibility::Private {
                 continue;
             }
+            let mut ancestor_method = method.clone();
+            if !level_subs.is_empty() {
+                apply_substitution_to_method(&mut ancestor_method, &level_subs);
+            }
             if !dedup.methods.insert(method.name.clone()) {
+                // Child already has this method — enrich it from parent.
+                if let Some(existing) = merged
+                    .methods
+                    .make_mut()
+                    .iter_mut()
+                    .find(|m| m.name == method.name)
+                {
+                    enrich_method_from_ancestor(existing, &ancestor_method);
+                }
                 continue;
             }
-            let mut method = method.clone();
-            if !level_subs.is_empty() {
-                apply_substitution_to_method(&mut method, &level_subs);
-            }
-            merged.methods.push(method);
+            merged.methods.push(ancestor_method);
         }
 
-        // Merge parent properties
+        // Merge parent properties — same enrichment logic.
         for property in &parent.properties {
             if property.visibility == Visibility::Private {
                 continue;
             }
+            let mut ancestor_property = property.clone();
+            if !level_subs.is_empty() {
+                apply_substitution_to_property(&mut ancestor_property, &level_subs);
+            }
             if !dedup.properties.insert(property.name.clone()) {
+                // Child already has this property — enrich it from parent.
+                if let Some(existing) = merged
+                    .properties
+                    .make_mut()
+                    .iter_mut()
+                    .find(|p| p.name == property.name)
+                {
+                    enrich_property_from_ancestor(existing, &ancestor_property);
+                }
                 continue;
             }
-            let mut property = property.clone();
-            if !level_subs.is_empty() {
-                apply_substitution_to_property(&mut property, &level_subs);
-            }
-            merged.properties.push(property);
+            merged.properties.push(ancestor_property);
         }
 
         // Merge parent constants
