@@ -823,10 +823,14 @@ pub(in crate::completion) fn try_resolve_in_closure_expr<'b>(
                     resolve_closure_params(&arrow.parameter_list, ctx, results);
                     return true;
                 }
-                // Variable is not a parameter of this arrow function —
-                // it must come from the enclosing scope.  Return false
-                // so the outer walk resolves it.
-                return false;
+                // Variable is not a parameter of this arrow function.
+                // Before falling back to the enclosing scope, recurse
+                // into the body expression — the cursor may be inside
+                // a closure nested within the arrow function's body
+                // (e.g. `fn($r) => $r->whereHas('x', function (Foo $q) { $q-> })`).
+                // If we find and resolve inside a nested closure, we're
+                // done; otherwise return false so the outer walk continues.
+                return try_resolve_in_closure_expr(arrow.expression, ctx, results);
             }
             false
         }

@@ -2369,3 +2369,52 @@ async fn test_closure_param_inferred_from_standalone_var_generic() {
         names,
     );
 }
+
+// ─── Closure with explicit type hint nested inside arrow function body ───────
+
+/// When a closure with an explicit type hint is nested inside an arrow
+/// function's body expression (e.g. `fn($r) => $r->method(function (Foo $q) { $q-> })`),
+/// the closure parameter should still resolve from its type hint.
+#[tokio::test]
+async fn test_closure_with_type_hint_nested_inside_arrow_fn() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_nested_in_arrow.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Builder {\n",
+        "    public function where(string $col, mixed $val = null): static { return $this; }\n",
+        "    public function orderBy(string $col): static { return $this; }\n",
+        "    /**\n",
+        "     * @param string $relation\n",
+        "     * @param (\\Closure(static): mixed)|null $callback\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public function whereHas(string $relation, ?callable $callback = null): static { return $this; }\n",
+        "}\n",
+        "class Relation {\n",
+        "    public function whereHas(string $relation, ?callable $callback = null): static { return $this; }\n",
+        "}\n",
+        "class Service {\n",
+        "    public function run(): void {\n",
+        "        $items = [fn(Relation $r): Relation => $r->whereHas('locales', function (Builder $q): void {\n",
+        "            $q->\n",
+        "        })];\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Line 17: `            $q->`  cursor after `->`
+    let items = complete_at(&backend, &uri, src, 17, 16).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"where"),
+        "Expected where() from explicitly typed Builder $q nested in arrow fn, got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"orderBy"),
+        "Expected orderBy() from explicitly typed Builder $q nested in arrow fn, got: {:?}",
+        names,
+    );
+}
