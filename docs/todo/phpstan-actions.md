@@ -42,6 +42,20 @@ Offer two quickfixes:
 Mark neither as `is_preferred` since the right fix might be to change the code
 rather than the signature.
 
+**Inheritance guard:** Before offering the native return type quickfix, check
+whether the method overrides a parent class or interface method. Changing the
+return type could violate LSP (Liskov Substitution Principle) if the parent
+declares a wider type. Rector's `ClassMethodReturnTypeOverrideGuard` enforces
+this same constraint. When the method overrides a parent, only offer the
+docblock quickfix (docblock types don't affect runtime covariance checks).
+
+**All-paths completeness:** When the `{actual}` type is inferred from return
+statements, verify that all return paths yield a consistent type. If some
+paths return a value and others fall through without returning, the actual
+type should include `void` or `null`. Rector's return type rules universally
+bail out when return paths are ambiguous rather than risk an incorrect
+declaration.
+
 **Stale detection:** difficult to do precisely because PHPStan's type syntax
 differs from source syntax. As a heuristic, check whether the return type
 declaration or `@return` tag was modified since the diagnostic was issued
@@ -206,28 +220,7 @@ literals with consistent value types, offer `@return array<ValueType>`.
 
 ---
 
-## Tier 5 — Lower priority / more complex
-
-### H19. `property.unused` / `method.unused` / `classConstant.unused` — Remove unused member
-
-**Identifiers:** `property.unused`, `method.unused`, `classConstant.unused`
-**Messages:**
-- `Property Foo::$bar is unused.`
-- `Method Foo::bar() is unused.`
-- `Constant Foo::BAR is unused.`
-
-Find and delete the entire member declaration. Destructive action, so mark
-as non-preferred and only offer when the identifier exactly matches
-(not on `property.onlyRead`, `property.onlyWritten`, etc. where the member
-is partially used).
-
-For methods, need to find the full extent (from docblock through closing `}`).
-For properties/constants, just the line (plus docblock above).
-
-**Stale detection:** the member name no longer appears as a declaration in the
-class.
-
----
+## Tier 5 — Unique to PHPantom
 
 ### H20. `generics.callSiteVarianceRedundant` — Remove redundant variance annotation
 
@@ -238,35 +231,12 @@ Strip `covariant` or `contravariant` keywords from generic type arguments
 in the docblock. Requires parsing PHPDoc generic syntax
 (e.g. `Collection<covariant Foo>` becomes `Collection<Foo>`).
 
+No other tool (PHPStorm, Rector, PHP-CS-Fixer) offers a quickfix for this
+PHPStan-specific diagnostic. Users currently have to edit the PHPDoc manually
+or suppress with `@phpstan-ignore`.
+
 **Stale detection:** no `covariant`/`contravariant` in the PHPDoc on the
 diagnostic line.
-
----
-
-### H23. `instanceof.alwaysTrue` — Remove redundant instanceof check
-
-**Identifier:** `instanceof.alwaysTrue`
-**Message:** `Instanceof between {type} and {class} will always evaluate to true.`
-
-Offer to simplify: remove the `instanceof` check and keep only the truthy
-branch. Complex because it requires understanding the control flow (if/else,
-ternary, match arm). Consider deferring this indefinitely — the user can just
-`@phpstan-ignore` it.
-
----
-
-### H24. `catch.neverThrown` — Remove unnecessary catch clause
-
-**Identifier:** `catch.neverThrown`
-**Message:** `Dead catch - {exception} is never thrown in the try block.`
-
-Remove the catch clause for the exception that is never thrown. If it is the
-only catch clause, the entire try/catch block should be unwrapped (keep just
-the try body). This requires careful brace matching.
-
-Start with the multi-catch case: if the catch has multiple exception types
-(`catch (FooException | BarException $e)`), just remove the dead type from
-the list.
 
 ---
 
@@ -277,7 +247,9 @@ Based on effort-to-value ratio and shared infrastructure:
 1. **H6** — return type update
 2. **H10** — remove unused union member
 3. **H4** — unset by-ref foreach variable
-4. Everything else based on user demand
+4. **H13** — declare missing property
+5. **H16** — add missing match arms
+6. Everything else based on user demand
 
 ---
 
@@ -362,3 +334,20 @@ actions can reference any of these three modules.
 update the tag type to match the native type, or remove the tag entirely
 (preferred). Stale detection checks whether the tag still contains the
 original PHPDoc type.
+
+### Patterns from Rector
+
+Several cross-cutting patterns from Rector's rule implementations are relevant
+to all PHPStan code actions:
+
+**Inheritance guard.** Before modifying a method's return type or parameter
+type, check whether the method overrides a parent or interface method. Rector
+uses `ClassMethodReturnTypeOverrideGuard` and
+`ClassMethodReturnVendorLockResolver` for this. Modifying a type that is
+constrained by a parent declaration would produce a fatal error. We already
+have class hierarchy information available through `inheritance.rs`.
+
+**Comment preservation.** When a code action inserts or removes lines near
+existing comments or docblocks, take care not to orphan or lose them. Rector's
+control-flow simplification rules merge comments from removed nodes onto the
+first statement of the replacement.

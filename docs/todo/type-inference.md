@@ -472,3 +472,106 @@ with the concrete argument type.
 **Impact in shared codebase:** ~2 diagnostics.
 
 ---
+
+## T19. Structured type representation
+**Impact: High · Effort: Very High**
+
+PHPantom represents types as strings (e.g. `"Collection<string>|null"`)
+and manipulates them via string splitting, regex, and concatenation.
+PHPStan, Psalm, and Mago all use structured type trees (enums/classes)
+where each type is a node with typed children. This causes:
+
+- Fragile parsing on every type comparison or manipulation
+- No proper subtype checking (can't answer "is `Cat` a subtype of
+  `Animal`?")
+- String-based template substitution that breaks on nested generics
+- No union simplification (`string|string` stays as-is, `true|false`
+  doesn't merge to `bool`)
+- Intersection types can't be properly distributed over unions
+
+A structured type representation (a Rust `enum PhpType`) would
+eliminate these issues. PHPantom already has `PhpType` via
+`mago-type-syntax` for parsing. The gap is using it as the primary
+representation throughout the resolution pipeline instead of raw
+strings.
+
+**Migration path:** incremental. Start by making the hottest paths
+(template substitution, type narrowing) operate on `PhpType` values
+instead of strings, converting at the boundary. Expand outward over
+time.
+
+**Reference:** PHPStan's `Type` interface (~120 methods), Psalm's
+`Union`/`Atomic` hierarchy, Mago's `TUnion`/`TAtomic` enum. All three
+converge on the same architecture.
+
+**Note:** the `mago-type-syntax` integration tracked in `refactor.md`
+is a stepping stone toward this. The remaining items there
+(`ArrayShapeEntry.value_type` to `PhpType`, `split_type_token`
+replacement) should be completed first.
+
+---
+
+## T20. Type narrowing reconciliation engine
+**Impact: Medium-High · Effort: High**
+
+PHPantom's type narrowing in `completion/types/narrowing.rs` handles
+basic patterns (instanceof, is_* calls, null checks) but lacks the
+algebraic framework that PHPStan and Psalm use. Key gaps:
+
+1. No separate tracking of "sure types" vs "sure-not types". When
+   `$x !== null`, PHPantom should remove `null` from the union
+   (sure-not) rather than trying to intersect with "not-null".
+2. No proper AND/OR algebra. `$a instanceof Foo && $b instanceof Bar`
+   should union the narrowings in true context and intersect them in
+   false context. Currently only simple cases work.
+3. No truthy/falsey distinction. `if ($x)` (truthy) vs
+   `if ($x === true)` (strict true) should produce different
+   narrowings. PHPStan uses a 4-state bitmask context.
+4. No assertion propagation from `@phpstan-assert` /
+   `@psalm-assert` annotations on called functions. PHPantom parses
+   these assertions but doesn't apply them as type narrowings at
+   call sites.
+
+**Design:** create a
+`fn reconcile(existing: PhpType, assertion: Assertion, negated: bool) -> PhpType`
+function that dispatches to per-assertion-kind narrowing logic. Start
+with 15 core assertion kinds: IsType, IsNotType, IsNull, IsNotNull,
+Truthy, Falsy, IsIdentical, IsNotIdentical, IsInstanceOf,
+IsNotInstanceOf, HasMethod, HasProperty, IsGreaterThan, IsLessThan,
+NonEmptyCountable.
+
+**Reference:** Psalm has 41 assertion types under
+`Psalm/Storage/Assertion/`. PHPStan's `TypeSpecifier` returns
+`SpecifiedTypes` with dual sure/sureNot maps.
+
+**Depends on:** T19 (structured types make reconciliation much
+simpler, but basic reconciliation can work with strings too).
+
+---
+
+## T21. Bidirectional template inference (upper/lower bounds)
+**Impact: Medium · Effort: Medium-High**
+
+PHPantom's template resolution only tracks one direction: matching
+template parameters against concrete types from extends clauses and
+direct argument positions. PHPStan and Psalm track both upper bounds
+(covariant positions like return types) and lower bounds (contravariant
+positions like parameter types).
+
+Key gaps:
+
+1. When `@param Closure(T): void $callback` receives a closure, `T`
+   should be inferred from the closure's parameter type
+   (contravariant).
+2. When multiple bounds exist for the same template, the most specific
+   one should win. Psalm uses `appearance_depth` to prefer direct
+   bindings over nested ones.
+3. No variance tracking. `@template-covariant T` vs `@template T`
+   affects whether `Container<Cat>` is assignable to
+   `Container<Animal>`.
+
+**Implementation:** add a `TemplateResolution` struct that accumulates
+lower and upper bounds during call-site analysis, with a `resolve()`
+method that picks the most specific bound.
+
+---

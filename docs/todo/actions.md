@@ -8,9 +8,51 @@ within the same impact tier.
 | **Impact** | **Critical**, **High**, **Medium-High**, **Medium**, **Low-Medium**, **Low**                                           |
 | **Effort** | **Low** (≤ 1 day), **Medium** (2-5 days), **Medium-High** (1-2 weeks), **High** (2-4 weeks), **Very High** (> 1 month) |
 
-**Refactoring code actions overview:** A2 (Extract Function) and A6
-(Inline Function/Method) depend on forward-pass variable usage tracking
-with byte offsets across function scopes.
+**Refactoring code actions overview:** A2 (Extract Function) depends on
+forward-pass variable usage tracking with byte offsets across function
+scopes.
+
+## A34. Unified code action handler architecture
+
+**Impact: Medium · Effort: Medium-High**
+
+Refactor the code action system to use a unified handler architecture
+inspired by rust-analyzer's assist system. Currently each code action
+has a separate `collect_*` method called from a hand-maintained list in
+`handle_code_action`, and deferred actions have a separate `resolve_*`
+method dispatched via a string match in `resolve_code_action`. PHPStan
+quick-fixes and refactoring actions use different code paths.
+
+### Changes
+
+1. **Unified handler signature.** Each code action becomes a function
+   `fn(&mut Actions, &ActionContext) -> Option<()>`. Handlers are
+   collected in a static array. `handle_code_action` iterates the array
+   instead of calling methods one by one.
+
+2. **Closure-based lazy resolve.** Handlers call
+   `actions.add(id, label, range, |builder| { ... })`. The closure
+   only runs when the action is being resolved, eliminating separate
+   `collect_*` / `resolve_*` method pairs. The same handler function
+   serves both Phase 1 (applicability check + lightweight stub) and
+   Phase 2 (compute edit).
+
+3. **Unified type for actions and diagnostic fixes.** Use the same
+   struct for PHPStan quick-fixes and refactoring actions. The LSP
+   layer gets one conversion path. Diagnostic fixes attach the same
+   type as their quick-fix data.
+
+4. **Sort by target range size.** Sort results by `target.len()` as
+   a tiebreaker. Smaller target = more specific = higher priority.
+   No manual priority numbers needed.
+
+### When to implement
+
+Do this when the next batch of code actions is added (A25, A28, etc.).
+The refactoring pays for itself by making each subsequent action
+cheaper to add: write one function, append it to an array.
+
+---
 
 ## A3. Switch → match conversion
 
@@ -51,106 +93,6 @@ but bounded in scope.
 
 ---
 
-## A6. Inline Function/Method
-
-**Impact: Medium · Effort: High**
-
-Replace a function or method call with the body of the called function,
-substituting parameters with the corresponding arguments.
-
-### Behaviour
-
-- **Trigger:** The cursor is on a function or method call. The code
-  action replaces the call with the inlined body of the callee.
-- **Code action kind:** `refactor.inline`.
-
-### Simple case (single return statement)
-
-When the callee body is a single `return <expr>;` statement:
-
-- Replace the call expression with `<expr>`, substituting each parameter
-  name with the corresponding argument expression.
-- Add parentheses around substituted arguments where necessary to
-  preserve precedence.
-
-Example:
-
-```php
-function fullName(string $first, string $last): string {
-    return $first . ' ' . $last;
-}
-// Before:
-$name = fullName($user->first, $user->last);
-// After:
-$name = $user->first . ' ' . $user->last;
-```
-
-### Multi-statement body
-
-When the callee has multiple statements:
-
-- Replace the call statement with the full body of the callee, with
-  parameter substitutions applied throughout.
-- If the call site captures a return value (`$x = foo()`), replace the
-  `return <expr>;` at the end of the inlined body with `$x = <expr>;`.
-- If there are multiple `return` statements (early returns), the inline
-  is significantly harder. For the initial implementation, reject
-  functions with multiple return paths.
-
-### Safety checks
-
-1. **Resolvable callee.** The callee must resolve to a single known
-   function or method definition. Dynamic calls (`$fn()`,
-   `$obj->$method()`) are rejected.
-2. **No recursion.** If the callee calls itself (directly or
-   indirectly), reject. Detecting indirect recursion is hard, so start
-   with direct recursion only.
-3. **No `$this` / `self` / `static` leakage.** If inlining a method
-   call and the method body references `$this`, `self::`, or `static::`,
-   the inlined code must be placed in a context where those references
-   still make sense (i.e. within the same class or a subclass). If the
-   call site is a standalone function, reject.
-4. **Variable name collisions.** Local variables in the callee body
-   might collide with variables at the call site. Rename the callee's
-   locals if they shadow call-site variables.
-5. **By-reference parameters.** If a parameter is passed by reference,
-   the corresponding argument must be a variable (not an expression).
-   This is already enforced by PHP, so no extra check is needed.
-6. **Single return.** For the initial implementation, reject callees
-   with multiple `return` statements or `return` inside
-   loops/conditionals.
-
-### Scope
-
-- Start with standalone functions and static methods (no `$this`
-  complications).
-- Instance methods where the call site is within the same class are a
-  natural second step.
-- Cross-file inlining (the callee is in a different file) requires
-  loading the callee's source. The infrastructure for this exists
-  (PSR-4 loader, `find_or_load_class`), but the callee needs to be
-  loaded as raw source text, not just as parsed `ClassInfo`.
-
-### Implementation
-
-- Resolve the call to its definition using Go-to-Definition
-  infrastructure.
-- Read the callee's body text from the source file.
-- Parse parameter names from the callee's signature.
-- Build a substitution map: parameter name → argument expression text.
-- Apply substitutions throughout the body text.
-- Detect and rename colliding local variables.
-- Build a `WorkspaceEdit` that replaces the call statement with the
-  transformed body.
-
-### Prerequisites
-
-| Feature              | What it contributes                                               |
-| -------------------- | ----------------------------------------------------------------- |
-| Go-to-Definition     | Resolves call site to the callee's definition location and source |
-| ScopeCollector (A11) | Variable collision detection at the call site                     |
-
----
 
 
 ## A8. Update Docblock to Match Signature
@@ -296,6 +238,7 @@ interface file path is derived from the namespace.
 | Parser (`parser/classes.rs`)        | Extracts public method signatures with full type information                      |
 | Implement missing methods (shipped) | Shared infrastructure for generating method stubs and `implements` clause editing |
 
+---
 
 ## A16. Snippet Placeholder for Extracted Method Name
 
@@ -351,6 +294,97 @@ over it without an extra rename step.
 | `SnippetTextEdit` in tower-lsp   | Verify tower-lsp exposes the snippet edit type            |
 | Extract Function (shipped)       | The code action that this enhances                        |
 
+---
 
+## IDE-expected code actions
 
+The following actions are offered by competing PHP IDEs (PHPStorm,
+Intelephense) and are expected by users. Identified by cross-referencing
+Rector, PHP-CS-Fixer, and Phpactor rule libraries against what major
+IDEs actually surface as on-demand code actions.
+
+Micro-simplifications (array_push→$arr[], strlen→==='', flip ternary,
+etc.) are intentionally excluded. They are better served by batch tools
+like Rector or PHP-CS-Fixer. An LSP should focus on actions that
+benefit from editor context (cursor position, file state) rather than
+competing with CLI transformers.
+
+---
+
+### A25. `strpos` → `str_contains` (PHP 8.0+)
+
+**Impact: Medium · Effort: Low**
+
+Convert `strpos($haystack, $needle) !== false` to
+`str_contains($haystack, $needle)` and the negated form
+`strpos($haystack, $needle) === false` to
+`!str_contains($haystack, $needle)`.
+
+Also handle `strstr($haystack, $needle) !== false`.
+
+PHPStorm offers this as an inspection with quick-fix. PHP-CS-Fixer's
+`ModernizeStrposFixer` is the reference implementation. Edge case:
+must verify exactly 2 arguments to `strpos` (the 3-argument form with
+offset has different semantics).
+
+**Code action kind:** `refactor.rewrite`.
+**Guard:** `php_version >= 8.0`.
+
+---
+
+### A28. Explicit nullable parameter type (PHP 8.4 deprecation)
+
+**Impact: Medium · Effort: Low**
+
+Convert implicit nullable parameters to explicit nullable syntax:
+`function foo(string $p = null)` → `function foo(?string $p = null)`.
+
+PHP 8.4 deprecates the implicit nullable form. PHPStorm flags this.
+PHP-CS-Fixer's `NullableTypeDeclarationForDefaultNullValueFixer`
+handles union types, intersection types (DNF), and constructor
+property promotion.
+
+Only offer when the parameter has a type hint, a `= null` default, and
+the type does not already include `null` (no `?` prefix, no `|null`
+in a union).
+
+**Code action kind:** `quickfix`.
+
+---
+
+### A29. Simplify boolean return
+
+**Impact: Low-Medium · Effort: Medium**
+
+Convert if-return-boolean patterns to direct boolean returns:
+
+- `if ($a === $b) { return true; } return false;` → `return $a === $b;`
+- `if ($a === $b) { return false; } return true;` → `return $a !== $b;`
+
+PHPStorm offers this. When the condition is not already boolean-typed,
+wrap with `(bool)`.
+
+Guard conditions:
+- The if must have exactly one statement (a return of `true` or `false`)
+  and no else/elseif.
+- The next sibling statement must be `return` of the opposite boolean.
+
+**Code action kind:** `refactor.rewrite`.
+
+---
+
+### A31. Remove always-else (extract guard clause)
+
+**Impact: Low-Medium · Effort: Medium**
+
+When an if-body ends with a flow-breaking statement (`return`, `throw`,
+`continue`, `exit`), the `else` keyword is redundant. Promote the else
+body to the same nesting level.
+
+PHPStorm marks this as "unnecessary else". PHP-CS-Fixer's
+`NoUselessElseFixer` is the reference. Edge case: don't remove else
+blocks containing named function or class declarations (PHP evaluates
+these eagerly, removing the else changes semantics).
+
+**Code action kind:** `refactor.rewrite`.
 

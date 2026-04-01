@@ -760,6 +760,53 @@ significantly reduced.
 
 ---
 
+## P18. Subtype result caching
+
+**Impact: Medium · Effort: Low**
+
+PHPStan caches subtype check results (`isSuperTypeOf()`) in a static
+`HashMap` keyed by type description strings. This avoids redundant
+class hierarchy walks when the same type pair is checked multiple
+times during a single request. PHPantom resolves class hierarchies
+repeatedly during completion (checking if a method override is
+covariant, checking if a class implements an interface, etc.). A
+per-request `HashMap<(String, String), bool>` cache for subtype
+results would reduce redundant hierarchy walks.
+
+PHPStan also uses a `hasTemplateOrLateResolvableType()` fast-path
+to skip expensive type traversal when a type has no template
+parameters. PHPantom could add a similar flag to its type
+representations to short-circuit template substitution on simple
+types. Most types in a typical codebase are concrete (no generics),
+so this fast-path would apply to the majority of checks.
+
+### Fix
+
+1. Add a thread-local or per-request
+   `HashMap<(String, String), bool>` that caches the result of
+   "is type A a subtype of type B?" lookups. Clear the map at the
+   start of each completion/hover/diagnostic request.
+
+2. Add a `has_template_params: bool` flag (or equivalent) to
+   `ClassInfo` or type representations. Set it during parsing when
+   `@template` tags or generic syntax are present. Before running
+   `apply_substitution`, check the flag and skip the substitution
+   walk entirely when it is `false`.
+
+3. Intern class name strings. PHPantom creates many copies of the
+   same class name (e.g. `"Illuminate\\Database\\Eloquent\\Builder"`)
+   across `ClassInfo`, type strings, and lookup keys. Mago already
+   uses `Atom` (an interned string type) in its crates, and names
+   flowing through `mago-names` / `mago-syntax` are already atoms.
+   Using `Atom` or `Arc<str>` for class names in PHPantom's own
+   data structures would reduce memory and make the subtype cache
+   keys cheaper to hash and compare. This becomes a natural
+   consequence of T19 (structured type representation) since each
+   type node would store an interned name rather than an owned
+   `String`.
+
+---
+
 ## Appendix: Profiling
 
 ### Commands

@@ -367,3 +367,31 @@ valid in which positions). The completion system already prevents the
 user from inserting a wrong kind; this diagnostic catches wrong kinds
 that are already in the code. Both should share the same rule table
 to stay in sync.
+
+---
+
+## D12. Mago linter integration (optional diagnostics)
+
+**Impact: Medium · Effort: Medium**
+
+PHPantom already depends on several mago crates (`mago-syntax`,
+`mago-docblock`, `mago-names`, `mago-formatter`, `mago-span`). The
+`mago-linter` crate provides ~159 lint rules covering redundancy,
+best practices, clarity, consistency, correctness, and deprecation.
+Integrating it as an optional diagnostics provider would give users
+"PHPStan-lite" diagnostics without requiring PHPStan to be installed.
+
+**Integration approach:** call `Linter::lint()` on the parsed AST
+(already available), convert `IssueCollection` to LSP `Diagnostic`s,
+convert `TextEdit` fixes to LSP `CodeAction`s. The linter is AST-only
+(no type inference), so it is fast.
+
+Offer as opt-in via `.phpantom.toml` configuration. Default to
+disabled so it does not conflict with users who already run PHPStan
+or Psalm. Mark with `source: "mago"` to distinguish from PHPantom's
+own diagnostics.
+
+**Notable rules:** `no-redundant-method-override`,
+`str-contains`/`str-starts-with` modernization,
+`prefer-arrow-function`, `constant-condition`, `no-self-assignment`,
+`explicit-nullable-param`, `valid-docblock`.

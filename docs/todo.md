@@ -27,6 +27,8 @@ within the same impact tier.
 | B21 | [Builder `__call` return type drops chain type for dynamic `where{Column}` calls](todo/bugs.md#b21-builder-__call-return-type-drops-chain-type-for-dynamic-wherecolumn-calls) | Medium | Medium     |
 | H17 | [`missingType.iterableValue` — add `@return` with inferred element type](todo/phpstan-actions.md#h17-missingtype-iterablevalue-return-type--add-return-with-iterable-type) | Medium | High       |
 | H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium | Medium     |
+| L12 | [`App::make` / `App::makeWith` class-string return type dispatch](todo/laravel.md#l12-appmake--appmakewith-class-string-return-type-dispatch) | Medium | Low        |
+| H6  | `return.type` — update return type to match actual returns                                                                                   | Medium | Medium     |
 |     | **Release 0.7.0**                                                                                                                          |        |            |
 
 ## Sprint 5 — Polish for office adoption
@@ -92,6 +94,9 @@ unlikely to move the needle for most users.
 | C6   | `#[ExpectedValues]` parameter value suggestions                                                                                                                             | Low         | Medium         |
 | C10  | [Deprecation markers on class-name completions from all sources](todo/completion.md#c10-deprecation-markers-on-class-name-completions-from-all-sources)                     | Low         | Low            |
 |      | **[Type Inference](todo/type-inference.md)**                                                                                                                                |             |                |
+| T19  | [Structured type representation](todo/type-inference.md#t19-structured-type-representation) (replace string-based types with `PhpType` enum)                                | High        | Very High      |
+| T20  | [Type narrowing reconciliation engine](todo/type-inference.md#t20-type-narrowing-reconciliation-engine) (sure/sureNot tracking, AND/OR algebra)                             | Medium-High | High           |
+| T21  | [Bidirectional template inference](todo/type-inference.md#t21-bidirectional-template-inference-upperlower-bounds) (upper/lower bounds, variance)                             | Medium      | Medium-High    |
 | T6   | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                                      | Low-Medium  | Low-Medium     |
 | T12  | [Intersection types flattened to unions by `type_strings_joined`](todo/type-inference.md#t12-intersection-types-flattened-to-unions-by-type_strings_joined)                 | Low-Medium  | Low (after M4) |
 | T13  | [Closure variables lose callable signature detail](todo/type-inference.md#t13-closure-variables-lose-callable-signature-detail)                                             | Low-Medium  | Medium         |
@@ -103,20 +108,26 @@ unlikely to move the needle for most users.
 |      | **[Diagnostics](todo/diagnostics.md)**                                                                                                                                      |             |                |
 
 | D5   | Diagnostic suppression intelligence                                                                                                                                         | Medium      | Medium         |
+| D12  | [Mago linter integration](todo/diagnostics.md#d12-mago-linter-integration-optional-diagnostics) (optional, ~159 AST-only lint rules)                                       | Medium      | Medium         |
 | D6   | [Unreachable code diagnostic](todo/diagnostics.md#d6-unreachable-code-diagnostic)                                                                                           | Low-Medium  | Low            |
 | D10  | PHPMD diagnostic proxy                                                                                                                                                      | Low         | Medium         |
 |      | **[Bug Fixes](todo/bugs.md)**                                                                                                                                               |             |                |
 |      | **[Code Actions](todo/actions.md)**                                                                                                                                         |             |                |
 | A8   | [Update docblock to match signature](todo/actions.md#a8-update-docblock-to-match-signature)                                                                                 | Medium      | Medium         |
-| A6   | [Inline function/method](todo/actions.md#a6-inline-functionmethod)                                                                                                          | Medium      | High           |
 | A16  | [Snippet placeholder for extracted method name](todo/actions.md#a16-snippet-placeholder-for-extracted-method-name) (lets the user type over the generated name immediately) | Medium      | Low-Medium     |
+| A25  | [`strpos` → `str_contains`](todo/actions.md#a25-strpos--str_contains-php-80) (PHP 8.0+)                                                                                    | Medium      | Low            |
+| A28  | [Explicit nullable parameter type](todo/actions.md#a28-explicit-nullable-parameter-type-php-84-deprecation) (PHP 8.4 deprecation)                                           | Medium      | Low            |
 | A10  | [Generate interface from class](todo/actions.md#a10-generate-interface-from-class)                                                                                          | Low-Medium  | Medium         |
+| A29  | [Simplify boolean return](todo/actions.md#a29-simplify-boolean-return) (`if (cond) return true; return false;` → `return cond;`)                                            | Low-Medium  | Medium         |
+| A31  | [Remove always-else](todo/actions.md#a31-remove-always-else-extract-guard-clause) (extract guard clause)                                                                    | Low-Medium  | Medium         |
+| A34  | [Unified code action handler architecture](todo/actions.md#a34-unified-code-action-handler-architecture) (closure-based resolve, unified fix type)                          | Medium      | Medium-High    |
 | A3   | Switch → match conversion                                                                                                                                                   | Low         | Medium         |
 |      | **[PHPStan Code Actions](todo/phpstan-actions.md)**                                                                                                                         |             |                |
 | H4   | `assign.byRefForeachExpr` — unset by-reference foreach variable                                                                                                             | Medium      | Medium         |
 | H13  | `property.notFound` — declare missing property (same-class)                                                                                                                 | Medium      | Medium         |
 | H15  | Template bound from tip — add `@template T of X`                                                                                                                            | Medium      | Medium         |
 | H16  | `match.unhandled` — add missing match arms                                                                                                                                  | Medium      | Medium         |
+| H17  | `missingType.iterableValue` — add `@return` with inferred element type                                                                                                      | Medium      | High           |
 | H19  | `property.unused` / `method.unused` — remove unused member                                                                                                                  | Low         | Low            |
 | H20  | `generics.callSiteVarianceRedundant` — remove redundant variance annotation                                                                                                 | Low         | Low            |
 | H23  | `instanceof.alwaysTrue` — remove redundant instanceof check                                                                                                                 | Low         | Low            |
@@ -168,6 +179,7 @@ unlikely to move the needle for most users.
 | P8   | `find_class_in_ast_map` linear fallback scan                                                                                                                                | Low         | Low            |
 | P12  | [`find_or_load_function` Phase 1.75 serial bottleneck](todo/performance.md#p12-find_or_load_function-phase-175-serial-bottleneck)                                           | Low         | Low            |
 | P17  | [`mago-names` resolution on the parse hot path](todo/performance.md#p17-mago-names-resolution-on-the-parse-hot-path)                                                        | Medium      | Low            |
+| P18  | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                          | Medium      | Low            |
 |      | **[Indexing](todo/indexing.md)**                                                                                                                                            |             |                |
 | X1   | Staleness detection and auto-refresh                                                                                                                                        | Medium      | Medium         |
 | X3   | Completion item detail on demand (`completionItem/resolve`)                                                                                                                 | Medium      | Medium         |
