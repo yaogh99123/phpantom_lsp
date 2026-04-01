@@ -19092,3 +19092,379 @@ async fn test_completion_class_string_foreach_cases() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Loop-body assignments visible inside the same iteration (B20) ──────────
+
+/// When a variable is initialized as `null` and reassigned later in the
+/// same foreach body, the assignment type should be visible earlier in
+/// the loop (from a previous iteration).  Combined with `!== null`
+/// narrowing, the variable should resolve to the assigned class type.
+#[tokio::test]
+async fn test_loop_body_assignment_visible_inside_foreach() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b20_foreach_inside.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Carbon {\n",
+        "    public function diffInDays(Carbon $other): int { return 0; }\n",
+        "    public function startOfDay(): Carbon { return new self(); }\n",
+        "}\n",
+        "class Period {\n",
+        "    public Carbon $ending;\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param list<Period> $periods */\n",
+        "    public function run(array $periods): void {\n",
+        "        $lastPaidEnd = null;\n",
+        "        foreach ($periods as $period) {\n",
+        "            if ($lastPaidEnd !== null) {\n",
+        "                $lastPaidEnd->\n",
+        "            }\n",
+        "            $lastPaidEnd = $period->ending->startOfDay();\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 14,
+                    character: 30,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Should return completions for loop-carried assignment inside foreach"
+    );
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"diffInDays"),
+                "Should include Carbon's diffInDays() from loop-carried assignment, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Same scenario as the foreach test but with a while loop.
+#[tokio::test]
+async fn test_loop_body_assignment_visible_inside_while() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b20_while_inside.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Record {\n",
+        "    public function save(): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function run(): void {\n",
+        "        $prev = null;\n",
+        "        while ($row = rand(0,1)) {\n",
+        "            if ($prev !== null) {\n",
+        "                $prev->\n",
+        "            }\n",
+        "            $prev = new Record();\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 9,
+                    character: 23,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Should return completions for loop-carried assignment inside while"
+    );
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"save"),
+                "Should include Record's save() from loop-carried assignment in while, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Same scenario with a for loop.
+#[tokio::test]
+async fn test_loop_body_assignment_visible_inside_for() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b20_for_inside.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Item {\n",
+        "    public function label(): string { return ''; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function run(): void {\n",
+        "        $last = null;\n",
+        "        for ($i = 0; $i < 10; $i++) {\n",
+        "            if ($last !== null) {\n",
+        "                $last->\n",
+        "            }\n",
+        "            $last = new Item();\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 9,
+                    character: 23,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Should return completions for loop-carried assignment inside for"
+    );
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"label"),
+                "Should include Item's label() from loop-carried assignment in for, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Loop-carried assignment inside a nested if within a foreach body.
+/// The assignment is inside a conditional branch, but should still be
+/// visible on subsequent iterations.
+#[tokio::test]
+async fn test_loop_body_nested_if_assignment_visible_inside_foreach() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b20_nested_if.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Marker {\n",
+        "    public function position(): string { return ''; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param list<int> $values */\n",
+        "    public function run(array $values): void {\n",
+        "        $marker = null;\n",
+        "        foreach ($values as $val) {\n",
+        "            if ($marker !== null) {\n",
+        "                $marker->\n",
+        "            }\n",
+        "            if ($val > 10) {\n",
+        "                $marker = new Marker();\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 10,
+                    character: 26,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Should return completions for nested-if loop-carried assignment"
+    );
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"position"),
+                "Should include Marker's position() from nested-if loop-carried assignment, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// When the cursor is inside a foreach body and the assignment is
+/// before the cursor (same iteration), the existing behaviour should
+/// still work — this is a regression guard.
+#[tokio::test]
+async fn test_loop_body_assignment_before_cursor_still_works() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b20_before_cursor.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Gadget {\n",
+        "    public function activate(): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param list<int> $ids */\n",
+        "    public function run(array $ids): void {\n",
+        "        $g = null;\n",
+        "        foreach ($ids as $id) {\n",
+        "            $g = new Gadget();\n",
+        "            $g->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 10,
+                    character: 16,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Should return completions when assignment is before cursor in loop"
+    );
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"activate"),
+                "Should include Gadget's activate() when assignment is before cursor, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

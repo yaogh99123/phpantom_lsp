@@ -24,7 +24,6 @@ within the same impact tier.
 | #   | Item                                                                                                                                       | Impact | Effort     |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---------- |
 | T18 | [Method-level template parameter resolution at call sites](todo/type-inference.md#t18-method-level-template-parameter-resolution-at-call-sites) | Medium | Medium     |
-| B20 | [Loop-body assignments not visible to null narrowing](todo/bugs.md#b20-loop-body-assignments-not-visible-to-null-narrowing-for-null-initialized-variables) | Low | Medium |
 | B21 | [Builder `__call` return type drops chain type for dynamic `where{Column}` calls](todo/bugs.md#b21-builder-__call-return-type-drops-chain-type-for-dynamic-wherecolumn-calls) | Medium | Medium     |
 | L12 | [`App::make` / `App::makeWith` class-string return type dispatch](todo/laravel.md#l12-appmake--appmakewith-class-string-return-type-dispatch) | Medium | Low        |
 |     | **Release 0.7.0**                                                                                                                          |        |            |

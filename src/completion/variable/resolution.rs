@@ -1252,15 +1252,55 @@ pub(in crate::completion) fn walk_statements_for_assignments<'b>(
             Statement::While(while_stmt) => {
                 walk_while_statement(while_stmt, ctx, results);
             }
-            Statement::For(for_stmt) => match &for_stmt.body {
-                ForBody::Statement(inner) => {
-                    check_statement_for_assignments(inner, ctx, results, true);
+            Statement::For(for_stmt) => {
+                // ── Pre-scan for loop-carried assignments ──
+                let for_body_span = for_stmt.body.span();
+                let for_header_start = for_stmt.r#for.span().start.offset;
+                let cursor_inside_for = ctx.cursor_offset >= for_header_start
+                    && ctx.cursor_offset <= for_body_span.end.offset;
+                if cursor_inside_for {
+                    match &for_stmt.body {
+                        ForBody::Statement(inner) => {
+                            prescan_loop_body_for_assignments(
+                                std::iter::once(*inner),
+                                for_body_span.end.offset,
+                                ctx,
+                                results,
+                            );
+                        }
+                        ForBody::ColonDelimited(body) => {
+                            prescan_loop_body_for_assignments(
+                                body.statements.iter(),
+                                for_body_span.end.offset,
+                                ctx,
+                                results,
+                            );
+                        }
+                    }
                 }
-                ForBody::ColonDelimited(body) => {
-                    walk_statements_for_assignments(body.statements.iter(), ctx, results, true);
+                match &for_stmt.body {
+                    ForBody::Statement(inner) => {
+                        check_statement_for_assignments(inner, ctx, results, true);
+                    }
+                    ForBody::ColonDelimited(body) => {
+                        walk_statements_for_assignments(body.statements.iter(), ctx, results, true);
+                    }
                 }
-            },
+            }
             Statement::DoWhile(dw) => {
+                // ── Pre-scan for loop-carried assignments ──
+                let dw_body_span = dw.statement.span();
+                let dw_header_start = dw.r#do.span().start.offset;
+                let cursor_inside_dw = ctx.cursor_offset >= dw_header_start
+                    && ctx.cursor_offset <= dw_body_span.end.offset;
+                if cursor_inside_dw {
+                    prescan_loop_body_for_assignments(
+                        std::iter::once(dw.statement),
+                        dw_body_span.end.offset,
+                        ctx,
+                        results,
+                    );
+                }
                 check_statement_for_assignments(dw.statement, ctx, results, true);
             }
             Statement::Try(try_stmt) => {
@@ -2094,6 +2134,41 @@ fn walk_if_branch_aware<'b>(
     None
 }
 
+/// Pre-scan a loop body for assignments to the target variable.
+///
+/// In a loop, an assignment that appears textually *after* the cursor
+/// can still be live on subsequent iterations.  This helper walks the
+/// loop body with `cursor_offset` set to `body_end` so that all
+/// assignments are visible, and merges any discovered types into
+/// `results` as conditional.  The caller should invoke this **before**
+/// the normal positional walk so that narrowing (e.g. `!== null`)
+/// applied during the normal walk can strip types contributed by the
+/// pre-scan.
+///
+/// Only types that are not already present in `results` are added,
+/// avoiding duplicates with assignments that the normal walk will
+/// also discover.
+fn prescan_loop_body_for_assignments<'b>(
+    statements: impl Iterator<Item = &'b Statement<'b>>,
+    body_end: u32,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ResolvedType>,
+) {
+    // Only pre-scan when the cursor is actually inside the loop body.
+    // The caller is responsible for checking this, but as a safety
+    // measure we verify that the cursor is before the body end.
+    if ctx.cursor_offset >= body_end {
+        return;
+    }
+
+    let prescan_ctx = ctx.with_cursor_offset(body_end);
+    let mut prescan_results: Vec<ResolvedType> = Vec::new();
+    walk_statements_for_assignments(statements, &prescan_ctx, &mut prescan_results, true);
+
+    // Merge pre-scanned types into results as conditional additions.
+    ResolvedType::extend_unique(results, prescan_results);
+}
+
 /// Handle `foreach` statements during variable assignment walking.
 ///
 /// Resolves the foreach value/key variable and recurses into the body
@@ -2142,6 +2217,32 @@ fn walk_foreach_statement<'b>(
         super::foreach_resolution::try_resolve_foreach_key_type(foreach, ctx, results, conditional);
     }
 
+    // ── Pre-scan for loop-carried assignments ──
+    // When the cursor is inside the loop body, assignments that appear
+    // textually after the cursor are live on subsequent iterations.
+    // Pre-scan the body to pick them up as conditional types before the
+    // normal positional walk (which skips statements after the cursor).
+    if cursor_inside {
+        match &foreach.body {
+            ForeachBody::Statement(inner) => {
+                prescan_loop_body_for_assignments(
+                    std::iter::once(*inner),
+                    body_span.end.offset,
+                    ctx,
+                    results,
+                );
+            }
+            ForeachBody::ColonDelimited(body) => {
+                prescan_loop_body_for_assignments(
+                    body.statements.iter(),
+                    body_span.end.offset,
+                    ctx,
+                    results,
+                );
+            }
+        }
+    }
+
     // Always walk the foreach body for variable assignments, even when
     // the cursor is after the foreach.  A foreach body may execute zero
     // or more times, so any assignment inside is conditional.
@@ -2177,6 +2278,35 @@ fn walk_while_statement<'b>(
     // ── Assignment in condition ──
     // `while ($line = fgets($fp))` — register the assignment.
     check_condition_for_assignment(while_stmt.condition, ctx, results);
+
+    // Determine whether the cursor is inside this while loop for the
+    // pre-scan.  We check both body variants.
+    let while_body_span = while_stmt.body.span();
+    let while_header_start = while_stmt.r#while.span().start.offset;
+    let cursor_inside_while =
+        ctx.cursor_offset >= while_header_start && ctx.cursor_offset <= while_body_span.end.offset;
+
+    // ── Pre-scan for loop-carried assignments ──
+    if cursor_inside_while {
+        match &while_stmt.body {
+            WhileBody::Statement(inner) => {
+                prescan_loop_body_for_assignments(
+                    std::iter::once(*inner),
+                    while_body_span.end.offset,
+                    ctx,
+                    results,
+                );
+            }
+            WhileBody::ColonDelimited(body) => {
+                prescan_loop_body_for_assignments(
+                    body.statements.iter(),
+                    while_body_span.end.offset,
+                    ctx,
+                    results,
+                );
+            }
+        }
+    }
 
     match &while_stmt.body {
         WhileBody::Statement(inner) => {

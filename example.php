@@ -567,6 +567,37 @@ class NullInitReassignDemo
 }
 
 
+// ── Loop-Carried Assignment ─────────────────────────────────────────────────
+// When a variable is initialized as null and reassigned inside a loop body,
+// the assignment from a previous iteration is visible at the top of the loop.
+
+class LoopCarriedAssignmentDemo
+{
+    /** @param list<Pen> $pens */
+    public function demo(array $pens): void
+    {
+        // Pattern: null-init + reassignment after the usage point in the loop.
+        // On the second iteration, $prev holds the Pen from the prior iteration.
+        $prev = null;
+        foreach ($pens as $pen) {
+            if ($prev !== null) {
+                $prev->write();                   // Pen from previous iteration
+            }
+            $prev = $pen;
+        }
+
+        // Same pattern with a while loop
+        $lastOrder = null;
+        while ($row = rand(0, 1)) {
+            if ($lastOrder !== null) {
+                $lastOrder->getStatusCode();      // Response from previous iteration
+            }
+            $lastOrder = new Response(200, 'ok');
+        }
+    }
+}
+
+
 // ── Null Coalesce (`??`) Refinement ─────────────────────────────────────────
 
 class NullCoalesceDemo
@@ -5564,6 +5595,28 @@ function runDemoAssertions(): void
     $iBoxPens = $iBox->getPens();
     assert(is_array($iBoxPens), 'ScaffoldingPenBox::getPens() must return array');
     assert($iBoxPens[0] instanceof Pen, 'ScaffoldingPenBox::getPens()[0] must be Pen');
+
+    // ── Loop-carried assignment ─────────────────────────────────────────
+    $lcPens = [new Pen('a'), new Pen('b')];
+    $lcPrev = null;
+    foreach ($lcPens as $lcPen) {
+        if ($lcPrev !== null) {
+            assert($lcPrev instanceof Pen, 'Loop-carried $lcPrev must be Pen on second iteration');
+        }
+        $lcPrev = $lcPen;
+    }
+    assert($lcPrev instanceof Pen, '$lcPrev must be Pen after foreach');
+
+    $lcLast = null;
+    $lcIter = 0;
+    while ($lcIter < 2) {
+        if ($lcLast !== null) {
+            assert($lcLast instanceof Response, 'Loop-carried $lcLast must be Response');
+        }
+        $lcLast = new Response(200, 'ok');
+        $lcIter++;
+    }
+    assert($lcLast instanceof Response, '$lcLast must be Response after while');
 
     // ── Constant type inference ─────────────────────────────────────────
     assert(ConstantTypeDemo::TIMEOUT === 30, 'ConstantTypeDemo::TIMEOUT must be 30');
