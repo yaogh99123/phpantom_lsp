@@ -7082,3 +7082,310 @@ async fn test_inherited_property_bracket_access_template_substitution() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+/// T18: Method-level template parameter resolution inside method body.
+/// When `@template T of Builder` and `@param T $query`, accessing
+/// `$query->` inside the method body should resolve T to its bound
+/// (`Builder`) and offer Builder's methods.
+#[tokio::test]
+async fn test_method_template_param_resolves_to_bound_inside_body() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///method_tpl_body_bound.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                      // 0
+        "class Builder {\n",                                            // 1
+        "    public function where(string $col): static { return $this; }\n", // 2
+        "    public function orderBy(string $col): static { return $this; }\n", // 3
+        "}\n",                                                          // 4
+        "\n",                                                           // 5
+        "class Country {}\n",                                           // 6
+        "\n",                                                           // 7
+        "class ProductRepository {\n",                                  // 8
+        "    /**\n",                                                    // 9
+        "     * @template T of Builder\n",                              // 10
+        "     * @param T $query\n",                                     // 11
+        "     * @return T\n",                                           // 12
+        "     */\n",                                                    // 13
+        "    private static function filterDisabled(Builder $query, Country $code): Builder {\n", // 14
+        "        $query->\n",                                           // 15
+        "    }\n",                                                      // 16
+        "}\n",                                                          // 17
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 15,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"where"),
+                "Should resolve T to Builder and show 'where', got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"orderBy"),
+                "Should resolve T to Builder and show 'orderBy', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// T18: Method-level template with union bound inside method body.
+/// `@template T of Builder|QueryBuilder` should resolve to both types.
+#[tokio::test]
+async fn test_method_template_union_bound_resolves_inside_body() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///method_tpl_union_body.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                      // 0
+        "class Builder {\n",                                            // 1
+        "    public function where(string $col): static { return $this; }\n", // 2
+        "}\n",                                                          // 3
+        "\n",                                                           // 4
+        "class QueryBuilder {\n",                                       // 5
+        "    public function orderBy(string $col): static { return $this; }\n", // 6
+        "    public function where(string $col): static { return $this; }\n", // 7
+        "}\n",                                                          // 8
+        "\n",                                                           // 9
+        "class Country {}\n",                                           // 10
+        "\n",                                                           // 11
+        "class ProductRepository {\n",                                  // 12
+        "    /**\n",                                                    // 13
+        "     * @template T of Builder|QueryBuilder\n",                 // 14
+        "     * @param T $query\n",                                     // 15
+        "     * @return T\n",                                           // 16
+        "     */\n",                                                    // 17
+        "    private static function filterDisabled(Builder $query, Country $code): Builder {\n", // 18
+        "        $query->\n",                                           // 19
+        "    }\n",                                                      // 20
+        "}\n",                                                          // 21
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 19,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"where"),
+                "Should resolve T to Builder|QueryBuilder and show 'where', got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"orderBy"),
+                "Should resolve T to Builder|QueryBuilder and show 'orderBy', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// T18: Trait method-level template inside body.
+/// `@template TRelation of Relation` — `$relation->getQuery()` should
+/// resolve via the Relation bound.
+#[tokio::test]
+async fn test_trait_method_template_param_resolves_inside_body() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_tpl_body.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                      // 0
+        "class QueryBuilder {\n",                                       // 1
+        "    public function where(string $col): static { return $this; }\n", // 2
+        "}\n",                                                          // 3
+        "\n",                                                           // 4
+        "class Relation {\n",                                           // 5
+        "    public function getQuery(): QueryBuilder {}\n",            // 6
+        "}\n",                                                          // 7
+        "\n",                                                           // 8
+        "trait GetMarketTrait {\n",                                     // 9
+        "    /**\n",                                                    // 10
+        "     * @template TRelation of Relation\n",                     // 11
+        "     * @param TRelation $relation\n",                          // 12
+        "     * @return TRelation\n",                                   // 13
+        "     */\n",                                                    // 14
+        "    protected function whereCurrentMarket(Relation $relation): Relation {\n", // 15
+        "        $relation->\n",                                        // 16
+        "    }\n",                                                      // 17
+        "}\n",                                                          // 18
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 16,
+                character: 20,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getQuery"),
+                "Should resolve TRelation to Relation and show 'getQuery', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// T18: Function-level template parameter resolution inside body.
+/// Standalone function with `@template T of SomeClass` and `@param T $item`.
+#[tokio::test]
+async fn test_function_template_param_resolves_to_bound_inside_body() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///func_tpl_body_bound.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                      // 0
+        "class Model {\n",                                              // 1
+        "    public function save(): bool {}\n",                        // 2
+        "    public function delete(): bool {}\n",                      // 3
+        "}\n",                                                          // 4
+        "\n",                                                           // 5
+        "/**\n",                                                        // 6
+        " * @template T of Model\n",                                    // 7
+        " * @param T $entity\n",                                        // 8
+        " * @return T\n",                                               // 9
+        " */\n",                                                        // 10
+        "function persist(Model $entity): Model {\n",                   // 11
+        "    $entity->\n",                                              // 12
+        "}\n",                                                          // 13
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 14,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"save"),
+                "Should resolve T to Model and show 'save', got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"delete"),
+                "Should resolve T to Model and show 'delete', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

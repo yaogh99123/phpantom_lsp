@@ -608,12 +608,12 @@ fn try_resolve_in_function(
         &mut results,
     );
 
-    // ── Substitute method-level template params in
-    // `class-string<T>` for standalone function parameters ──────
-    // Same logic as in `resolve_variable_in_members`: when the
-    // resolved parameter type is `class-string<T>` and `T` is a
-    // function-level template with an upper bound, replace `T`
-    // with the bound so that `$class::` resolves static members.
+    // ── Substitute function-level template params with their
+    // bounds for standalone function parameters ─────────────────
+    // When the resolved parameter type is `class-string<T>` or a
+    // bare template name `T` and `T` is a function-level template
+    // with an upper bound, replace `T` with the bound so that
+    // member access resolves against the bound type.
     let func_start = func.span().start.offset as usize;
     for rt in results.iter_mut() {
         if matches!(&rt.type_string, PhpType::ClassString(Some(inner)) if matches!(inner.as_ref(), PhpType::Named(_)))
@@ -624,6 +624,12 @@ fn try_resolve_in_function(
                 func_start,
             );
         }
+        // Bare template param → bound (e.g. `T` → `Builder|QueryBuilder`).
+        rt.type_string = substitute_template_param_bounds(
+            rt.type_string.clone(),
+            ctx.content,
+            func_start,
+        );
     }
 
     walk_statements_for_assignments(func.body.statements.iter(), &body_ctx, &mut results, false);
@@ -791,6 +797,22 @@ fn resolve_variable_in_members<'b>(
                         type_str_for_resolution,
                         raw_docblock_type.as_deref(),
                     );
+
+                    // ── Substitute method-level template params with
+                    // their bounds before class resolution ──────────
+                    // When the effective type contains a bare template
+                    // parameter name (e.g. `T` from `@template T of
+                    // Builder|QueryBuilder`), replace it with the bound
+                    // type so that `$query->where(...)` resolves members
+                    // on `Builder|QueryBuilder` instead of failing with
+                    // "subject type 'T' could not be resolved".
+                    let effective_type = effective_type.map(|ty| {
+                        substitute_template_param_bounds(
+                            ty,
+                            ctx.content,
+                            method.span().start.offset as usize,
+                        )
+                    });
 
                     let resolved_from_effective = effective_type
                         .as_ref()
@@ -998,6 +1020,102 @@ fn resolve_variable_in_members<'b>(
 /// is being unconditionally reassigned).  When `conditional` is `true`,
 /// a new assignment **adds** to the list (the variable *might* be this
 /// type).
+
+/// Substitute method/function-level template parameter names with their
+/// upper bounds from `@template T of Bound` annotations.
+///
+/// This handles the general case where a parameter type IS a template
+/// parameter (e.g. `@param T $query` where `@template T of Builder`).
+/// Without this substitution, `T` remains an unresolvable named type
+/// and member access on `$query` fails with "subject type 'T' could not
+/// be resolved".
+///
+/// Works on any `PhpType` structure — bare names, unions, intersections,
+/// nullable wrappers, generics, etc. — via `PhpType::substitute`.
+fn substitute_template_param_bounds(
+    ty: PhpType,
+    content: &str,
+    method_start_offset: usize,
+) -> PhpType {
+    // Quick check: only act when the type contains at least one bare
+    // identifier that could be a template parameter.  This avoids the
+    // docblock parse for the common case where the type is a concrete
+    // class name or scalar.
+    if !type_may_contain_template_param(&ty) {
+        return ty;
+    }
+
+    let before = &content[..method_start_offset];
+    let docblock = extract_preceding_docblock(before);
+
+    let Some(docblock) = docblock else {
+        return ty;
+    };
+
+    let bounds = docblock::extract_template_params_with_bounds(docblock);
+    if bounds.is_empty() {
+        return ty;
+    }
+
+    let mut subs = std::collections::HashMap::new();
+    for (name, bound) in bounds {
+        if let Some(bound_str) = bound {
+            subs.insert(name, PhpType::parse(&bound_str));
+        }
+    }
+
+    if subs.is_empty() {
+        return ty;
+    }
+
+    ty.substitute(&subs)
+}
+
+/// Check whether a `PhpType` tree may contain a bare template parameter
+/// name — i.e. a `Named` variant whose value is not a well-known scalar
+/// or pseudo-type.  This is a cheap pre-filter so that we only parse the
+/// docblock when there is a realistic chance of finding a substitution.
+fn type_may_contain_template_param(ty: &PhpType) -> bool {
+    match ty {
+        PhpType::Named(name) => {
+            // Well-known scalars/pseudo-types are never template params.
+            !matches!(
+                name.as_str(),
+                "int"
+                    | "float"
+                    | "string"
+                    | "bool"
+                    | "null"
+                    | "void"
+                    | "never"
+                    | "mixed"
+                    | "object"
+                    | "array"
+                    | "iterable"
+                    | "callable"
+                    | "resource"
+                    | "true"
+                    | "false"
+                    | "self"
+                    | "static"
+                    | "$this"
+                    | "parent"
+                    | "class-string"
+            )
+        }
+        PhpType::Union(members) | PhpType::Intersection(members) => {
+            members.iter().any(type_may_contain_template_param)
+        }
+        PhpType::Nullable(inner) => type_may_contain_template_param(inner),
+        PhpType::Generic(base, args) => {
+            // Check if the base itself could be a template param, or any arg.
+            type_may_contain_template_param(&PhpType::Named(base.clone()))
+                || args.iter().any(type_may_contain_template_param)
+        }
+        _ => false,
+    }
+}
+
 /// Substitute method-level template parameters inside `class-string<T>`
 /// types with their upper bounds from `@template T of Bound` annotations.
 ///

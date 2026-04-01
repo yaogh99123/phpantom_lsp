@@ -412,64 +412,17 @@ emits the concrete callable signature in the `@param` tag.
 
 ---
 
-## T18. Method-level template parameter resolution at call sites
-**Impact: Medium · Effort: Medium**
+## ~~T18. Method-level template parameter resolution at call sites~~ ✅ Resolved
 
-When a method declares `@template T of SomeType` and uses `T` as both
-a parameter and return type, PHPantom should resolve `T` to the
-concrete type of the argument passed at the call site. Currently,
-the template parameter name (e.g. `T`, `TRelation`) is left as the
-resolved type string, and member access on the return value fails
-with "subject type 'T' could not be resolved".
-
-**Reproducer:**
-
-```php
-class ProductRepository
-{
-    /**
-     * @template T of Builder|QueryBuilder
-     * @param T $query
-     * @return T
-     */
-    private static function filterDisabled(BuilderContract $query, Country $code): BuilderContract
-    {
-        $query->where(...);  // "subject type 'T' could not be resolved"
-        return $query;
-    }
-}
-```
-
-```php
-trait GetMarketTrait
-{
-    /**
-     * @template TRelation of Relation
-     * @param TRelation $relation
-     * @return TRelation
-     */
-    protected function whereCurrentMarket(Relation $relation): Relation
-    {
-        $relation->getQuery()->where(...);
-        // "subject type 'TRelation' could not be resolved"
-    }
-}
-```
-
-**What should work:** Inside the method body, `$query` should be
-resolved using the `@template` bound (`Builder|QueryBuilder`) rather
-than the bare template name. At call sites, `T` should be substituted
-with the concrete argument type.
-
-**Where to fix:**
-- `src/completion/variable/resolution.rs` — when resolving a parameter
-  variable, check for `@template` annotations that bind the parameter
-  type and use the bound type (or concrete call-site type) instead of
-  the raw template name.
-- `src/completion/resolver.rs` — may need method-level template
-  substitution logic similar to class-level generic substitution.
-
-**Impact in shared codebase:** ~2 diagnostics.
+**Resolution:** Added `substitute_template_param_bounds()` in
+`src/completion/variable/resolution.rs` which replaces bare template
+parameter names (e.g. `T`, `TRelation`) with their `@template T of Bound`
+upper bounds before class resolution. Applied in both
+`resolve_variable_in_members` (method-level) and `try_resolve_in_function`
+(standalone function-level). Call-site substitution was already handled by
+`build_method_template_subs`; this fix addresses the **inside-the-body**
+case where `$query->where(...)` previously failed with "subject type 'T'
+could not be resolved".
 
 ---
 
