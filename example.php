@@ -3180,6 +3180,38 @@ class AttributeCompletionDemo
 }
 
 
+
+// ── Loop Array Build (variable-key assignment tracking) ─────────────────────
+
+class LoopArrayBuildDemo
+{
+    /** @param list<Pen> $pens */
+    public function demo(array $pens): void
+    {
+        // Variable-key assignment inside a loop: `$arr[$var] = $value`
+        // PHPantom tracks the RHS type as the array's element type.
+        $indexed = [];
+        foreach ($pens as $i => $pen) {
+            $key = $pen->color();
+            $indexed[$key] = $pen;
+        }
+
+        // Foreach over the built array resolves element members
+        foreach ($indexed as $item) {
+            $item->write();               // Pen method via element type tracking
+        }
+
+        // Bracket access resolves element type
+        $indexed['red']->color();         // Pen method
+
+        // Null-coalescing with guard clause
+        $found = $indexed['blue'] ?? null;
+        if ($found === null) { return; }
+        $found->write();                  // narrowed to Pen
+    }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
@@ -5790,6 +5822,20 @@ function runDemoAssertions(): void
     if (!is_array($tgMixed)) {
         assert($tgMixed instanceof Pen, 'Else branch of is_array() must be Pen');
     }
+
+    // ── Loop array build (variable-key assignment) ──────────────────────
+    $labPens = [new Pen('red'), new Pen('blue')];
+    $labIndexed = [];
+    foreach ($labPens as $labPen) {
+        $labKey = $labPen->color();
+        $labIndexed[$labKey] = $labPen;
+    }
+    assert($labIndexed['red'] instanceof Pen, 'Variable-key array element must be Pen');
+    foreach ($labIndexed as $labItem) {
+        assert($labItem instanceof Pen, 'Foreach over variable-key array must yield Pen');
+    }
+    $labFound = $labIndexed['blue'] ?? null;
+    assert($labFound instanceof Pen, 'Null-coalesce on variable-key array must resolve to Pen');
 
     echo "All assertions passed.\n";
 }

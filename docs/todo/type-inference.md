@@ -488,37 +488,6 @@ simpler, but basic reconciliation can work with strings too).
 
 ---
 
-## T22. Array value type tracking from loop assignments
-**Impact: Medium · Effort: Medium**
-
-When a variable is initialized as `$arr = []` and then populated
-inside a loop with `$arr[$key] = $value`, PHPantom loses the element
-type entirely — it resolves `$arr` as bare `array`. Iterating the
-array in a subsequent `foreach` then produces `unresolved_member_access`
-on every element access.
-
-Examples from triage:
-
-- `$bundleProductCounts[$id] = ['bundle' => $productBundle, 'count' => 1]`
-  in a loop, then `$bundleProductCount['bundle']->parentProduct()` in
-  a second loop. (`ProductSupplyAmountChangeListener:56,58`.)
-- `$warehouseOrderLines[$key] = $orderLine` (where `$orderLine` is
-  `PCNPurchaseOrderLine`) in a loop, then
-  `$warehouseOrderLines[$key] ?? null` resolves as just `null` instead
-  of `PCNPurchaseOrderLine|null`. (`PCNService:1073,1077`.)
-
-The second example also requires the null-coalescing operator (`??`)
-to produce a union of both sides rather than only the fallback.
-
-**Implementation:** when processing an assignment like
-`$arr[$expr] = $rhs`, record the RHS type as the array's value type.
-When the same variable is accessed in a `foreach` or via bracket
-access, use the recorded value type for the element. For `$a ?? $b`,
-the result type should be `type($a) | type($b)` with `null` removed
-from the left side.
-
----
-
 ## T23. `class-string<T>` static method dispatch
 **Impact: Medium · Effort: Medium**
 

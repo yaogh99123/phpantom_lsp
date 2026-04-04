@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                             | Impact      | Effort      |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ----------- |
-| T22 | [Array value type tracking from loop assignments](todo/type-inference.md#t22-array-value-type-tracking-from-loop-assignments)                    | Medium      | Medium      |
 | T23 | [`class-string<T>` static method dispatch](todo/type-inference.md#t23-class-stringt-static-method-dispatch)                                     | Medium      | Medium      |
 | T21 | [Bidirectional template inference](todo/type-inference.md#t21-bidirectional-template-inference-upperlower-bounds) (closure return type → generic) | Medium      | Medium-High |
 | H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium      | Medium      |

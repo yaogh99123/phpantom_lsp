@@ -5265,3 +5265,371 @@ async fn test_push_style_with_initial_positional_array() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Variable-key array assignment: `$arr[$id] = $value` ────────────────────
+
+/// `$arr = []; $arr[$id] = new User();` should track the value type so that
+/// `$arr[0]->` resolves User members — same as push-style `$arr[] = new User()`.
+#[tokio::test]
+async fn test_variable_key_assignment_tracks_value_type() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///varkey_single.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class OrderLine {\n",
+        "    public string $sku;\n",
+        "    public function getQuantity(): int { return 0; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param list<OrderLine> $lines */\n",
+        "    public function run(array $lines): void {\n",
+        "        $grouped = [];\n",
+        "        foreach ($lines as $line) {\n",
+        "            $key = $line->sku;\n",
+        "            $grouped[$key] = $line;\n",
+        "        }\n",
+        "        foreach ($grouped as $item) {\n",
+        "            $item->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 14,
+                character: 19,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for variable-key array assignment"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"getQuantity"),
+                "Should include OrderLine::getQuantity() from variable-key assignment, got: {:?}",
+                method_names
+            );
+            let prop_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::PROPERTY))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                prop_names.contains(&"sku"),
+                "Should include OrderLine::$sku from variable-key assignment, got: {:?}",
+                prop_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Multiple variable-key assignments with different types should union:
+/// `$arr[$a] = new User(); $arr[$b] = new Admin();` → `list<User|Admin>`.
+#[tokio::test]
+async fn test_variable_key_assignment_union_types() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///varkey_union.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getEmail(): string {}\n",
+        "}\n",
+        "class AdminUser {\n",
+        "    public function grantPermission(string $perm): void {}\n",
+        "}\n",
+        "$arr = [];\n",
+        "$arr[$idx1] = new User();\n",
+        "$arr[$idx2] = new AdminUser();\n",
+        "$arr[0]->\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 11,
+                character: 12,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for union of variable-key assignments"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"getEmail"),
+                "Should include User::getEmail() from first variable-key assignment, got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"grantPermission"),
+                "Should include AdminUser::grantPermission() from second variable-key assignment, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Variable-key assignment followed by bracket access: `$arr[$key]->` should
+/// resolve element members.
+#[tokio::test]
+async fn test_variable_key_assignment_bracket_access() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///varkey_bracket.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Product {\n",
+        "    public string $title;\n",
+        "    public function getPrice(): float { return 0.0; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param list<Product> $products */\n",
+        "    public function run(array $products): void {\n",
+        "        $indexed = [];\n",
+        "        foreach ($products as $p) {\n",
+        "            $indexed[$p->title] = $p;\n",
+        "        }\n",
+        "        $indexed['some_key']->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 31,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for bracket access after variable-key assignment"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"getPrice"),
+                "Should include Product::getPrice() from variable-key assignment, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Null-coalescing on variable-key array: `$arr[$key] ?? null` should resolve
+/// to the value type unioned with null.  After a guard clause, the null is
+/// stripped and only the value type remains.
+#[tokio::test]
+async fn test_variable_key_assignment_null_coalesce_guard() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///varkey_coalesce.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class OrderLine {\n",
+        "    public string $sku;\n",
+        "    public function getTotal(): float { return 0.0; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param list<OrderLine> $lines */\n",
+        "    public function run(array $lines): void {\n",
+        "        $byKey = [];\n",
+        "        foreach ($lines as $ol) {\n",
+        "            $byKey[$ol->sku] = $ol;\n",
+        "        }\n",
+        "        $found = $byKey['abc'] ?? null;\n",
+        "        if ($found === null) { return; }\n",
+        "        $found->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 14,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions after null-coalesce + guard on variable-key array"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"getTotal"),
+                "Should include OrderLine::getTotal() after null guard, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Pure variable-key assignment (no loop): `$arr = []; $arr[$x] = new Foo();`
+/// should track element type even without a surrounding loop.
+#[tokio::test]
+async fn test_variable_key_assignment_no_loop() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///varkey_no_loop.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Widget {\n",
+        "    public function render(): string { return ''; }\n",
+        "}\n",
+        "$widgets = [];\n",
+        "$widgets[$someId] = new Widget();\n",
+        "$widgets[$otherId] = new Widget();\n",
+        "$widgets[0]->\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 7,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for variable-key assignment without loop"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"render"),
+                "Should include Widget::render() from variable-key assignment, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

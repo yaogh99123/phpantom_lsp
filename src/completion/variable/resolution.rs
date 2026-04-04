@@ -3074,8 +3074,8 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
             }
 
             let key = extract_array_key_for_shape(array_access.index);
-            // Skip numeric-only keys and unresolvable indices.
             if let Some(key) = key {
+                // ── String-literal key: merge into array shape ──
                 let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
                 let resolved =
                     super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
@@ -3096,6 +3096,34 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
                 // base assignment that preceded this).
                 // We always push here without clearing — shape keys
                 // accumulate on top of the existing base.
+                let new_rt = ResolvedType::from_type_string(PhpType::parse(&merged));
+                results.clear();
+                results.push(new_rt);
+            } else {
+                // ── Non-literal key (variable, numeric, expression) ──
+                // Track the RHS type as the array's value type so that
+                // subsequent `foreach` iteration and bracket access
+                // resolve element members.  This handles patterns like
+                // `$arr[$id] = $orderLine` inside a loop.
+                let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
+                let resolved =
+                    super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
+                let value_type = if !resolved.is_empty() {
+                    ResolvedType::type_strings_joined(&resolved)
+                } else {
+                    "mixed".to_string()
+                };
+                let base_string = results.last().map(|rt| rt.type_string.to_string());
+                let base = base_string.as_deref().unwrap_or("array");
+                // When the base already has a shape type from prior
+                // string-keyed assignments, do not overwrite it with
+                // a generic element type — shapes take precedence.
+                if base.starts_with("array{") {
+                    return;
+                }
+                // Infer the key type from the index expression.
+                let key_type = infer_array_key_type(array_access.index, &rhs_ctx);
+                let merged = merge_keyed_type(base, &key_type, &value_type);
                 let new_rt = ResolvedType::from_type_string(PhpType::parse(&merged));
                 results.clear();
                 results.push(new_rt);
@@ -3285,6 +3313,141 @@ fn merge_push_type(base: &str, value_type: &str) -> String {
     }
 
     format!("list<{}>", elem_types.join("|"))
+}
+
+/// Merge a keyed element type into an existing type string to produce
+/// an `array<KeyType, ValueType>` type.
+///
+/// Similar to [`merge_push_type`] but preserves the key type from the
+/// index expression instead of assuming sequential integer keys.
+///
+/// When the base already has a generic value type (e.g.
+/// `array<string, User>`), the new value type is unioned with it and
+/// key types are unioned as well.
+///
+/// Examples:
+/// - `merge_keyed_type("array", "string", "User")` → `"array<string, User>"`
+/// - `merge_keyed_type("array<string, User>", "string", "Admin")`
+///   → `"array<string, User|Admin>"`
+/// - `merge_keyed_type("array<string, User>", "int", "Admin")`
+///   → `"array<string|int, User|Admin>"`
+fn merge_keyed_type(base: &str, key_type: &str, value_type: &str) -> String {
+    use crate::php_type::PhpType;
+
+    let parsed_base = PhpType::parse(base);
+
+    // Collect existing key types from the base.
+    let mut key_types: Vec<String> = Vec::new();
+    if let Some(existing_key) = parsed_base.extract_key_type(false) {
+        let s = existing_key.to_string();
+        if !s.is_empty() {
+            key_types.push(s);
+        }
+    }
+    // Add the new key type.
+    let new_key_parsed = PhpType::parse(key_type);
+    for member in new_key_parsed.union_members() {
+        let s = member.to_string();
+        if !s.is_empty() && !key_types.contains(&s) {
+            key_types.push(s);
+        }
+    }
+
+    // Collect existing value types from the base.
+    let mut elem_types: Vec<String> = Vec::new();
+    if let Some(existing_elem) = parsed_base.extract_element_type() {
+        for member in existing_elem.union_members() {
+            let s = member.to_string();
+            if !s.is_empty() {
+                elem_types.push(s);
+            }
+        }
+    }
+    // Add the new value type.
+    let new_val_parsed = PhpType::parse(value_type);
+    for member in new_val_parsed.union_members() {
+        let s = member.to_string();
+        if !s.is_empty() && !elem_types.contains(&s) {
+            elem_types.push(s);
+        }
+    }
+
+    if elem_types.is_empty() {
+        return "array".to_string();
+    }
+
+    let val_str = elem_types.join("|");
+    if key_types.is_empty() {
+        // No key type information — use a single-param generic.
+        format!("array<{}>", val_str)
+    } else {
+        format!("array<{}, {}>", key_types.join("|"), val_str)
+    }
+}
+
+/// Infer the key type of an array-access index expression.
+///
+/// Returns `"string"` for expressions that are known to produce
+/// strings (string literals, method calls returning `string`, string
+/// variables), `"int"` for integer expressions, and `"int|string"`
+/// when the type cannot be determined.
+fn infer_array_key_type(index: &Expression<'_>, ctx: &VarResolutionCtx<'_>) -> String {
+    // Fast path: literal values.
+    match index {
+        Expression::Literal(Literal::Integer(_)) => return "int".to_string(),
+        Expression::Literal(Literal::String(_)) => return "string".to_string(),
+        _ => {}
+    }
+
+    // Resolve the expression type through the standard pipeline.
+    let resolved = super::rhs_resolution::resolve_rhs_expression(index, ctx);
+    if !resolved.is_empty() {
+        let joined = ResolvedType::type_strings_joined(&resolved);
+        let key_str = joined.to_string();
+        // Normalise the resolved type to a valid array key type.
+        // PHP array keys are always int or string; bool and null are
+        // coerced to int, float is truncated to int.
+        if is_int_like_key(&key_str) {
+            return "int".to_string();
+        }
+        if key_str == "string" || key_str == "non-empty-string" || key_str == "class-string" {
+            return "string".to_string();
+        }
+        if key_str == "int|string" || key_str == "string|int" || key_str == "array-key" {
+            return "int|string".to_string();
+        }
+        // If the resolved type is a known scalar that PHP coerces
+        // to a key type, map it.  Otherwise fall through to the
+        // default.
+        if key_str == "mixed" {
+            return "int|string".to_string();
+        }
+        // For anything else (e.g. a class-string<T>, or a union),
+        // return as-is if it is composed entirely of int/string
+        // subtypes; otherwise fall back.
+        return key_str;
+    }
+
+    "int|string".to_string()
+}
+
+/// Returns `true` when the type string represents a PHP type that
+/// is always coerced to `int` when used as an array key.
+fn is_int_like_key(ty: &str) -> bool {
+    matches!(
+        ty,
+        "int"
+            | "float"
+            | "bool"
+            | "true"
+            | "false"
+            | "null"
+            | "positive-int"
+            | "negative-int"
+            | "non-negative-int"
+            | "non-positive-int"
+            | "non-zero-int"
+    )
 }
 
 // ── Array function type preservation helpers ─────────────────────────

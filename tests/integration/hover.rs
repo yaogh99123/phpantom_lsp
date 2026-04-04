@@ -9644,3 +9644,115 @@ class Service {
         text_dollar
     );
 }
+
+// ─── Variable-key array assignment type strings ─────────────────────────────
+
+#[test]
+fn hover_variable_key_string_produces_array_string_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Pen {
+    public function write(): string { return ''; }
+    public function color(): string { return ''; }
+}
+class Svc {
+    /** @param list<Pen> $pens */
+    public function run(array $pens): void {
+        $indexed = [];
+        foreach ($pens as $pen) {
+            $key = $pen->color();
+            $indexed[$key] = $pen;
+        }
+        $indexed;
+    }
+}
+"#;
+
+    // Hover on `$indexed` at line 13 (the usage after the loop).
+    // $key is string (from color()), so type should be array<string, Pen>.
+    let hover = hover_at(&backend, uri, content, 13, 9).expect("expected hover on $indexed");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("array<string, Pen>"),
+        "Variable-key assignment with string key should produce array<string, Pen>, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_key_int_produces_array_int_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Pen {
+    public function write(): string { return ''; }
+}
+function run(int $id): void {
+    $indexed = [];
+    $indexed[$id] = new Pen();
+    $indexed;
+}
+"#;
+
+    // Hover on `$indexed` at line 7. $id is int (parameter type),
+    // so type should be array<int, Pen>.
+    let hover = hover_at(&backend, uri, content, 7, 5).expect("expected hover on $indexed");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("array<int, Pen>"),
+        "Variable-key assignment with int key should produce array<int, Pen>, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_key_unknown_produces_array_intstring_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Pen {
+    public function write(): string { return ''; }
+}
+function run(mixed $key): void {
+    $indexed = [];
+    $indexed[$key] = new Pen();
+    $indexed;
+}
+"#;
+
+    // Hover on `$indexed` at line 7. $key is mixed,
+    // so type should be array<int|string, Pen>.
+    let hover = hover_at(&backend, uri, content, 7, 5).expect("expected hover on $indexed");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("array<int|string, Pen>"),
+        "Variable-key assignment with mixed key should produce array<int|string, Pen>, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_push_style_produces_list() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Pen {
+    public function write(): string { return ''; }
+}
+function run(): void {
+    $items = [];
+    $items[] = new Pen();
+    $items;
+}
+"#;
+
+    // Hover on `$items` at line 7. Push-style should produce list<Pen>.
+    let hover = hover_at(&backend, uri, content, 7, 5).expect("expected hover on $items");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("list<Pen>"),
+        "Push-style assignment should produce list<Pen>, got: {}",
+        text
+    );
+}
