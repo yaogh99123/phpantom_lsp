@@ -1594,16 +1594,23 @@ fn infer_callable_params_from_receiver(
 
     let params = find_callable_params_on_classes(&receiver_classes, method_name, arg_idx, ctx);
 
-    // Replace `$this` / `static` tokens with the receiver class FQN
+    // Replace `$this` / `static` tokens with the receiver's full type
     // so that `resolve_closure_params_with_inferred` resolves them
     // against the declaring class rather than the user's current class.
+    //
+    // When the receiver is a generic class whose template params have
+    // already been substituted (e.g. `Builder<Product>`), we need to
+    // reconstruct the full generic type so that the inferred callable
+    // param type carries the generic args.  Without this, `$this` on
+    // `Builder<Product>` would degrade to bare `Builder`, losing the
+    // model type and preventing scope method resolution.
     let result = if let Some(receiver) = receiver_classes.first() {
-        let receiver_fqn = receiver.fqn();
+        let receiver_type = build_receiver_self_type(receiver, ctx.class_loader);
         params
             .into_iter()
             .map(|ty| {
                 crate::php_type::PhpType::parse(&ty)
-                    .replace_self(&receiver_fqn)
+                    .replace_self_with_type(&receiver_type)
                     .to_string()
             })
             .collect()
@@ -1807,6 +1814,94 @@ fn try_relation_query_override(
 /// `Builder<Model>`, extract the model from the Builder's method return
 /// types (which contain the substituted generic arg, e.g.
 /// `Builder<Brand>` → `Brand`).
+/// Build a `PhpType` representing the receiver class for `$this`/`static`
+/// replacement in callable parameter inference.
+///
+/// For most classes this returns `PhpType::Named(fqn)`.  For classes
+/// whose template parameters have been concretely substituted (detected
+/// by scanning method return types for generic signatures), the full
+/// generic type is reconstructed.  For example, an Eloquent
+/// `Builder<Product>` receiver produces
+/// `PhpType::Generic("Illuminate\\Database\\Eloquent\\Builder", [Named("App\\Product")])`
+/// instead of a bare `PhpType::Named("Illuminate\\Database\\Eloquent\\Builder")`.
+///
+/// This preserves generic args through callable param inference so that
+/// `callable($this)` on `Builder<Product>` infers `Builder<Product>`,
+/// not bare `Builder`.
+fn build_receiver_self_type(
+    receiver: &ClassInfo,
+    _class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> PhpType {
+    let fqn = receiver.fqn();
+
+    // Only attempt reconstruction when the class declares template
+    // params — otherwise there are no generic args to recover.
+    if receiver.template_params.is_empty() {
+        return PhpType::Named(fqn);
+    }
+
+    // For Eloquent Builder, extract the model name from method return
+    // types where generic substitution has already been applied.
+    if (receiver.name == "Builder" || fqn == ELOQUENT_BUILDER_FQN)
+        && let Some(model_fqn) = extract_model_from_builder(receiver)
+    {
+        return PhpType::Generic(
+            ELOQUENT_BUILDER_FQN.to_string(),
+            vec![PhpType::Named(model_fqn)],
+        );
+    }
+
+    // General case: try to recover concrete generic args from method
+    // return types that reference the class itself with generic params.
+    // For example, if a `Collection<int, User>` has a method returning
+    // `Collection<int, User>`, we can extract `[int, User]` as the
+    // concrete args.
+    if let Some(args) = extract_generic_args_from_methods(receiver, &fqn) {
+        return PhpType::Generic(fqn, args);
+    }
+
+    // Fallback: if we have a parent class with @extends generics and
+    // only one template param, try to extract from the parent chain.
+    // This covers cases like Relation<TRelatedModel> subclasses.
+    if !receiver.extends_generics.is_empty() && receiver.template_params.len() == 1 {
+        for (_, args) in &receiver.extends_generics {
+            if let Some(first_arg) = args.first() {
+                let arg_str = first_arg.to_string();
+                // Skip raw template param names that weren't substituted.
+                if !receiver.template_params.contains(&arg_str) {
+                    return PhpType::Generic(fqn, vec![first_arg.clone()]);
+                }
+            }
+        }
+    }
+
+    PhpType::Named(fqn)
+}
+
+/// Try to extract concrete generic args from a class's own methods.
+///
+/// Scans method return types for `ClassName<Arg1, Arg2, ...>` patterns
+/// where the base name matches the class, and the args are concrete
+/// (not raw template param names).
+fn extract_generic_args_from_methods(class: &ClassInfo, class_fqn: &str) -> Option<Vec<PhpType>> {
+    let class_short = crate::util::short_name(class_fqn);
+    for method in &class.methods {
+        if let Some(PhpType::Generic(base, args)) = &method.return_type {
+            let base_short = crate::util::short_name(base);
+            if (base == class_fqn || base_short.eq_ignore_ascii_case(class_short))
+                && !args.is_empty()
+                && args.iter().all(|a| {
+                    let s = a.to_string();
+                    !class.template_params.contains(&s)
+                })
+            {
+                return Some(args.clone());
+            }
+        }
+    }
+    None
+}
+
 fn find_model_from_receivers(
     receiver_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,

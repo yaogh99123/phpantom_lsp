@@ -3348,11 +3348,12 @@ class EventRepository {
 }
 
 #[test]
-fn no_diagnostic_for_scope_on_bare_builder_param_in_closure() {
-    // When a closure parameter is typed as bare `Builder` (without generic
-    // args), scope methods like whereIsLuxury() are dispatched through
-    // Builder's __call at runtime.  The analyzer should not flag these as
-    // unknown because the Builder has __call specifically for scope dispatch.
+fn no_diagnostic_for_scope_in_when_closure_with_callable_inference() {
+    // When a closure parameter is typed as bare `Builder` but the
+    // enclosing method's callable signature provides `$this`/`static`,
+    // the inferred type is refined to `Builder<Product>` (a supertype
+    // match with generic args).  Scope methods are then found on the
+    // refined type and should NOT be flagged.
     let (backend, _dir) = create_psr4_workspace(
         r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
         &[
@@ -3383,10 +3384,24 @@ class Builder {
      * @return static
      */
     public function when(bool $value, callable $callback): static { return $this; }
+    /** @return \Illuminate\Database\Eloquent\Collection<int, TModel> */
+    public function get(): Collection { return new Collection(); }
 
     /** @return mixed */
     public function __call(string $method, array $parameters): mixed { return null; }
 }
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Collection.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TKey of array-key
+ * @template TModel
+ */
+class Collection {}
 "#,
             ),
             (
@@ -3415,7 +3430,8 @@ class ProductRepository {
     public function getFiltered(bool $onlyLuxury, bool $onlyDerma): void {
         Product::whereHas('translations')
             ->when($onlyLuxury, fn(Builder $q): Builder => $q->whereIsLuxury())
-            ->when($onlyDerma, fn(Builder $q): Builder => $q->whereIsDerma());
+            ->when($onlyDerma, fn(Builder $q): Builder => $q->whereIsDerma())
+            ->get();
     }
 }
 "#;
@@ -3423,14 +3439,143 @@ class ProductRepository {
     let mut diags = Vec::new();
     backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
 
+    // The callable signature `callable(static)` on `when()` provides
+    // `static` as the closure param type.  Since the receiver is
+    // `Builder<Product>`, `static` resolves to `Builder<Product>`.
+    // The explicit `Builder` type hint is a supertype, so the inferred
+    // `Builder<Product>` is preferred — scope methods are found.
     assert!(
         !diags.iter().any(|d| d.message.contains("whereIsLuxury")),
-        "Scope method on bare Builder param should be suppressed (Builder has __call for scope dispatch), got: {:?}",
+        "Scope method should be found via callable param inference from when(), got: {:?}",
         diags
     );
     assert!(
         !diags.iter().any(|d| d.message.contains("whereIsDerma")),
-        "Scope method on bare Builder param should be suppressed (Builder has __call for scope dispatch), got: {:?}",
+        "Scope method should be found via callable param inference from when(), got: {:?}",
+        diags
+    );
+
+    // Known methods after the scope calls should also resolve.
+    assert!(
+        !diags.iter().any(|d| d.message.contains("get")),
+        "Known method 'get' should resolve after scope calls, got: {:?}",
+        diags
+    );
+    // No broken-chain / unresolved diagnostics downstream.
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("could not be resolved")),
+        "Chain should not break, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn scope_on_standalone_bare_builder_param_flags_warning_chain_continues() {
+    // When a function parameter is typed as bare `Builder` (no callable
+    // inference context), scope methods cannot be verified statically.
+    // They are flagged via MagicFallback (__call exists), but the chain
+    // continues because Builder's __call return type is patched to
+    // `static` during resolution.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Builder.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel of \Illuminate\Database\Eloquent\Model
+ */
+class Builder {
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /** @return static */
+    public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
+    /** @return \Illuminate\Database\Eloquent\Collection<int, TModel> */
+    public function get(): Collection { return new Collection(); }
+
+    /** @return mixed */
+    public function __call(string $method, array $parameters): mixed { return null; }
+}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Collection.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TKey of array-key
+ * @template TModel
+ */
+class Collection {}
+"#,
+            ),
+            (
+                "src/Product.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Builder;
+
+class Product extends Model {
+    public function scopeWhereIsLuxury(Builder $query): Builder { return $query->where('is_luxury', true); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    // Standalone function parameter — no callable inference context.
+    let text = r#"<?php
+use Illuminate\Database\Eloquent\Builder;
+
+function filterProducts(Builder $query): void {
+    $query->whereIsLuxury()->orderBy('name')->get();
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    // Scope method IS flagged — no callable inference to refine the
+    // bare Builder to Builder<Product>.
+    assert!(
+        diags.iter().any(|d| d.message.contains("whereIsLuxury")),
+        "Scope method on standalone bare Builder param should be flagged, got: {:?}",
+        diags
+    );
+
+    // Chain continues — known methods after the unknown scope call
+    // should NOT be flagged because __call returns static.
+    assert!(
+        !diags.iter().any(|d| d.message.contains("orderBy")),
+        "Known method 'orderBy' should resolve after __call fallback, got: {:?}",
+        diags
+    );
+    assert!(
+        !diags.iter().any(|d| d.message.contains("get")),
+        "Known method 'get' should resolve after __call fallback, got: {:?}",
+        diags
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("could not be resolved")),
+        "Chain should not break after __call fallback, got: {:?}",
         diags
     );
 }

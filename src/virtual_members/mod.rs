@@ -64,6 +64,7 @@ use crate::inheritance::{
 use crate::php_type::PhpType;
 use crate::types::{ClassInfo, ConstantInfo, MethodInfo, PropertyInfo};
 use crate::util::short_name;
+use crate::virtual_members::laravel::ELOQUENT_BUILDER_FQN;
 
 /// Cache key for [`ResolvedClassCache`]: fully-qualified class name
 /// paired with the concrete generic type arguments used at this
@@ -830,6 +831,20 @@ fn resolve_class_fully_inner(
         }
     }
 
+    // ── Eloquent Builder __call return type override ────────────────
+    // Laravel's `Builder::__call()` is declared as returning `mixed`,
+    // but in practice it always returns `$this`: scope dispatch,
+    // macro dispatch, and Query\Builder forwarding all return the
+    // Builder instance.  The `mixed` docblock breaks method chains
+    // because the resolver cannot recover a class type from `mixed`.
+    // Override the return type to `static` so that chains through
+    // unknown methods (e.g. scope calls on a bare `Builder` without
+    // generic args) preserve the Builder type and downstream methods
+    // like `get()`, `pluck()`, `first()` continue to resolve.
+    if fqn == ELOQUENT_BUILDER_FQN {
+        patch_eloquent_builder_call_return_type(&mut merged);
+    }
+
     // ── Cache store ─────────────────────────────────────────────────
     let result = Arc::new(merged);
     if let Some(cache) = cache {
@@ -837,6 +852,29 @@ fn resolve_class_fully_inner(
     }
 
     result
+}
+
+/// Override `__call` and `__callStatic` return types on Eloquent Builder
+/// from `mixed` to `static`.
+///
+/// Builder's `__call` dispatches to scope methods (`callNamedScope`),
+/// macros, and `Query\Builder` forwarding — all of which return `$this`.
+/// The `@return mixed` docblock is a PHP limitation; the actual return
+/// type is always the Builder instance.  Patching this here means every
+/// consumer of the resolved Builder (completion, diagnostics, hover)
+/// automatically gets correct chain continuation through unknown methods.
+fn patch_eloquent_builder_call_return_type(class: &mut ClassInfo) {
+    let static_type = PhpType::Named("static".to_string());
+    for method in class.methods.make_mut().iter_mut() {
+        if (method.name == "__call" || method.name == "__callStatic")
+            && method
+                .return_type
+                .as_ref()
+                .is_some_and(|rt| rt.to_string() == "mixed")
+        {
+            method.return_type = Some(static_type.clone());
+        }
+    }
 }
 
 /// Merge resolved interface members into a class, applying `@implements`
