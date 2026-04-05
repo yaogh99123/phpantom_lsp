@@ -3821,3 +3821,234 @@ async fn test_goto_definition_trait_alias_original_name_when_class_overrides() {
         other => panic!("Expected Scalar location, got: {:?}", other),
     }
 }
+
+// ─── @see Tag GTD in Floating Docblocks ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_goto_definition_see_tag_in_array_no_namespace() {
+    // Regression: @see tags in floating docblocks (e.g. inside array
+    // literals, in files without a namespace) were not parsed because
+    // the docblock wasn't attached to any AST node.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///test_see_array.php").unwrap();
+    // Line 0: <?php
+    // Line 1: class SupervisorOptions {
+    // Line 2:     public int $balanceCooldown = 3;
+    // Line 3: }
+    // Line 4: $defaults = [
+    // Line 5:     'balanceCooldown' => 3, /** @see SupervisorOptions::$balanceCooldown */
+    // Line 6: ];
+    let text = concat!(
+        "<?php\n",
+        "class SupervisorOptions {\n",
+        "    public int $balanceCooldown = 3;\n",
+        "}\n",
+        "$defaults = [\n",
+        "    'balanceCooldown' => 3, /** @see SupervisorOptions::$balanceCooldown */\n",
+        "];\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on "SupervisorOptions" in the @see tag (line 5)
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 5,
+                character: 40, // within "SupervisorOptions"
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve @see class reference in floating docblock inside array literal"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(
+                location.range.start.line, 1,
+                "SupervisorOptions is defined on line 1"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+
+    // Click on "$balanceCooldown" in the @see tag (line 5)
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 5,
+                character: 62, // within "$balanceCooldown"
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve @see member reference in floating docblock inside array literal"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(
+                location.range.start.line, 2,
+                "$balanceCooldown property is defined on line 2"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_goto_definition_see_tag_inline_in_expression() {
+    // A floating /** @see ... */ after an expression statement, not
+    // attached to any class or function.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///test_see_inline.php").unwrap();
+    // Line 0: <?php
+    // Line 1: class Config {
+    // Line 2:     public string $timeout = '30';
+    // Line 3: }
+    // Line 4:
+    // Line 5: $timeout = 30; /** @see Config::$timeout */
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public string $timeout = '30';\n",
+        "}\n",
+        "\n",
+        "$timeout = 30; /** @see Config::$timeout */\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on "Config" in the @see tag (line 5)
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 5,
+                character: 25, // within "Config"
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve @see class reference in trailing docblock after expression"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.range.start.line, 1, "Config is defined on line 1");
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_goto_definition_see_tag_cross_file_no_namespace() {
+    // @see in a file without namespace pointing to a class in another file.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[(
+            "src/Models/SupervisorOptions.php",
+            concat!(
+                "<?php\n",
+                "namespace App\\Models;\n",
+                "class SupervisorOptions {\n",
+                "    public int $balanceCooldown = 3;\n",
+                "}\n",
+            ),
+        )],
+    );
+
+    let config_uri = Url::parse("file:///config/horizon.php").unwrap();
+    let config_text = concat!(
+        "<?php\n",
+        "use App\\Models\\SupervisorOptions;\n",
+        "$defaults = [\n",
+        "    'balanceCooldown' => 3, /** @see SupervisorOptions::$balanceCooldown */\n",
+        "];\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: config_uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: config_text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on "SupervisorOptions" in the @see tag (line 3)
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: config_uri.clone(),
+            },
+            position: Position {
+                line: 3,
+                character: 40, // within "SupervisorOptions"
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve @see class reference cross-file from a no-namespace config file"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            let path = location.uri.to_file_path().unwrap();
+            assert!(
+                path.ends_with("Models/SupervisorOptions.php"),
+                "Should point to SupervisorOptions.php, got: {:?}",
+                path
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}

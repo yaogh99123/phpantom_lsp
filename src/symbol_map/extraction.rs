@@ -91,6 +91,19 @@ pub(crate) fn extract_symbol_map(program: &Program<'_>, content: &str) -> Symbol
         extract_from_statement(stmt, &mut ctx, 0);
     }
 
+    // ── Sweep all docblock trivia for floating references ───────────
+    // Docblocks attached to classes, functions, methods, properties, and
+    // certain statements are already processed during the AST walk above.
+    // However, docblocks in other positions (e.g. inline `/** @see ... */`
+    // inside array literals or after expressions) are never visited.
+    // Scan every docblock trivia entry and extract symbols; the dedup
+    // step below removes any duplicates from already-processed docblocks.
+    for t in program.trivia.iter() {
+        if t.kind == TriviaKind::DocBlockComment {
+            let _tpl = extract_docblock_symbols(t.value, t.span.start.offset, &mut ctx.spans);
+        }
+    }
+
     // Sort by start offset for binary search.
     ctx.spans.sort_by_key(|s| s.start);
 
