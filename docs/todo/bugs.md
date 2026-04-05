@@ -35,39 +35,6 @@ narrowing to occur).
 
 ---
 
-## B11. `static` return type not resolved through `class-string<T>` context
-**Impact: Low · Effort: Medium**
-
-Pattern:
-```php
-/** @param class-string<BackedEnum> $class */
-function enum(BackedEnum $value, string $class): void {
-    foreach ($class::cases() as $item) {
-        $name = $item->name;   // unresolved
-        $val  = $item->value;  // unresolved
-    }
-}
-```
-
-`UnitEnum::cases()` returns `static[]`. When called on a variable
-typed as `class-string<BackedEnum>`, the `static` return type should
-resolve to `BackedEnum[]`, making `$item` typed as `BackedEnum`.
-Currently `static` is not substituted through the `class-string<T>`
-context, so `$item` has no type and `->name` / `->value` are
-unresolvable.
-
-**Observed in:** `OptionList:27,30` — `$class::cases()` where
-`$class` is `class-string<BackedEnum>`.
-
-**Root cause:** The `class-string<T>` static dispatch fix (`caa6163`)
-resolves method signatures and return types for static calls on
-`class-string`-typed variables, but does not substitute `static` in
-the return type with the bound type `T`. The substitution
-`static → BackedEnum` needs to happen when the call target is
-resolved through a `class-string<BackedEnum>` context.
-
----
-
 ## B12. `Collection::reduce()` generic return type not inferred
 **Impact: Low · Effort: Medium**
 

@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`in_array` guard clause no longer wipes out variable type.** When `in_array($item, $exclude, true)` was used as a guard clause (`if (...) { continue; }`) and the haystack's element type matched the variable's resolved type (e.g. both `BackedEnum`), the narrowing system incorrectly excluded the type entirely, leaving the variable untyped for all subsequent accesses. The `in_array` check filters by value, not by type, so the exclusion now skips when it would remove all type information.
 - **`class-string<T>` static method dispatch.** When a variable is typed as `class-string<Foo>` (via `@param` or `@template` bound), calling static methods on it (e.g. `$class::from()`, `$class::cases()`) now resolves the return type correctly. The `static` return type substitutes to the bound class, so `$class::from('x')->name` resolves and `foreach ($class::cases() as $item)` gives `$item` the correct type.
 - **`@var` docblock annotations no longer leak across class and method boundaries.** When the cursor was inside a nested block (foreach, if, while), a `@var` annotation for a same-named variable in a completely different class could bleed into the current scope, producing wrong type information. The backward docblock scanner now correctly detects sibling scopes regardless of nesting depth.
 

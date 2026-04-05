@@ -2161,6 +2161,9 @@ pub(in crate::completion) fn try_apply_in_array_narrowing(
         && let Some(element_type) = resolve_in_array_element_type(haystack_expr, ctx)
     {
         if negated {
+            if !results.is_empty() && would_exclude_all_results(&element_type, results, ctx) {
+                return;
+            }
             apply_instanceof_exclusion(&element_type, ctx, results);
         } else {
             apply_instanceof_inclusion(&element_type, false, ctx, results);
@@ -2191,9 +2194,42 @@ pub(in crate::completion) fn try_apply_in_array_narrowing_inverse(
         if negated {
             apply_instanceof_inclusion(&element_type, false, ctx, results);
         } else {
+            if !results.is_empty() && would_exclude_all_results(&element_type, results, ctx) {
+                return;
+            }
             apply_instanceof_exclusion(&element_type, ctx, results);
         }
     }
+}
+
+/// Check whether excluding `element_type` from `results` would remove
+/// every entry, leaving the variable completely untyped.
+///
+/// `in_array($var, $haystack)` checks whether a *value* is present in
+/// the array, not whether the *type* matches.  When the haystack's
+/// element type is the same as (or a supertype of) every entry in
+/// `results`, exclusion would incorrectly wipe out all type information.
+/// For example, `in_array($item, $exclude)` where both `$item` and
+/// `$exclude`'s elements are `BackedEnum` should not remove
+/// `BackedEnum` from the resolved types — the variable is still a
+/// `BackedEnum`, just not one of the excluded values.
+fn would_exclude_all_results(
+    element_type: &str,
+    results: &[ClassInfo],
+    ctx: &VarResolutionCtx<'_>,
+) -> bool {
+    let excluded = super::resolution::type_hint_to_classes(
+        element_type,
+        &ctx.current_class.name,
+        ctx.all_classes,
+        ctx.class_loader,
+    );
+    if excluded.is_empty() {
+        return false;
+    }
+    results
+        .iter()
+        .all(|r| excluded.iter().any(|e| e.name == r.name))
 }
 
 /// Apply `in_array` guard clause narrowing after an `if` statement
@@ -2227,6 +2263,15 @@ pub(in crate::completion) fn apply_guard_clause_in_array_narrowing(
         if condition_negated {
             apply_instanceof_inclusion(&element_type, false, ctx, results);
         } else {
+            // Skip exclusion when it would remove ALL type information.
+            // `in_array($item, $exclude)` where both `$item` and the
+            // elements of `$exclude` are the same type (e.g. both are
+            // `BackedEnum`) only narrows which *value* of that type the
+            // variable holds, not the type itself.  Excluding would
+            // incorrectly wipe out the variable's type entirely.
+            if !results.is_empty() && would_exclude_all_results(&element_type, results, ctx) {
+                return;
+            }
             apply_instanceof_exclusion(&element_type, ctx, results);
         }
     }

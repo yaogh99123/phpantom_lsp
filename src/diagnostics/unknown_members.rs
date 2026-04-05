@@ -5345,4 +5345,144 @@ function test(object $data): void {
             "expected no diagnostics for object-typed parameter, got: {diags:?}"
         );
     }
+
+    // ── class-string<T> static return type resolution ───────────────
+
+    #[test]
+    fn no_diagnostic_for_class_string_static_return_in_foreach() {
+        // When a parameter is typed `class-string<BackedEnum>` and we
+        // call `$class::cases()`, the `static[]` return type should
+        // resolve to `BackedEnum[]`, making foreach items typed as
+        // `BackedEnum` with `->name` and `->value` available.
+        // UnitEnum and BackedEnum are loaded from stubs (cross-file),
+        // not defined inline, to reproduce the real-world scenario.
+        // Uses the exact pattern from OptionList.php including the
+        // ternary with dynamic method call.
+        let php = r#"<?php
+class OptionList {
+    /**
+     * @param class-string<BackedEnum> $class
+     */
+    public static function enum(BackedEnum $value, string $class, array $exclude = [], string $method = ''): void {
+        foreach ($class::cases() as $item) {
+            if (in_array($item, $exclude, true)) {
+                continue;
+            }
+
+            $name = $method ? $item->{$method}() : $item->name;
+
+            $val = $item->value;
+        }
+    }
+}
+"#;
+        let backend = create_enum_backend();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for class-string<BackedEnum> foreach item members, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_class_string_static_return_chained() {
+        // `$class::from('foo')` returns `static` which should resolve
+        // to `BackedEnum` when `$class` is `class-string<BackedEnum>`.
+        // Members like `->name` should be available on the result.
+        // UnitEnum and BackedEnum are loaded from stubs (cross-file),
+        // not defined inline, to reproduce the real-world scenario.
+        let php = r#"<?php
+class Svc {
+    /**
+     * @param class-string<BackedEnum> $class
+     */
+    public function resolve(string $class): void {
+        $result = $class::from('foo');
+        $name = $result->name;
+        $val  = $result->value;
+    }
+}
+"#;
+        let backend = create_enum_backend();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for class-string<BackedEnum> static return chain, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn in_array_guard_does_not_wipe_type_when_element_matches() {
+        // When `in_array($item, $exclude, true)` is used as a guard
+        // clause (`if (...) { continue; }`), the `in_array` narrowing
+        // should NOT exclude the variable's type when the haystack's
+        // element type matches the variable's type.  The check filters
+        // by value, not by type — `$item` is still a `BackedEnum`
+        // after the guard, just not one of the excluded values.
+        let php = r#"<?php
+class Foo {
+    public string $name;
+}
+
+class Svc {
+    /**
+     * @param array<int, Foo> $exclude
+     */
+    public function run(Foo $item, array $exclude): void {
+        if (in_array($item, $exclude, true)) {
+            return;
+        }
+        $name = $item->name;
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "in_array guard should not wipe variable type when element type matches, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn in_array_guard_still_narrows_union_type() {
+        // When the variable is a union type (e.g. `Foo|Bar`) and the
+        // haystack element type is one of the union members (e.g.
+        // `array<int, Foo>`), the guard clause SHOULD narrow: after
+        // `if (in_array($item, $fooList)) { return; }`, `$item` is
+        // not `Foo`, so it must be `Bar`.  The would-exclude-all
+        // check should NOT prevent this narrowing because removing
+        // `Foo` still leaves `Bar`.
+        let php = r#"<?php
+class Foo {
+    public string $fooName;
+}
+class Bar {
+    public string $barName;
+}
+
+class Svc {
+    /**
+     * @param Foo|Bar $item
+     * @param array<int, Foo> $fooList
+     */
+    public function run(object $item, array $fooList): void {
+        if (in_array($item, $fooList, true)) {
+            return;
+        }
+        $name = $item->barName;
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "in_array guard should still narrow union types, got: {diags:?}"
+        );
+    }
 }
