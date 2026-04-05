@@ -525,8 +525,9 @@ fn closure_this_from_receiver(
         return None;
     }
     let obj_text = ctx.content[start..end].trim();
-    let receiver_classes =
-        crate::completion::resolver::resolve_target_classes(obj_text, AccessKind::Arrow, ctx);
+    let receiver_classes = ResolvedType::into_arced_classes(
+        crate::completion::resolver::resolve_target_classes(obj_text, AccessKind::Arrow, ctx),
+    );
     for cls in &receiver_classes {
         let resolved = crate::virtual_members::resolve_class_fully_maybe_cached(
             cls,
@@ -1576,8 +1577,9 @@ fn infer_callable_params_from_receiver(
     }
     let obj_text = ctx.content[start..end].trim();
     let rctx = ctx.as_resolution_ctx();
-    let receiver_classes =
-        crate::completion::resolver::resolve_target_classes(obj_text, AccessKind::Arrow, &rctx);
+    let receiver_classes = ResolvedType::into_arced_classes(
+        crate::completion::resolver::resolve_target_classes(obj_text, AccessKind::Arrow, &rctx),
+    );
 
     // For relation-query methods (whereHas, etc.), override the closure
     // parameter type with Builder<RelatedModel> resolved from the

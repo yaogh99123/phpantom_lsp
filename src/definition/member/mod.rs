@@ -36,6 +36,7 @@ use super::point_location;
 use crate::Backend;
 use crate::completion::resolver::ResolutionCtx;
 use crate::docblock;
+use crate::types::ResolvedType;
 use crate::types::*;
 use crate::util::{find_class_at_offset, position_to_offset};
 use crate::virtual_members::laravel::{
@@ -132,8 +133,9 @@ impl Backend {
             resolved_class_cache: Some(&self.resolved_class_cache),
             function_loader: Some(&function_loader),
         };
-        let candidates =
-            crate::completion::resolver::resolve_target_classes(subject, access_kind, &rctx);
+        let candidates = ResolvedType::into_arced_classes(
+            crate::completion::resolver::resolve_target_classes(subject, access_kind, &rctx),
+        );
 
         if candidates.is_empty() {
             return None;

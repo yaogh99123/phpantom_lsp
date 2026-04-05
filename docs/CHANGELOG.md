@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`instanceof` narrowing with unresolvable target class.** When the `instanceof` target class cannot be loaded (e.g. it lives inside a phar archive), the variable's type is now treated as unknown instead of keeping the un-narrowed base type. This eliminates false-positive "unknown member" diagnostics for members that only exist on the narrowed subclass. Applies to all narrowing contexts: if-bodies, ternary expressions, `assert()` statements, and inline `&&` chains.
 - **`DB::select()` return type.** `DB::select()`, `DB::selectFromWriteConnection()`, and `DB::selectResultSets()` now return `array<int, stdClass>` instead of bare `array`, and `DB::selectOne()` returns `?stdClass` instead of `mixed`. Property access on query results (e.g. `$result[0]->column_name`) no longer produces false-positive diagnostics. The same fix applies to the underlying `Illuminate\Database\Connection` class.
 - **Redis `Connection` method resolution.** `Illuminate\Redis\Connections\Connection` now has `@mixin \Redis` applied automatically, so Redis commands like `del()`, `get()`, `set()`, etc. resolve through the phpredis stubs instead of producing false-positive diagnostics.
 
@@ -57,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Diagnostics.** Unified the diagnostic type-resolution pipeline with the completion and hover pipeline. Variable resolution now produces the same result in all three contexts, eliminating a class of false positives where diagnostics disagreed with completion about a variable's type.
 - **`@phpstan-ignore` is never the preferred quickfix.** The "Ignore PHPStan error" code action now explicitly sets `is_preferred: false`. Previously it used `None`, which some editors treated as absent, causing the suppress-with-comment action to be applied on the keyboard shortcut (e.g. Ctrl+. then Enter) when no other quickfix set `is_preferred`.
 
 - **Generate PHPDoc infers `@return` from the function body.** Typing `/**` above a function that returns `array` now produces `@return list<string>` (or whatever the body actually returns) instead of the previous `@return array<mixed>`. The same return-statement scanning used by the `missingType.return` and `missingType.iterableValue` code actions is now shared with docblock generation.

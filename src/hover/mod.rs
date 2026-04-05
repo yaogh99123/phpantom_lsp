@@ -545,10 +545,12 @@ impl Backend {
                     AccessKind::Arrow
                 };
 
-                let candidates = crate::completion::resolver::resolve_target_classes(
-                    subject_text,
-                    access_kind,
-                    &rctx,
+                let candidates = ResolvedType::into_arced_classes(
+                    crate::completion::resolver::resolve_target_classes(
+                        subject_text,
+                        access_kind,
+                        &rctx,
+                    ),
                 );
 
                 // Collect hover results from all union candidates,

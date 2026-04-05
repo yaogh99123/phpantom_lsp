@@ -219,9 +219,9 @@ pub(crate) fn resolve_variable_types(
         d.set(v);
         v
     });
-    // Clear the sticky depth-limited flag when the outermost call
-    // returns.  Inner calls leave it set so that every caller in
-    // the stack can observe it.
+    // Clear the depth-limited flag when the outermost call returns.
+    // Inner calls leave it set so that every caller in the stack
+    // can observe it.
     if new_depth == 0 {
         VAR_RESOLUTION_DEPTH_LIMITED.with(|f| f.set(false));
     }
@@ -1054,6 +1054,17 @@ fn resolve_variable_in_members<'b>(
                             return ResolvedType::from_classes(yield_results);
                         }
                     }
+
+                    // The concrete body was walked but produced no
+                    // results.  This can happen when instanceof
+                    // narrowing targeted an unresolvable class (e.g.
+                    // from a phar) and cleared the parameter type.
+                    // Do NOT fall through to the abstract-method
+                    // param fallback below — returning the un-narrowed
+                    // parameter type would cause false-positive
+                    // "unknown member" diagnostics for members that
+                    // only exist on the narrowed (unresolvable) class.
+                    return vec![];
                 } else {
                     // Cursor is not inside this method's body —
                     // skip to the next method so we don't

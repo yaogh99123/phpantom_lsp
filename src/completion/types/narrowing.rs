@@ -220,6 +220,17 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
         ctx.class_loader,
     );
     if narrowed.is_empty() {
+        // The instanceof target class could not be resolved (e.g. it
+        // lives inside a phar that we cannot index).  The developer
+        // wrote an explicit instanceof guard, so they clearly expect
+        // the variable to have that type in this branch.  Rather than
+        // keeping the un-narrowed type (which would cause false-
+        // positive "unknown member" diagnostics for members that only
+        // exist on the unresolvable subclass), clear the results so
+        // the variable appears untyped.  Untyped subjects are
+        // suppressed by the diagnostic engine, eliminating the false
+        // positives without losing any information we actually had.
+        results.clear();
         return;
     }
 

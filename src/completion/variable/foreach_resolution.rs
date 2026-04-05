@@ -523,11 +523,11 @@ fn resolve_foreach_expression_to_classes<'b>(
         return vec![];
     }
 
-    crate::completion::resolver::resolve_target_classes(
+    ResolvedType::into_arced_classes(crate::completion::resolver::resolve_target_classes(
         expr_text,
         crate::types::AccessKind::Arrow,
         &ctx.as_resolution_ctx(),
-    )
+    ))
 }
 
 /// Known interface/class names whose generic parameters describe

@@ -147,6 +147,15 @@ struct SubjectCacheKey {
     /// creating a block scope, so accesses before and after the
     /// assert must get separate cache entries.
     assert_offset: u32,
+    /// The byte offset of the member-access span for variable subjects
+    /// (excluding `$this`), or `0` for non-variable subjects.  This
+    /// ensures that accesses inside expression-level narrowing contexts
+    /// (ternary branches, inline `&&` chains) get independent cache
+    /// entries even when they share the same block-level
+    /// `narrowing_offset`.  Without this, a prior access outside the
+    /// ternary caches the un-narrowed type and the ternary-narrowed
+    /// access reuses that stale result.
+    access_offset: u32,
 }
 
 /// Per-pass cache mapping subject keys to their resolution outcomes.
@@ -365,6 +374,23 @@ impl Backend {
                     0
                 };
 
+            // For variable subjects, use the access span offset as a
+            // cache discriminator so that expression-level narrowing
+            // (ternary branches, inline && chains) produces
+            // independent entries.  Block-level narrowing (if/else)
+            // is already covered by `narrowing_offset`, but ternary
+            // expressions are standalone statements — they don't
+            // create a narrowing block.  Using the access offset
+            // ensures each member access is resolved at its own
+            // cursor position, which is what the unified resolution
+            // pipeline expects.
+            let access_offset =
+                if subject_text.starts_with('$') && !subject_text.starts_with("$this") {
+                    span.start
+                } else {
+                    0
+                };
+
             let cache_key = SubjectCacheKey {
                 subject_text: subject_text.clone(),
                 access_kind,
@@ -372,6 +398,7 @@ impl Backend {
                 var_def_offset,
                 narrowing_offset,
                 assert_offset,
+                access_offset,
             };
 
             let outcome = subject_cache
@@ -5483,6 +5510,141 @@ class Svc {
         assert!(
             diags.is_empty(),
             "in_array guard should still narrow union types, got: {diags:?}"
+        );
+    }
+
+    // ── Unresolvable instanceof target suppression ──────────────────
+
+    #[test]
+    fn no_diagnostic_when_instanceof_target_unresolvable_ternary() {
+        // When the instanceof target class cannot be resolved (e.g. it
+        // lives in a phar), the ternary then-branch should not produce
+        // false-positive diagnostics for members that only exist on the
+        // unresolvable subclass.
+        let php = r#"<?php
+interface Type {
+    public function describe(): string;
+}
+
+class Test {
+    /** @param Type $argType */
+    public function run(Type $argType): void {
+        $types = $argType instanceof UnionType ? $argType->getTypes() : [$argType];
+    }
+}
+"#;
+        // UnionType is intentionally not defined — simulates a phar class.
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics when instanceof target is unresolvable (ternary), got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_when_instanceof_target_unresolvable_if_body() {
+        // Same scenario but with an if-body instead of a ternary.
+        let php = r#"<?php
+interface Type {
+    public function describe(): string;
+}
+
+class Test {
+    public function run(Type $argType): void {
+        if ($argType instanceof UnionType) {
+            $argType->getTypes();
+        }
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics when instanceof target is unresolvable (if-body), got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_when_instanceof_target_unresolvable_assert() {
+        // Same scenario but with assert($var instanceof ...).
+        let php = r#"<?php
+interface Type {
+    public function describe(): string;
+}
+
+class Test {
+    public function run(Type $argType): void {
+        assert($argType instanceof UnionType);
+        $argType->getTypes();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics when instanceof target is unresolvable (assert), got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_when_instanceof_target_unresolvable_and_chain() {
+        // Inline && narrowing with unresolvable target.
+        let php = r#"<?php
+interface Type {
+    public function describe(): string;
+}
+
+function test(Type $t): void {
+    $t instanceof UnionType && $t->getTypes();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics when instanceof target is unresolvable (&& chain), got: {diags:?}"
+        );
+    }
+
+    // ── Regression: variable from method chain must still resolve ────
+
+    #[test]
+    fn no_unresolved_for_variable_assigned_from_method_chain() {
+        // A variable assigned from a method call chain must resolve
+        // correctly for diagnostics.  This catches regressions where
+        // the diagnostic outcome path diverges from completion/hover
+        // and incorrectly reports the variable as untyped.
+        let php = r#"<?php
+class DebtCollection {
+    public function isResolved(): bool { return false; }
+}
+
+class Order {
+    public function getDebtCollection(): ?DebtCollection { return null; }
+}
+
+class Period {
+    public function getOrder(): ?Order { return null; }
+}
+
+class Test {
+    public function run(Period $period): void {
+        $debt = $period->getOrder()?->getDebtCollection();
+        if ($debt) {
+            $debt->isResolved();
+        }
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for variable assigned from method chain, got: {diags:?}"
         );
     }
 }

@@ -41,7 +41,7 @@ use crate::completion::class_completion::{
 use crate::completion::named_args::{NamedArgContext, parse_existing_args};
 use crate::docblock::types::PHPDOC_TYPE_KEYWORDS;
 use crate::symbol_map::SymbolKind;
-use crate::types::ClassInfo;
+use crate::types::{ClassInfo, ResolvedType};
 use crate::types::{CompletionTarget, FileContext};
 use crate::util::{find_class_at_offset, position_to_byte_offset, position_to_offset};
 
@@ -911,7 +911,7 @@ impl Backend {
                         }
                     }
 
-                    resolved
+                    ResolvedType::into_arced_classes(resolved)
                 };
                 if candidates.is_empty() {
                     return vec![];

@@ -1108,10 +1108,12 @@ fn resolve_arg_variable_raw_type(
         let prop = &var_name[arrow_pos + 2..];
         // Only handle simple single-level property access for now.
         if !prop.is_empty() && !prop.contains("->") && !prop.contains('(') {
-            let base_classes = crate::completion::resolver::resolve_target_classes(
-                base,
-                crate::types::AccessKind::Arrow,
-                rctx,
+            let base_classes = ResolvedType::into_arced_classes(
+                crate::completion::resolver::resolve_target_classes(
+                    base,
+                    crate::types::AccessKind::Arrow,
+                    rctx,
+                ),
             );
             for cls in &base_classes {
                 if let Some(hint) =
@@ -1498,11 +1500,12 @@ fn resolve_rhs_function_call<'b>(
         //    When $f holds an object with an __invoke() method,
         //    $f() should return __invoke()'s return type.
         let rctx = ctx.as_resolution_ctx();
-        let var_classes = crate::completion::resolver::resolve_target_classes(
-            &var_name,
-            crate::types::AccessKind::Arrow,
-            &rctx,
-        );
+        let var_classes =
+            ResolvedType::into_arced_classes(crate::completion::resolver::resolve_target_classes(
+                &var_name,
+                crate::types::AccessKind::Arrow,
+                &rctx,
+            ));
         for owner in &var_classes {
             if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                 && let Some(ref ret) = invoke.return_type
@@ -1637,14 +1640,13 @@ fn resolve_rhs_method_call_inner<'b>(
                 // variable resolution pipeline returns nothing (e.g.
                 // for parameters that are resolved through the
                 // completion pipeline's subject resolution).
-                let classes: Vec<ClassInfo> = crate::completion::resolver::resolve_target_classes(
-                    &var,
-                    crate::types::AccessKind::Arrow,
-                    &ctx.as_resolution_ctx(),
-                )
-                .into_iter()
-                .map(Arc::unwrap_or_clone)
-                .collect();
+                let classes: Vec<ClassInfo> = ResolvedType::into_classes(
+                    crate::completion::resolver::resolve_target_classes(
+                        &var,
+                        crate::types::AccessKind::Arrow,
+                        &ctx.as_resolution_ctx(),
+                    ),
+                );
                 (classes, vec![])
             }
         } else {
@@ -2075,14 +2077,11 @@ fn resolve_rhs_property_access(
                     .collect()
             } else if let Expression::Variable(Variable::Direct(dv)) = obj {
                 let var = dv.name.to_string();
-                crate::completion::resolver::resolve_target_classes(
+                ResolvedType::into_classes(crate::completion::resolver::resolve_target_classes(
                     &var,
                     crate::types::AccessKind::Arrow,
                     &ctx.as_resolution_ctx(),
-                )
-                .into_iter()
-                .map(Arc::unwrap_or_clone)
-                .collect()
+                ))
             } else {
                 // Handle non-variable object expressions like
                 // `(new Canvas())->easel`, `getService()->prop`,
@@ -2130,10 +2129,7 @@ fn resolve_rhs_clone(clone_expr: &Clone<'_>, ctx: &VarResolutionCtx<'_>) -> Vec<
                 obj_text,
                 crate::types::AccessKind::Arrow,
                 &rctx,
-            )
-            .into_iter()
-            .map(|arc| ResolvedType::from_class(Arc::unwrap_or_clone(arc)))
-            .collect();
+            );
         }
     }
     vec![]

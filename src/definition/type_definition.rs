@@ -83,10 +83,12 @@ impl Backend {
                     ),
                 };
 
-                let candidates = crate::completion::resolver::resolve_target_classes(
-                    subject_text,
-                    access_kind,
-                    &rctx,
+                let candidates = ResolvedType::into_arced_classes(
+                    crate::completion::resolver::resolve_target_classes(
+                        subject_text,
+                        access_kind,
+                        &rctx,
+                    ),
                 );
 
                 // Resolve the member's return type / property type.

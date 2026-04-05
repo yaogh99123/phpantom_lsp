@@ -1494,10 +1494,12 @@ fn infer_callable_param_types_for_call(
                     function_loader: None,
                     resolved_class_cache: None,
                 };
-                let receiver_classes = crate::completion::resolver::resolve_target_classes(
-                    obj_text,
-                    AccessKind::Arrow,
-                    &rctx,
+                let receiver_classes = ResolvedType::into_arced_classes(
+                    crate::completion::resolver::resolve_target_classes(
+                        obj_text,
+                        AccessKind::Arrow,
+                        &rctx,
+                    ),
                 );
                 find_callable_params_on_receiver_classes(
                     &receiver_classes,
@@ -1529,10 +1531,12 @@ fn infer_callable_param_types_for_call(
                     function_loader: None,
                     resolved_class_cache: None,
                 };
-                let receiver_classes = crate::completion::resolver::resolve_target_classes(
-                    obj_text,
-                    AccessKind::Arrow,
-                    &rctx,
+                let receiver_classes = ResolvedType::into_arced_classes(
+                    crate::completion::resolver::resolve_target_classes(
+                        obj_text,
+                        AccessKind::Arrow,
+                        &rctx,
+                    ),
                 );
                 find_callable_params_on_receiver_classes(
                     &receiver_classes,

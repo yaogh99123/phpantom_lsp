@@ -144,7 +144,11 @@ impl Backend {
                 .into_iter()
                 .collect()
         } else {
-            super::resolver::resolve_target_classes(&subject_text, crate::AccessKind::Arrow, rctx)
+            ResolvedType::into_arced_classes(super::resolver::resolve_target_classes(
+                &subject_text,
+                crate::AccessKind::Arrow,
+                rctx,
+            ))
         };
 
         for owner in &owner_classes {
@@ -399,8 +403,9 @@ impl Backend {
                 let method_name = method.as_str();
 
                 // Resolve the base expression to class(es).
-                let lhs_classes: Vec<Arc<ClassInfo>> =
-                    super::resolver::resolve_target_classes_expr(base, AccessKind::Arrow, ctx);
+                let lhs_classes: Vec<Arc<ClassInfo>> = ResolvedType::into_arced_classes(
+                    super::resolver::resolve_target_classes_expr(base, AccessKind::Arrow, ctx),
+                );
 
                 let mut results = Vec::new();
                 for owner in &lhs_classes {
@@ -432,9 +437,13 @@ impl Backend {
 
                 let owner_class = if class.starts_with('$') {
                     // Variable holding a class-string (e.g. `$cls::make()`).
-                    super::resolver::resolve_target_classes(class, AccessKind::DoubleColon, ctx)
-                        .into_iter()
-                        .next()
+                    ResolvedType::into_arced_classes(super::resolver::resolve_target_classes(
+                        class,
+                        AccessKind::DoubleColon,
+                        ctx,
+                    ))
+                    .into_iter()
+                    .next()
                 } else {
                     super::resolver::resolve_static_owner_class(class, ctx)
                 };
@@ -659,8 +668,9 @@ impl Backend {
                 // 4. Resolve the variable's type and check for __invoke().
                 //    When $f holds an object with an __invoke() method,
                 //    $f() should return __invoke()'s return type.
-                let var_classes =
-                    super::resolver::resolve_target_classes(var_name, AccessKind::Arrow, ctx);
+                let var_classes = ResolvedType::into_arced_classes(
+                    super::resolver::resolve_target_classes(var_name, AccessKind::Arrow, ctx),
+                );
                 for owner in &var_classes {
                     if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                         && let Some(ref ret) = invoke.return_type
@@ -699,8 +709,9 @@ impl Backend {
             //    from a function name) ───────────────────────────────
             _ => {
                 // Resolve the callee expression to class(es).
-                let callee_classes =
-                    super::resolver::resolve_target_classes_expr(callee, AccessKind::Arrow, ctx);
+                let callee_classes = ResolvedType::into_arced_classes(
+                    super::resolver::resolve_target_classes_expr(callee, AccessKind::Arrow, ctx),
+                );
 
                 // When the callee resolves to an object with __invoke(),
                 // the call returns __invoke()'s return type, not the
@@ -1308,7 +1319,13 @@ impl Backend {
                 ctx,
             );
             if let Some(first) = classes.first() {
-                return Some(first.name.clone());
+                return Some(
+                    first
+                        .class_info
+                        .as_ref()
+                        .map(|ci| ci.name.clone())
+                        .unwrap_or_else(|| first.type_string.to_string()),
+                );
             }
         }
 
@@ -1402,8 +1419,9 @@ impl Backend {
                     .unwrap_or(&call_body[..pos]);
                 let method_name = &call_body[pos + 2..];
 
-                let lhs_classes =
-                    super::resolver::resolve_target_classes(lhs, AccessKind::Arrow, ctx);
+                let lhs_classes = ResolvedType::into_arced_classes(
+                    super::resolver::resolve_target_classes(lhs, AccessKind::Arrow, ctx),
+                );
                 for cls in &lhs_classes {
                     if let Some(rt) = crate::inheritance::resolve_method_return_type(
                         cls,
@@ -1447,8 +1465,9 @@ impl Backend {
                 .unwrap_or(&arg_text[..pos]);
             let prop_name = &arg_text[pos + 2..];
             if !prop_name.is_empty() && prop_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                let lhs_classes =
-                    super::resolver::resolve_target_classes(lhs, AccessKind::Arrow, ctx);
+                let lhs_classes = ResolvedType::into_arced_classes(
+                    super::resolver::resolve_target_classes(lhs, AccessKind::Arrow, ctx),
+                );
                 for cls in &lhs_classes {
                     if let Some(rt) =
                         crate::inheritance::resolve_property_type_hint(cls, prop_name, class_loader)

@@ -1849,6 +1849,20 @@ impl ResolvedType {
             .collect()
     }
 
+    /// Extract `Vec<Arc<ClassInfo>>` from `Vec<ResolvedType>`, wrapping
+    /// each class in an `Arc` and discarding entries that have no class
+    /// info (scalars, shapes, unresolvable types).
+    ///
+    /// This is the primary conversion used by callers of
+    /// `resolve_target_classes` that need `Arc<ClassInfo>` for
+    /// downstream resolution (completion, hover, definition, etc.).
+    pub(crate) fn into_arced_classes(resolved: Vec<ResolvedType>) -> Vec<Arc<ClassInfo>> {
+        resolved
+            .into_iter()
+            .filter_map(|rt| rt.class_info.map(Arc::new))
+            .collect()
+    }
+
     /// Run a narrowing function that operates on `&mut Vec<ClassInfo>`
     /// against a `Vec<ResolvedType>`, preserving type strings.
     ///

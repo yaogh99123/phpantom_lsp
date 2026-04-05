@@ -1,40 +1,5 @@
 # PHPantom — Bug Fixes
 
-## B10. `instanceof` ternary narrowing fails when target class is in a phar
-**Impact: Low · Effort: Low-Medium**
-
-Pattern:
-```php
-$types = $argType instanceof UnionType ? $argType->getTypes() : [$argType];
-```
-
-The type engine is unified: completion and diagnostics both use
-`resolve_variable_types` → `walk_statements_for_assignments` →
-`try_apply_ternary_instanceof_narrowing`. A local-class test
-(assignment RHS context, interface parameter, `instanceof` subclass
-in ternary condition) passes with zero diagnostics.
-
-The failure in the shared project is specific to PHPStan phar classes.
-`PHPStan\Type\UnionType` lives inside `phpstan.phar` and may not be
-loadable at resolution time, so `apply_instanceof_inclusion` silently
-fails (cannot resolve the class name to a `ClassInfo`), and the
-variable keeps its un-narrowed type (`Type`).
-
-**Observed in:** `DecimalDivThrowTypeExtension:54` — `$argType` is
-typed as `PHPStan\Type\Type`, `getTypes()` exists on `UnionType` but
-not on the `Type` interface. The `instanceof UnionType` check in the
-ternary condition should narrow the type in the then-branch.
-
-**Root cause:** The `instanceof` target class (`UnionType`) cannot be
-loaded from the phar, so `apply_instanceof_inclusion` has no
-`ClassInfo` to narrow to. The narrowing architecture itself is correct
-and unified across completion and diagnostics. The fix is either
-phar class indexing or suppressing diagnostics when the `instanceof`
-target class is unresolvable (since the developer clearly expects
-narrowing to occur).
-
----
-
 ## B12. `Collection::reduce()` generic return type not inferred
 **Impact: Low · Effort: Medium**
 
@@ -102,4 +67,3 @@ unresolvable because the shape is lost.
 **Depends on:** T19 (structured type representation) or at minimum
 a basic array shape inference that preserves `array{key: Type}` from
 literal array constructors and propagates it through foreach.
-
