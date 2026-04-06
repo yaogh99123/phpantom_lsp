@@ -1727,7 +1727,23 @@ fn resolve_rhs_method_call_inner<'b>(
         );
         if !results.is_empty() {
             let classes: Vec<ClassInfo> = results.into_iter().map(Arc::unwrap_or_clone).collect();
-            return match ret_type_string {
+            // When the method has a conditional return type, the
+            // resolved classes came from evaluating the conditional
+            // (e.g. `$type is class-string<T> ? T : mixed` resolved
+            // to the concrete class).  In that case, using the
+            // method's declared return type (typically `mixed`) as
+            // the type hint would be misleading.  Skip it so that
+            // `from_classes` uses the resolved class names instead.
+            let has_conditional = merged
+                .methods
+                .iter()
+                .any(|m| m.name == method_name && m.conditional_return.is_some());
+            let effective_hint = if has_conditional {
+                None
+            } else {
+                ret_type_string
+            };
+            return match effective_hint {
                 Some(hint) => ResolvedType::from_classes_with_hint(classes, hint),
                 None => ResolvedType::from_classes(classes),
             };
@@ -1912,7 +1928,20 @@ fn resolve_rhs_static_call(
             if !results.is_empty() {
                 let classes: Vec<ClassInfo> =
                     results.into_iter().map(Arc::unwrap_or_clone).collect();
-                return match ret_type_string {
+                // When the method has a conditional return type, the
+                // resolved classes came from evaluating the conditional.
+                // Using the method's declared return type (typically
+                // `mixed`) as the type hint would be misleading.
+                let has_conditional = merged
+                    .methods
+                    .iter()
+                    .any(|m| m.name == method_name && m.conditional_return.is_some());
+                let effective_hint = if has_conditional {
+                    None
+                } else {
+                    ret_type_string
+                };
+                return match effective_hint {
                     Some(hint) => ResolvedType::from_classes_with_hint(classes, hint),
                     None => ResolvedType::from_classes(classes),
                 };

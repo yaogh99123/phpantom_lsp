@@ -194,7 +194,7 @@ pub fn extract_template_param_bindings_from_info(
 
     let mut results = Vec::new();
 
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::PsalmParam, TagKind::Param]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;
@@ -609,7 +609,7 @@ fn find_class_string_param_name_from_info(
     info: &DocblockInfo,
     template_name: &str,
 ) -> Option<String> {
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::PsalmParam, TagKind::Param]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;

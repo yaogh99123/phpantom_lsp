@@ -9756,3 +9756,52 @@ function run(): void {
         text
     );
 }
+
+#[test]
+fn hover_variable_assigned_from_conditional_return_shows_resolved_type() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class SubmissionProducerMessage {
+    public function getId(): int {}
+}
+
+class Serializer {
+    /**
+     * @template TObject of object
+     * @template TType of string|class-string<TObject>
+     *
+     * @param TType                $type
+     * @param array<string, mixed> $context
+     *
+     * @phpstan-return ($type is class-string<TObject> ? TObject : mixed)
+     * @psalm-return (TType is class-string<TObject> ? TObject : mixed)
+     */
+    public function deserialize(mixed $data, string $type, string $format, array $context = []): mixed {}
+}
+
+class Consumer {
+    private Serializer $serializer;
+
+    public function handle(string $buffer): void {
+        $message = $this->serializer->deserialize($buffer, SubmissionProducerMessage::class, 'json');
+        $message->getId();
+    }
+}
+"#;
+
+    // Hover on `$message` at its usage site (line 23, character 9)
+    let hover = hover_at(&backend, uri, content, 23, 9).expect("expected hover on $message");
+    let text = hover_text(&hover);
+    // The type should be SubmissionProducerMessage, NOT SubmissionProducerMessage|mixed
+    assert!(
+        text.contains("SubmissionProducerMessage"),
+        "Should show SubmissionProducerMessage, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("mixed"),
+        "Should NOT show mixed when conditional resolves to a concrete class, got: {}",
+        text
+    );
+}

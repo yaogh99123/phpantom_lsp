@@ -191,6 +191,9 @@ const TYPE_FIRST_KINDS: &[TagKind] = &[
     TagKind::PhpstanReturn,
     TagKind::PhpstanParam,
     TagKind::PhpstanVar,
+    TagKind::PsalmReturn,
+    TagKind::PsalmParam,
+    TagKind::PsalmVar,
     TagKind::PhpstanAssert,
     TagKind::PhpstanAssertIfTrue,
     TagKind::PhpstanAssertIfFalse,
@@ -200,7 +203,12 @@ const TYPE_FIRST_KINDS: &[TagKind] = &[
 ];
 
 /// Tag names (for `TagKind::Other`) whose description starts with a type.
-const TYPE_FIRST_OTHER_NAMES: &[&str] = &["psalm-return", "psalm-param", "psalm-var"];
+///
+/// Note: `@psalm-return`, `@psalm-param`, and `@psalm-var` are no longer
+/// listed here because `mago-docblock` now maps them to dedicated
+/// `TagKind::PsalmReturn` / `PsalmParam` / `PsalmVar` variants (handled
+/// in `TYPE_FIRST_KINDS` above).
+const TYPE_FIRST_OTHER_NAMES: &[&str] = &[];
 
 use crate::docblock::templates::{TEMPLATE_KINDS, variance_for};
 
@@ -351,8 +359,10 @@ pub(super) fn extract_param_var_spans(docblock: &str, base_offset: u32) -> Vec<(
     let mut results = Vec::new();
 
     for tag in &info.tags {
-        let is_param = matches!(tag.kind, TagKind::Param | TagKind::PhpstanParam)
-            || (tag.kind == TagKind::Other && tag.name == "psalm-param");
+        let is_param = matches!(
+            tag.kind,
+            TagKind::Param | TagKind::PhpstanParam | TagKind::PsalmParam
+        );
         if !is_param {
             continue;
         }

@@ -43,12 +43,26 @@ use crate::php_type::PhpType;
 /// Returns the cleaned type string (leading `\` stripped) or `None` if no
 /// `@return` tag is found.
 pub fn extract_return_type(docblock: &str) -> Option<String> {
-    extract_type_via_mago(docblock, &[TagKind::PhpstanReturn, TagKind::Return])
+    extract_type_via_mago(
+        docblock,
+        &[
+            TagKind::PhpstanReturn,
+            TagKind::PsalmReturn,
+            TagKind::Return,
+        ],
+    )
 }
 
 /// Like [`extract_return_type`], but operates on a pre-parsed [`DocblockInfo`].
 pub fn extract_return_type_from_info(info: &DocblockInfo) -> Option<String> {
-    extract_type_via_mago_from_info(info, &[TagKind::PhpstanReturn, TagKind::Return])
+    extract_type_via_mago_from_info(
+        info,
+        &[
+            TagKind::PhpstanReturn,
+            TagKind::PsalmReturn,
+            TagKind::Return,
+        ],
+    )
 }
 
 /// Extract the deprecation message from a `@deprecated` PHPDoc tag.
@@ -380,12 +394,18 @@ pub fn extract_type_assertions_from_info(info: &DocblockInfo) -> Vec<TypeAsserti
 ///   - `/** @var Session */`
 ///   - `/** @var \App\Models\User */`
 pub fn extract_var_type(docblock: &str) -> Option<String> {
-    extract_type_via_mago(docblock, &[TagKind::PhpstanVar, TagKind::Var])
+    extract_type_via_mago(
+        docblock,
+        &[TagKind::PhpstanVar, TagKind::PsalmVar, TagKind::Var],
+    )
 }
 
 /// Like [`extract_var_type`], but operates on a pre-parsed [`DocblockInfo`].
 pub fn extract_var_type_from_info(info: &DocblockInfo) -> Option<String> {
-    extract_type_via_mago_from_info(info, &[TagKind::PhpstanVar, TagKind::Var])
+    extract_type_via_mago_from_info(
+        info,
+        &[TagKind::PhpstanVar, TagKind::PsalmVar, TagKind::Var],
+    )
 }
 
 /// Extract the type and optional variable name from a `@var` PHPDoc tag.
@@ -404,7 +424,7 @@ pub fn extract_var_type_with_name(docblock: &str) -> Option<(String, Option<Stri
 pub fn extract_var_type_with_name_from_info(
     info: &DocblockInfo,
 ) -> Option<(String, Option<String>)> {
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanVar, TagKind::Var]) {
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanVar, TagKind::PsalmVar, TagKind::Var]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;
@@ -582,7 +602,7 @@ pub fn extract_param_raw_type(docblock: &str, var_name: &str) -> Option<String> 
 
 /// Like [`extract_param_raw_type`], but operates on a pre-parsed [`DocblockInfo`].
 pub fn extract_param_raw_type_from_info(info: &DocblockInfo, var_name: &str) -> Option<String> {
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::PsalmParam, TagKind::Param]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;
@@ -627,7 +647,7 @@ pub fn extract_all_param_tags_from_info(info: &DocblockInfo) -> Vec<(String, Str
 
     // Only match `@param` and `@phpstan-param`, not compound tags like
     // `@param-closure-this` (those have their own TagKind).
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::PsalmParam, TagKind::Param]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;
@@ -666,7 +686,7 @@ pub fn extract_param_types_positional_from_info(
 ) -> Vec<(Option<String>, String)> {
     let mut results = Vec::new();
 
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::PsalmParam, TagKind::Param]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;
@@ -752,7 +772,7 @@ pub fn extract_param_description(docblock: &str, var_name: &str) -> Option<Strin
 
 /// Like [`extract_param_description`], but operates on a pre-parsed [`DocblockInfo`].
 pub fn extract_param_description_from_info(info: &DocblockInfo, var_name: &str) -> Option<String> {
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::PsalmParam, TagKind::Param]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;
@@ -805,7 +825,11 @@ pub fn extract_return_description(docblock: &str) -> Option<String> {
 
 /// Like [`extract_return_description`], but operates on a pre-parsed [`DocblockInfo`].
 pub fn extract_return_description_from_info(info: &DocblockInfo) -> Option<String> {
-    for tag in info.tags_by_kinds(&[TagKind::PhpstanReturn, TagKind::Return]) {
+    for tag in info.tags_by_kinds(&[
+        TagKind::PhpstanReturn,
+        TagKind::PsalmReturn,
+        TagKind::Return,
+    ]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
             continue;
