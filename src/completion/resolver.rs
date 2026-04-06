@@ -801,7 +801,7 @@ pub(crate) fn resolve_target_classes_expr(
             if let SubjectExpr::CallExpr { callee, args_text } = base.as_ref() {
                 let call_raw = resolve_call_raw_return_type(callee, args_text, ctx);
                 if let Some(raw) = call_raw {
-                    let candidates = std::iter::once(raw);
+                    let candidates = std::iter::once(PhpType::parse(&raw));
                     if let Some(resolved) =
                         super::source::helpers::try_chained_array_access_with_candidates(
                             candidates,
@@ -834,7 +834,7 @@ pub(crate) fn resolve_target_classes_expr(
             // parameters like `array<string, IntCollection>` or
             // `Collection<int, Translation>` that would be lost if
             // we resolved through `type_hint_to_classes` first.
-            let property_raw_type = if let SubjectExpr::PropertyChain {
+            let property_raw_type: Option<PhpType> = if let SubjectExpr::PropertyChain {
                 base: prop_base,
                 property,
             } = base.as_ref()
@@ -843,18 +843,18 @@ pub(crate) fn resolve_target_classes_expr(
                     resolved_to_arcs(resolve_target_classes_expr(prop_base, access_kind, ctx));
                 owner_arcs.iter().find_map(|cls| {
                     crate::inheritance::resolve_property_type_hint(cls, property, class_loader)
-                        .map(|ty| ty.to_string())
                 })
             } else {
                 None
             };
 
-            let docblock_type = docblock::find_iterable_raw_type_in_source(
+            let docblock_type: Option<PhpType> = docblock::find_iterable_raw_type_in_source(
                 ctx.content,
                 ctx.cursor_offset as usize,
                 &base_var,
-            );
-            let ast_type = {
+            )
+            .map(|s| PhpType::parse(&s));
+            let ast_type: Option<PhpType> = {
                 let dummy_class;
                 let effective_class = match current_class {
                     Some(cc) => cc,
@@ -875,7 +875,7 @@ pub(crate) fn resolve_target_classes_expr(
                 if resolved.is_empty() {
                     None
                 } else {
-                    Some(ResolvedType::type_strings_joined(&resolved))
+                    Some(ResolvedType::types_joined(&resolved))
                 }
             };
 

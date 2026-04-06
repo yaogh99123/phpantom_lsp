@@ -840,108 +840,118 @@ fn resolve_rhs_array_access<'b>(
     // Resolve the base expression's raw type string.
     // For bare variables (`$var['key']`), use docblock or assignment scanning.
     // For property chains (`$obj->prop['key']`), resolve the property type.
-    let raw_type = if let Expression::Variable(Variable::Direct(base_dv)) = current_expr {
-        let base_var = base_dv.name.to_string();
-        docblock::find_iterable_raw_type_in_source(ctx.content, access_offset, &base_var).or_else(
-            || {
-                let resolved = super::resolution::resolve_variable_types(
-                    &base_var,
-                    ctx.current_class,
-                    ctx.all_classes,
-                    ctx.content,
-                    access_offset as u32,
-                    ctx.class_loader,
-                    Loaders::with_function(ctx.function_loader()),
-                );
-                if resolved.is_empty() {
-                    None
-                } else {
-                    Some(ResolvedType::type_strings_joined(&resolved))
-                }
-            },
-        )
-    } else {
-        // Non-variable base (e.g. property access `$obj->prop['key']`,
-        // method call `$obj->getItems()['key']`, etc.).
-        // Resolve the base expression to get its type string.
-        let base_resolved = resolve_rhs_expression(current_expr, ctx);
-        if base_resolved.is_empty() {
-            None
+    let raw_type: Option<PhpType> =
+        if let Expression::Variable(Variable::Direct(base_dv)) = current_expr {
+            let base_var = base_dv.name.to_string();
+            docblock::find_iterable_raw_type_in_source(ctx.content, access_offset, &base_var)
+                .map(|s| PhpType::parse(&s))
+                .or_else(|| {
+                    let resolved = super::resolution::resolve_variable_types(
+                        &base_var,
+                        ctx.current_class,
+                        ctx.all_classes,
+                        ctx.content,
+                        access_offset as u32,
+                        ctx.class_loader,
+                        Loaders::with_function(ctx.function_loader()),
+                    );
+                    if resolved.is_empty() {
+                        None
+                    } else {
+                        Some(ResolvedType::types_joined(&resolved))
+                    }
+                })
         } else {
-            Some(ResolvedType::type_strings_joined(&base_resolved))
-        }
-    };
+            // Non-variable base (e.g. property access `$obj->prop['key']`,
+            // method call `$obj->getItems()['key']`, etc.).
+            // Resolve the base expression to get its type.
+            let base_resolved = resolve_rhs_expression(current_expr, ctx);
+            if base_resolved.is_empty() {
+                None
+            } else {
+                Some(ResolvedType::types_joined(&base_resolved))
+            }
+        };
 
-    let Some(mut current_type) = raw_type else {
+    let Some(mut current) = raw_type else {
         return vec![];
     };
 
     // Expand type aliases so that shape/generic extraction can see the
     // underlying type (e.g. a `@phpstan-type` alias).
+    let current_str = current.to_string();
     if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-        &current_type,
+        &current_str,
         &ctx.current_class.name,
         ctx.all_classes,
         ctx.class_loader,
     ) {
-        current_type = expanded;
+        current = PhpType::parse(&expanded);
     }
 
     // Walk each bracket segment, narrowing the type at each step.
     for seg in &segments {
-        let parsed = crate::php_type::PhpType::parse(&current_type);
-
         // Try pure-type extraction first (array shapes, generics).
         let extracted = match seg {
-            ArrayBracketSegment::StringKey(key) => parsed
+            ArrayBracketSegment::StringKey(key) => current
                 .shape_value_type(key)
-                .map(|t| t.to_string())
-                .or_else(|| parsed.extract_value_type(true).map(|t| t.to_string())),
-            ArrayBracketSegment::ElementAccess => {
-                parsed.extract_value_type(true).map(|t| t.to_string())
-            }
+                .cloned()
+                .or_else(|| current.extract_value_type(true).cloned()),
+            ArrayBracketSegment::ElementAccess => current.extract_value_type(true).cloned(),
         };
 
         if let Some(element) = extracted {
-            current_type = element;
-            continue;
+            current = element;
+        } else {
+            // Fallback: when the current type is a plain class name (e.g.
+            // `OpeningHours`), resolve the class and check its iterable
+            // generics (`@extends`, `@implements`) for the element type.
+            // This handles `$obj->prop['key']` where `prop` is a collection
+            // class like `OpeningHours extends DataCollection<string, Day>`.
+            let type_str = current.to_string();
+            let class_element = crate::completion::type_resolution::type_hint_to_classes(
+                &type_str,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            )
+            .into_iter()
+            .find_map(|cls| {
+                let merged = crate::virtual_members::resolve_class_fully(&cls, ctx.class_loader);
+                super::foreach_resolution::extract_iterable_element_type_from_class(
+                    &merged,
+                    ctx.class_loader,
+                )
+            });
+
+            if let Some(element) = class_element {
+                current = PhpType::parse(&element);
+            } else {
+                return vec![];
+            }
         }
 
-        // Fallback: when the current type is a plain class name (e.g.
-        // `OpeningHours`), resolve the class and check its iterable
-        // generics (`@extends`, `@implements`) for the element type.
-        // This handles `$obj->prop['key']` where `prop` is a collection
-        // class like `OpeningHours extends DataCollection<string, Day>`.
-        let class_element = crate::completion::type_resolution::type_hint_to_classes(
-            &current_type,
+        // After each segment, the resulting type might itself be an
+        // alias (e.g. a shape value defined as another alias).
+        let seg_str = current.to_string();
+        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
+            &seg_str,
             &ctx.current_class.name,
             ctx.all_classes,
             ctx.class_loader,
-        )
-        .into_iter()
-        .find_map(|cls| {
-            let merged = crate::virtual_members::resolve_class_fully(&cls, ctx.class_loader);
-            super::foreach_resolution::extract_iterable_element_type_from_class(
-                &merged,
-                ctx.class_loader,
-            )
-        });
-
-        if let Some(element) = class_element {
-            current_type = element;
-        } else {
-            return vec![];
+        ) {
+            current = PhpType::parse(&expanded);
         }
     }
 
     ResolvedType::from_classes_with_hint(
-        crate::completion::type_resolution::type_hint_to_classes(
-            &current_type,
+        crate::completion::type_resolution::type_hint_to_classes_typed(
+            &current,
             &ctx.current_class.name,
             ctx.all_classes,
             ctx.class_loader,
         ),
-        PhpType::parse(&current_type),
+        current,
     )
 }
 

@@ -17,7 +17,7 @@
 ///   `$fn = strlen(...)` or `$fn = $obj->method(...)`.
 /// - **`try_chained_array_access_with_candidates`** /
 ///   **`walk_array_segments_and_resolve`** — walk bracket segments on
-///   candidate raw type strings to resolve array access chains.
+///   candidate `PhpType` values to resolve array access chains.
 ///
 /// All functions in this module are free functions (not methods on
 /// `Backend`).  Cross-module dependencies that previously used `Self::`
@@ -485,13 +485,13 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
 /// Resolve a chained array access, trying each candidate raw type
 /// in order until one succeeds through the full segment walk.
 ///
-/// Each candidate raw type string is fed through
+/// Each candidate `PhpType` is fed through
 /// `walk_array_segments_and_resolve`.  The first that resolves
 /// through the segment walk and, if it produces a non-empty
 /// `ClassInfo` set, returned immediately.  Returns `None` when no
 /// candidate succeeds.
 pub(in crate::completion) fn try_chained_array_access_with_candidates<'a>(
-    candidates: impl Iterator<Item = String> + 'a,
+    candidates: impl Iterator<Item = PhpType> + 'a,
     segments: &[BracketSegment],
     current_class: Option<&ClassInfo>,
     all_classes: &[Arc<ClassInfo>],
@@ -499,9 +499,9 @@ pub(in crate::completion) fn try_chained_array_access_with_candidates<'a>(
 ) -> Option<Vec<ClassInfo>> {
     let current_class_name = current_class.map(|c| c.name.as_str()).unwrap_or("");
 
-    for raw_type in candidates {
+    for candidate in candidates {
         if let Some(result) = walk_array_segments_and_resolve(
-            &raw_type,
+            &candidate,
             segments,
             current_class_name,
             all_classes,
@@ -514,35 +514,38 @@ pub(in crate::completion) fn try_chained_array_access_with_candidates<'a>(
     None
 }
 
-/// Walk bracket segments on a raw type string, then resolve the
-/// resulting type to `ClassInfo`.
+/// Walk bracket segments on a `PhpType`, then resolve the resulting
+/// type to `ClassInfo`.
 ///
 /// Returns `Some(classes)` when the full segment chain resolves
 /// successfully, or `None` when a segment cannot be applied (e.g.
 /// the array shape does not contain the requested key).
 fn walk_array_segments_and_resolve(
-    raw_type: &str,
+    base_type: &PhpType,
     segments: &[BracketSegment],
     current_class_name: &str,
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Option<Vec<ClassInfo>> {
-    let mut current_str = raw_type.to_string();
-
     // Expand type aliases before walking segments.  The raw type may
     // be an alias name like `UserData` that resolves to
     // `array{name: string, pen: Pen}`.  Without expansion the
     // segment walk would fail to extract shape values.
-    if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-        &current_str,
-        current_class_name,
-        all_classes,
-        class_loader,
-    ) {
-        current_str = expanded;
-    }
-
-    let mut current = PhpType::parse(&current_str);
+    let mut current = if let PhpType::Named(_) = base_type {
+        let name_str = base_type.to_string();
+        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
+            &name_str,
+            current_class_name,
+            all_classes,
+            class_loader,
+        ) {
+            PhpType::parse(&expanded)
+        } else {
+            base_type.clone()
+        }
+    } else {
+        base_type.clone()
+    };
 
     for seg in segments {
         // Try pure-type extraction first (array shapes, generics).

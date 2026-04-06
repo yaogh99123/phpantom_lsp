@@ -428,7 +428,7 @@ The remaining work is eliminating `PhpType -> String -> PhpType`
 round-trips at internal API boundaries. Many functions still accept
 `&str` or return `Option<String>` for types, forcing callers to
 stringify and downstream consumers to re-parse. The concrete migration
-tasks are tracked as T26 through T30.
+tasks are tracked as T27 through T30.
 
 Subtype checking (`is Cat a subtype of Animal?`), union simplification
 (`string|string`, `true|false -> bool`), and intersection distribution
@@ -591,40 +591,6 @@ hover, diagnostics) once the forward walker covers enough cases.
 statement analyzers. Both converge on the same architecture: the
 scope is the single source of truth, populated eagerly as the walk
 progresses.
-
----
-
-## T26. Carry `PhpType` through bracket-access segment walks
-**Impact: High · Effort: Low**
-
-In `rhs_resolution.rs` (`resolve_rhs_array_access`, ~L885-915), the
-bracket-access segment walk carries `current_type` as a `String`. On
-every iteration it re-parses to `PhpType`, calls `.shape_value_type()`
-or `.extract_value_type()`, then stringifies the result to continue.
-For chained access like `$result['items'][0]['name']` this produces a
-`PhpType -> String -> PhpType` round-trip per bracket level.
-
-A similar pattern exists in `resolver.rs`
-(`try_chained_array_access_with_candidates`) where candidates arrive
-as `String` even though callers already have `PhpType` values.
-
-**What to change:**
-
-1. In `resolve_rhs_array_access`, change `current_type` from `String`
-   to `PhpType`. Call `.shape_value_type()` / `.extract_value_type()`
-   directly and assign the result without stringifying. Only convert
-   to string at the end for the final `type_hint_to_classes` call.
-
-2. In `resolver.rs`, change `try_chained_array_access_with_candidates`
-   to accept `PhpType` candidates instead of `String`. Update the
-   callers (`resolve_target_classes_expr` ArrayAccess branch,
-   `resolve_property_type_hint` call site) to pass `PhpType` directly
-   instead of stringifying.
-
-**Files:** `src/completion/variable/rhs_resolution.rs`,
-`src/completion/resolver.rs`.
-
-**Part of:** T19 (structured type representation migration).
 
 ---
 
