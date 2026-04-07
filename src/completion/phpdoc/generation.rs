@@ -1051,12 +1051,12 @@ pub(crate) fn enrichment_plain(
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Option<String> {
     let pt = match type_hint {
-        None => return Some("mixed".to_string()),
+        None => return Some(PhpType::mixed().to_string()),
         Some(t) => t,
     };
 
     if is_bare_array(pt) {
-        return Some(PhpType::Generic("array".into(), vec![PhpType::mixed()]).to_string());
+        return Some(PhpType::generic_array_val(PhpType::mixed()).to_string());
     }
 
     if is_callable_keyword(pt) {
@@ -1080,7 +1080,7 @@ pub(crate) fn enrichment_plain(
                         let name = callable_display_name(member);
                         format!("({}(): mixed)", name)
                     } else if is_bare_array(member) {
-                        PhpType::Generic("array".into(), vec![PhpType::mixed()]).to_string()
+                        PhpType::generic_array_val(PhpType::mixed()).to_string()
                     } else {
                         member.to_string()
                     }
@@ -1266,10 +1266,7 @@ fn build_function_snippet(
         let inferred = body_inferred.filter(|t| {
             !t.is_void()
                 && !t.is_mixed()
-                && sym
-                    .return_type
-                    .as_ref()
-                    .is_none_or(|s| t.to_string() != s.to_string())
+                && sym.return_type.as_ref().is_none_or(|s| !t.equivalent(s))
         });
         // Fall back to signature-based enrichment when body inference
         // doesn't produce anything useful.
@@ -1379,10 +1376,7 @@ fn build_function_plain(
         let inferred = body_inferred.filter(|t| {
             !t.is_void()
                 && !t.is_mixed()
-                && sym
-                    .return_type
-                    .as_ref()
-                    .is_none_or(|s| t.to_string() != s.to_string())
+                && sym.return_type.as_ref().is_none_or(|s| !t.equivalent(s))
         });
         // Fall back to signature-based enrichment when body inference
         // doesn't produce anything useful.
@@ -1690,7 +1684,7 @@ fn property_var_type_snippet(
             *tab_stop += 1;
             s
         }
-        Some(PhpType::Named(s)) if s.eq_ignore_ascii_case("array") => {
+        Some(th) if th.is_bare_array() => {
             let s = format!("${{{}:array}}", *tab_stop);
             *tab_stop += 1;
             s
@@ -1729,8 +1723,8 @@ fn property_var_type_plain(
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> String {
     match type_hint {
-        None => "mixed".to_string(),
-        Some(PhpType::Named(s)) if s.eq_ignore_ascii_case("array") => "array".to_string(),
+        None => PhpType::mixed().to_string(),
+        Some(th) if th.is_bare_array() => "array".to_string(),
         Some(th) => {
             let shortened = th.shorten();
             let clean = shortened.to_string();

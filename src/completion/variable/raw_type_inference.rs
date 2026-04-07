@@ -74,7 +74,7 @@ pub(in crate::completion) fn infer_array_literal_raw_type<'b>(
     } else {
         PhpType::Union(types)
     };
-    Some(PhpType::Generic("list".into(), vec![elem_type]))
+    Some(PhpType::list(elem_type))
 }
 
 /// Extract a string representation of an array key expression.
@@ -89,7 +89,7 @@ fn extract_array_key_text<'b>(key: &'b Expression<'b>) -> String {
             })
         }
         Expression::Literal(Literal::Integer(i)) => i.raw.to_string(),
-        _ => "mixed".to_string(),
+        _ => PhpType::mixed().to_string(),
     }
 }
 
@@ -191,7 +191,7 @@ pub(in crate::completion) fn resolve_array_func_raw_type(
     if func_name.eq_ignore_ascii_case("array_map")
         && let Some(element_type) = extract_array_map_element_type(args, ctx)
     {
-        return Some(PhpType::Generic("list".into(), vec![element_type]));
+        return Some(PhpType::list(element_type));
     }
 
     // iterator_to_array: converts an iterator to an array, preserving

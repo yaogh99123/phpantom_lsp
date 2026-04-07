@@ -72,7 +72,7 @@ fn extract_unused_type(message: &str) -> Option<&str> {
 /// Also handles `?Type` (nullable shorthand): `?string` with unused
 /// `null` becomes `string`, and `?string` with unused `string` becomes
 /// `null`.
-fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<String> {
+fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<PhpType> {
     let parsed = PhpType::parse(full_type);
     let unused_parsed = PhpType::parse(unused_type);
 
@@ -93,7 +93,7 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<String> 
                 return None;
             }
 
-            Some(format_type_list(&remaining, "|").to_string())
+            Some(format_type_list(&remaining, "|"))
         }
         PhpType::Intersection(members) => {
             let remaining: Vec<&PhpType> = members
@@ -109,16 +109,16 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<String> 
                 return None;
             }
 
-            Some(format_type_list(&remaining, "&").to_string())
+            Some(format_type_list(&remaining, "&"))
         }
         PhpType::Nullable(inner) => {
             // `?T` is equivalent to `T|null`.
             if types_match(&unused_parsed, &PhpType::null()) {
                 // Remove the null → just `T`.
-                Some(format!("{}", inner))
+                Some((**inner).clone())
             } else if types_match(inner, &unused_parsed) {
                 // Remove the inner type → just `null`.
-                Some("null".to_string())
+                Some(PhpType::null())
             } else {
                 None
             }
@@ -496,8 +496,9 @@ impl Backend {
             && let Some(new_type) = remove_type_from_union(&native_type, unused_type)
         {
             // Convert the new type to a valid native hint.
-            let parsed = PhpType::parse(&new_type);
-            let native_hint = parsed.to_native_hint().unwrap_or_else(|| new_type.clone());
+            let native_hint = new_type
+                .to_native_hint()
+                .unwrap_or_else(|| new_type.to_string());
 
             if let Some(edit) = find_and_replace_native_return_type(
                 &lines,
@@ -526,7 +527,7 @@ impl Backend {
                 &lines,
                 docblock_info.doc_start_line,
                 docblock_info.doc_end_line,
-                &new_type,
+                &new_type.to_string(),
             )
         {
             edits.push(edit);
@@ -649,7 +650,7 @@ mod tests {
     fn removes_null_from_string_null() {
         assert_eq!(
             remove_type_from_union("string|null", "null"),
-            Some("string".to_string())
+            Some(PhpType::parse("string"))
         );
     }
 
@@ -657,7 +658,7 @@ mod tests {
     fn removes_string_from_string_null() {
         assert_eq!(
             remove_type_from_union("string|null", "string"),
-            Some("null".to_string())
+            Some(PhpType::parse("null"))
         );
     }
 
@@ -665,7 +666,7 @@ mod tests {
     fn removes_from_three_member_union() {
         assert_eq!(
             remove_type_from_union("string|int|null", "null"),
-            Some("string|int".to_string())
+            Some(PhpType::parse("string|int"))
         );
     }
 
@@ -673,7 +674,7 @@ mod tests {
     fn removes_middle_member() {
         assert_eq!(
             remove_type_from_union("string|int|bool", "int"),
-            Some("string|bool".to_string())
+            Some(PhpType::parse("string|bool"))
         );
     }
 
@@ -681,7 +682,7 @@ mod tests {
     fn removes_from_intersection() {
         assert_eq!(
             remove_type_from_union("Foo&Bar", "Bar"),
-            Some("Foo".to_string())
+            Some(PhpType::parse("Foo"))
         );
     }
 
@@ -689,7 +690,7 @@ mod tests {
     fn removes_null_from_nullable() {
         assert_eq!(
             remove_type_from_union("?string", "null"),
-            Some("string".to_string())
+            Some(PhpType::parse("string"))
         );
     }
 
@@ -697,7 +698,7 @@ mod tests {
     fn removes_inner_from_nullable() {
         assert_eq!(
             remove_type_from_union("?string", "string"),
-            Some("null".to_string())
+            Some(PhpType::parse("null"))
         );
     }
 

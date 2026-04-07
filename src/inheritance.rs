@@ -1106,7 +1106,7 @@ pub(crate) fn apply_generic_args(class: &ClassInfo, type_args: &[PhpType]) -> Cl
 /// when fewer arguments than template parameters are provided.
 fn is_key_like_bound(bound: &PhpType) -> bool {
     match bound {
-        PhpType::Named(n) => n == "array-key" || bound.is_int() || bound.is_string_type(),
+        PhpType::Named(_) => bound.is_array_key() || bound.is_int() || bound.is_string_type(),
         PhpType::Union(members) => {
             // `int|string` is equivalent to `array-key`.
             !members.is_empty() && members.iter().all(|m| m.is_int() || m.is_string_type())

@@ -40,6 +40,7 @@ use crate::completion::class_completion::{
 };
 use crate::completion::named_args::{NamedArgContext, parse_existing_args};
 use crate::docblock::types::PHPDOC_TYPE_KEYWORDS;
+use crate::php_type::PhpType;
 use crate::symbol_map::SymbolKind;
 use crate::types::{ClassInfo, ResolvedType};
 use crate::types::{CompletionTarget, FileContext};
@@ -558,7 +559,7 @@ impl Backend {
                         let detail = type_hint
                             .as_ref()
                             .map(|t| t.to_string())
-                            .unwrap_or_else(|| "mixed".to_string());
+                            .unwrap_or_else(|| PhpType::mixed().to_string());
                         CompletionItem {
                             label: name.clone(),
                             kind: Some(CompletionItemKind::VARIABLE),

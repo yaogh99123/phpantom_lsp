@@ -151,32 +151,40 @@ fn attribute_placeholder(param: &ParameterInfo) -> (String, String, String) {
     // `string|null` both yield `string`) via `PhpType::non_null_type()`
     // instead of manual `?`-prefix stripping on strings.
     let hint = param.native_type_hint.as_ref().or(param.type_hint.as_ref());
-    let base_str = match hint {
+    let base_type = match hint {
         Some(t) => match t.non_null_type() {
-            Some(inner) => inner.to_string(),
-            None => t.to_string(),
+            Some(inner) => inner,
+            None => t.clone(),
         },
-        None => String::new(),
+        None => {
+            // No type hint — use the bare parameter name.
+            let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+            return (String::new(), name.to_string(), String::new());
+        }
     };
 
-    match base_str.to_lowercase().as_str() {
-        "string" => {
-            // Use the parameter name (without $) as a descriptive
-            // placeholder.  Quotes sit outside the tab stop so typing
-            // replaces only the inner text: `'${1:methodName}'`.
-            let name = param.name.strip_prefix('$').unwrap_or(&param.name);
-            ("'".to_string(), name.to_string(), "'".to_string())
-        }
-        "bool" => (String::new(), "false".to_string(), String::new()),
-        "int" => (String::new(), "0".to_string(), String::new()),
-        "float" | "double" => (String::new(), "0.0".to_string(), String::new()),
-        "array" => (String::new(), "[]".to_string(), String::new()),
-        _ => {
-            // Unknown or complex type — use the bare parameter name.
-            let name = param.name.strip_prefix('$').unwrap_or(&param.name);
-            (String::new(), name.to_string(), String::new())
-        }
+    if base_type.is_string_type() {
+        // Use the parameter name (without $) as a descriptive
+        // placeholder.  Quotes sit outside the tab stop so typing
+        // replaces only the inner text: `'${1:methodName}'`.
+        let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+        return ("'".to_string(), name.to_string(), "'".to_string());
     }
+    if base_type.is_bool() {
+        return (String::new(), "false".to_string(), String::new());
+    }
+    if base_type.is_int() {
+        return (String::new(), "0".to_string(), String::new());
+    }
+    if base_type.is_float() {
+        return (String::new(), "0.0".to_string(), String::new());
+    }
+    if base_type.is_bare_array() {
+        return (String::new(), "[]".to_string(), String::new());
+    }
+    // Unknown or complex type — use the bare parameter name.
+    let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+    (String::new(), name.to_string(), String::new())
 }
 
 // Re-export use-statement helpers so existing `use crate::completion::builder::{…}`

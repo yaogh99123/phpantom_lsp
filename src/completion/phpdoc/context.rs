@@ -551,25 +551,7 @@ fn is_variable_assignment(line: &str) -> bool {
 
 /// Check if a token is a PHP type keyword (used in property declarations).
 fn is_type_keyword(token: &str) -> bool {
-    matches!(
-        token,
-        "int"
-            | "float"
-            | "string"
-            | "bool"
-            | "array"
-            | "object"
-            | "callable"
-            | "iterable"
-            | "mixed"
-            | "void"
-            | "never"
-            | "null"
-            | "false"
-            | "true"
-            | "self"
-            | "parent"
-    )
+    crate::php_type::is_keyword_type(token)
 }
 
 /// Parse symbol info (params, return type, property type) from the

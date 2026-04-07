@@ -145,17 +145,19 @@ fn classify_bare_name_without_generics() {
 
 #[test]
 fn extracts_first_generic_arg() {
+    let parsed = PhpType::parse("HasMany<Post, $this>");
     assert_eq!(
-        extract_related_type_typed(&PhpType::parse("HasMany<Post, $this>")),
-        Some("Post".to_string())
+        extract_related_type_typed(&parsed),
+        Some(&PhpType::Named("Post".to_string()))
     );
 }
 
 #[test]
 fn extracts_fqn_related_type() {
+    let parsed = PhpType::parse("HasOne<\\App\\Models\\Profile, $this>");
     assert_eq!(
-        extract_related_type_typed(&PhpType::parse("HasOne<\\App\\Models\\Profile, $this>")),
-        Some("\\App\\Models\\Profile".to_string())
+        extract_related_type_typed(&parsed),
+        Some(&PhpType::Named("\\App\\Models\\Profile".to_string()))
     );
 }
 
@@ -169,7 +171,11 @@ fn returns_none_without_generics() {
 #[test]
 fn singular_with_related() {
     assert_eq!(
-        build_property_type(RelationshipKind::Singular, Some("App\\Models\\Post"), None),
+        build_property_type(
+            RelationshipKind::Singular,
+            Some(&PhpType::Named("App\\Models\\Post".to_string())),
+            None
+        ),
         Some(PhpType::Named("App\\Models\\Post".to_string()))
     );
 }
@@ -177,7 +183,7 @@ fn singular_with_related() {
 #[test]
 fn singular_without_related() {
     assert_eq!(
-        build_property_type(RelationshipKind::Singular, None, None),
+        build_property_type(RelationshipKind::Singular, None::<&PhpType>, None),
         None
     );
 }
@@ -187,7 +193,7 @@ fn collection_with_related() {
     assert_eq!(
         build_property_type(
             RelationshipKind::Collection,
-            Some("App\\Models\\Post"),
+            Some(&PhpType::Named("App\\Models\\Post".to_string())),
             None
         ),
         Some(PhpType::Generic(
@@ -200,7 +206,7 @@ fn collection_with_related() {
 #[test]
 fn collection_without_related_uses_model() {
     assert_eq!(
-        build_property_type(RelationshipKind::Collection, None, None),
+        build_property_type(RelationshipKind::Collection, None::<&PhpType>, None),
         Some(PhpType::Generic(
             "Illuminate\\Database\\Eloquent\\Collection".to_string(),
             vec![PhpType::Named(
@@ -213,7 +219,11 @@ fn collection_without_related_uses_model() {
 #[test]
 fn morph_to_always_returns_model() {
     assert_eq!(
-        build_property_type(RelationshipKind::MorphTo, Some("App\\Models\\Foo"), None),
+        build_property_type(
+            RelationshipKind::MorphTo,
+            Some(&PhpType::Named("App\\Models\\Foo".to_string())),
+            None
+        ),
         Some(PhpType::Named(
             "Illuminate\\Database\\Eloquent\\Model".to_string(),
         ))
@@ -225,7 +235,7 @@ fn collection_with_custom_collection() {
     assert_eq!(
         build_property_type(
             RelationshipKind::Collection,
-            Some("App\\Models\\Post"),
+            Some(&PhpType::Named("App\\Models\\Post".to_string())),
             Some("App\\Collections\\PostCollection")
         ),
         Some(PhpType::Generic(
@@ -240,7 +250,7 @@ fn collection_custom_collection_canonical() {
     assert_eq!(
         build_property_type(
             RelationshipKind::Collection,
-            Some("App\\Models\\Post"),
+            Some(&PhpType::Named("App\\Models\\Post".to_string())),
             Some("App\\Collections\\PostCollection")
         ),
         Some(PhpType::Generic(
@@ -255,7 +265,7 @@ fn singular_ignores_custom_collection() {
     assert_eq!(
         build_property_type(
             RelationshipKind::Singular,
-            Some("App\\Models\\Post"),
+            Some(&PhpType::Named("App\\Models\\Post".to_string())),
             Some("App\\Collections\\PostCollection")
         ),
         Some(PhpType::Named("App\\Models\\Post".to_string()))
@@ -267,7 +277,7 @@ fn morph_to_ignores_custom_collection() {
     assert_eq!(
         build_property_type(
             RelationshipKind::MorphTo,
-            Some("App\\Models\\Foo"),
+            Some(&PhpType::Named("App\\Models\\Foo".to_string())),
             Some("App\\Collections\\FooCollection")
         ),
         Some(PhpType::Named(

@@ -23,10 +23,11 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit & type inference
 
-| #   | Item                                                                                                                                                              | Impact | Effort |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
-|     | Clear [refactoring gate](todo/refactor.md)                                                                                                                        | —      | —      |
-|     | **Release 0.7.0**                                                                                                                                                 |        |        |
+| #    | Item                                                                                                    | Impact | Effort |
+| ---- | ------------------------------------------------------------------------------------------------------- | ------ | ------ |
+|      | Clear [refactoring gate](todo/refactor.md)                                                              | —      | —      |
+
+|      | **Release 0.7.0**                                                                                       |        |        |
 
 ## Sprint 5 — Polish for office adoption
 
@@ -52,7 +53,7 @@ within the same impact tier.
 > diagnostic), and D3 (Unknown member diagnostic) were originally
 > planned here but have already shipped.
 
-## Sprint 6 — Type intelligence & refactoring depth
+## Sprint 6 — 1.0 release, editor plugins & type intelligence
 
 | #   | Item                                                                                                                | Impact     | Effort |
 | --- | ------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |

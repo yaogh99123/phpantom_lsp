@@ -715,18 +715,12 @@ fn try_resolve_with_template_default(
         match default_value {
             PhpType::Literal(dv) => dv == expected,
             PhpType::Named(dv) => dv == expected,
-            _ => {
-                let dv_str = default_value.to_string();
-                dv_str == *expected
-            }
+            _ => false,
         }
     } else if let PhpType::Named(s) = condition {
         match default_value {
             PhpType::Named(dv) => dv == s,
-            _ => {
-                let dv_str = default_value.to_string();
-                dv_str == *s
-            }
+            _ => false,
         }
     } else {
         return None;

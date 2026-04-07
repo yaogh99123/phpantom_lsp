@@ -2577,7 +2577,7 @@ fn apply_type_guard_inclusion(kind: TypeGuardKind, results: &mut Vec<ResolvedTyp
         }
     }
     // Remove entries that became empty (no union member matched).
-    results.retain(|rt| !matches!(&rt.type_string, PhpType::Named(s) if s == "__empty"));
+    results.retain(|rt| !rt.type_string.is_empty_sentinel());
 }
 
 /// Narrow `results` to only the union members that do NOT match the
@@ -2589,7 +2589,7 @@ fn apply_type_guard_exclusion(kind: TypeGuardKind, results: &mut Vec<ResolvedTyp
             rt.type_string = narrowed;
         }
     }
-    results.retain(|rt| !matches!(&rt.type_string, PhpType::Named(s) if s == "__empty"));
+    results.retain(|rt| !rt.type_string.is_empty_sentinel());
 }
 
 /// Filter a `PhpType` to keep only members that match (or don't match)
@@ -2615,7 +2615,7 @@ fn filter_type_by_guard(ty: &PhpType, kind: TypeGuardKind, keep_matching: bool) 
                 // Nothing was filtered out.
                 None
             } else if filtered.is_empty() {
-                Some(PhpType::Named("__empty".to_string()))
+                Some(PhpType::empty_sentinel())
             } else if filtered.len() == 1 {
                 Some(filtered.into_iter().next().unwrap())
             } else {
@@ -2635,7 +2635,7 @@ fn filter_type_by_guard(ty: &PhpType, kind: TypeGuardKind, keep_matching: bool) 
                 (true, true) => None, // keep both → no change
                 (true, false) => Some(inner.as_ref().clone()),
                 (false, true) => Some(PhpType::null()),
-                (false, false) => Some(PhpType::Named("__empty".to_string())),
+                (false, false) => Some(PhpType::empty_sentinel()),
             }
         }
         other => {
@@ -2656,7 +2656,7 @@ fn filter_type_by_guard(ty: &PhpType, kind: TypeGuardKind, keep_matching: bool) 
             if type_matches_guard(other, kind) == keep_matching {
                 None // no change needed
             } else {
-                Some(PhpType::Named("__empty".to_string()))
+                Some(PhpType::empty_sentinel())
             }
         }
     }

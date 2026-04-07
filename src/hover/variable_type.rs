@@ -1437,9 +1437,9 @@ fn try_infer_more_specific_type_from_call(
     // subtype of at least one explicit class.
     let all_subtypes = inferred_classes.iter().all(|inferred_cls| {
         explicit_classes.iter().any(|explicit_cls| {
-            crate::util::is_subtype_of_typed(
-                &PhpType::Named(inferred_cls.fqn().to_string()),
-                &PhpType::Named(explicit_cls.fqn().to_string()),
+            crate::util::is_subtype_of_names(
+                &inferred_cls.fqn(),
+                &explicit_cls.fqn(),
                 closure_ctx.class_loader,
             )
         })

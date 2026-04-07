@@ -222,6 +222,27 @@ impl PhpType {
     pub fn numeric() -> PhpType {
         PhpType::Named("numeric".to_owned())
     }
+
+    /// Internal `__empty` sentinel used during type narrowing to represent
+    /// a fully-filtered-out union member.
+    pub fn empty_sentinel() -> PhpType {
+        PhpType::Named("__empty".to_owned())
+    }
+
+    /// `list<T>` generic type.
+    pub fn list(elem: PhpType) -> PhpType {
+        PhpType::Generic("list".to_owned(), vec![elem])
+    }
+
+    /// `array<K, V>` generic type with explicit key and value types.
+    pub fn generic_array(key: PhpType, val: PhpType) -> PhpType {
+        PhpType::Generic("array".to_owned(), vec![key, val])
+    }
+
+    /// `array<V>` generic type with only a value type (implicit integer key).
+    pub fn generic_array_val(val: PhpType) -> PhpType {
+        PhpType::Generic("array".to_owned(), vec![val])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +544,12 @@ impl PhpType {
         matches!(self, PhpType::Raw(s) | PhpType::Named(s) if s.is_empty())
     }
 
+    /// Whether this type is the internal `__empty` sentinel used during
+    /// type narrowing to represent a fully-filtered-out union member.
+    pub fn is_empty_sentinel(&self) -> bool {
+        matches!(self, PhpType::Named(s) if s == "__empty")
+    }
+
     /// Whether this type is a primitive scalar / built-in type that
     /// cannot have members accessed on it at runtime.
     ///
@@ -653,6 +680,17 @@ impl PhpType {
         }
     }
 
+    /// Whether this type is `array-key` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?array-key` (nullable wrapper).
+    pub fn is_array_key(&self) -> bool {
+        match self {
+            PhpType::Named(s) => s.eq_ignore_ascii_case("array-key"),
+            PhpType::Nullable(inner) => inner.is_array_key(),
+            _ => false,
+        }
+    }
+
     /// Whether this type is `callable`, `Closure`, or a callable specification
     /// (case-insensitive).
     ///
@@ -668,6 +706,66 @@ impl PhpType {
             PhpType::Nullable(inner) => inner.is_callable(),
             _ => false,
         }
+    }
+
+    /// Whether this type is `iterable` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?iterable` (nullable wrapper).
+    pub fn is_iterable(&self) -> bool {
+        match self {
+            PhpType::Named(s) => s.eq_ignore_ascii_case("iterable"),
+            PhpType::Nullable(inner) => inner.is_iterable(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `Closure` (case-insensitive, with or without
+    /// leading backslash).
+    ///
+    /// Also returns `true` when the type is `?Closure` (nullable wrapper)
+    /// or a `Callable { kind, .. }` variant whose kind contains `"Closure"`.
+    ///
+    /// Unlike [`is_callable`], this does **not** match the bare `callable`
+    /// keyword — only `Closure` and its callable-specification variants.
+    pub fn is_closure(&self) -> bool {
+        match self {
+            PhpType::Named(s) => {
+                let trimmed = s.strip_prefix('\\').unwrap_or(s);
+                trimmed.eq_ignore_ascii_case("Closure")
+            }
+            PhpType::Callable { kind, .. } => kind.eq_ignore_ascii_case("Closure"),
+            PhpType::Nullable(inner) => inner.is_closure(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `resource` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?resource` (nullable wrapper).
+    pub fn is_resource(&self) -> bool {
+        match self {
+            PhpType::Named(s) => s.eq_ignore_ascii_case("resource"),
+            PhpType::Nullable(inner) => inner.is_resource(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is a `Named` variant whose name equals `name`
+    /// (case-sensitive comparison).
+    ///
+    /// Replaces the common `matches!(ty, PhpType::Named(n) if n == name)`
+    /// pattern used for template parameter identity checks.
+    pub fn is_named(&self, name: &str) -> bool {
+        matches!(self, PhpType::Named(n) if n == name)
+    }
+
+    /// Whether this type is a `Named` variant whose name equals `name`
+    /// (case-insensitive comparison).
+    ///
+    /// Replaces `matches!(ty, PhpType::Named(n) if n.eq_ignore_ascii_case(name))`
+    /// patterns.
+    pub fn is_named_ci(&self, name: &str) -> bool {
+        matches!(self, PhpType::Named(n) if n.eq_ignore_ascii_case(name))
     }
 
     /// Whether this type is a top-level `self`, `static`, or `$this`
@@ -946,23 +1044,23 @@ impl PhpType {
                     Some(PhpType::Intersection(deduped))
                 }
             }
-            PhpType::Array(_) => Some(PhpType::Named("array".to_string())),
-            PhpType::ClassString(_) => Some(PhpType::Named("string".to_string())),
-            PhpType::InterfaceString(_) => Some(PhpType::Named("string".to_string())),
-            PhpType::IntRange(_, _) => Some(PhpType::Named("int".to_string())),
+            PhpType::Array(_) => Some(PhpType::array()),
+            PhpType::ClassString(_) => Some(PhpType::string()),
+            PhpType::InterfaceString(_) => Some(PhpType::string()),
+            PhpType::IntRange(_, _) => Some(PhpType::int()),
             PhpType::Literal(s) => {
                 if s.parse::<i64>().is_ok() {
-                    Some(PhpType::Named("int".to_string()))
+                    Some(PhpType::int())
                 } else if s.parse::<f64>().is_ok() {
-                    Some(PhpType::Named("float".to_string()))
+                    Some(PhpType::float())
                 } else if s.starts_with('\'') || s.starts_with('"') {
-                    Some(PhpType::Named("string".to_string()))
+                    Some(PhpType::string())
                 } else {
                     None
                 }
             }
-            PhpType::ArrayShape(_) => Some(PhpType::Named("array".to_string())),
-            PhpType::ObjectShape(_) => Some(PhpType::Named("object".to_string())),
+            PhpType::ArrayShape(_) => Some(PhpType::array()),
+            PhpType::ObjectShape(_) => Some(PhpType::object()),
             PhpType::Callable { kind, .. } => Some(PhpType::Named(kind.clone())),
             PhpType::Conditional { .. }
             | PhpType::KeyOf(_)
@@ -6322,8 +6420,186 @@ mod tests {
             assert!(!u.is_string_type());
             assert!(!u.is_float());
             assert!(!u.is_object());
+            assert!(!u.is_array_key());
             assert!(!u.is_callable());
             assert!(!u.is_self_like());
+        }
+
+        // ── is_array_key ───────────────────────────────────────────
+
+        #[test]
+        fn is_array_key_true_for_array_key() {
+            assert!(PhpType::parse("array-key").is_array_key());
+        }
+
+        #[test]
+        fn is_array_key_case_insensitive() {
+            assert!(PhpType::parse("Array-Key").is_array_key());
+            assert!(PhpType::parse("ARRAY-KEY").is_array_key());
+        }
+
+        #[test]
+        fn is_array_key_nullable() {
+            assert!(PhpType::parse("?array-key").is_array_key());
+        }
+
+        #[test]
+        fn is_array_key_false_for_int() {
+            assert!(!PhpType::parse("int").is_array_key());
+        }
+
+        #[test]
+        fn is_array_key_false_for_string() {
+            assert!(!PhpType::parse("string").is_array_key());
+        }
+
+        // ── is_iterable ────────────────────────────────────────────
+
+        #[test]
+        fn is_iterable_true_for_iterable() {
+            assert!(PhpType::parse("iterable").is_iterable());
+        }
+
+        #[test]
+        fn is_iterable_case_insensitive() {
+            assert!(PhpType::parse("Iterable").is_iterable());
+            assert!(PhpType::parse("ITERABLE").is_iterable());
+        }
+
+        #[test]
+        fn is_iterable_nullable() {
+            assert!(PhpType::parse("?iterable").is_iterable());
+        }
+
+        #[test]
+        fn is_iterable_false_for_array() {
+            assert!(!PhpType::parse("array").is_iterable());
+        }
+
+        #[test]
+        fn is_iterable_false_for_iterator() {
+            assert!(!PhpType::parse("Iterator").is_iterable());
+        }
+
+        // ── is_closure ─────────────────────────────────────────────
+
+        #[test]
+        fn is_closure_true_for_closure() {
+            assert!(PhpType::parse("Closure").is_closure());
+        }
+
+        #[test]
+        fn is_closure_true_for_fqn_closure() {
+            assert!(PhpType::parse("\\Closure").is_closure());
+        }
+
+        #[test]
+        fn is_closure_case_insensitive() {
+            assert!(PhpType::parse("closure").is_closure());
+            assert!(PhpType::parse("CLOSURE").is_closure());
+        }
+
+        #[test]
+        fn is_closure_nullable() {
+            assert!(PhpType::parse("?Closure").is_closure());
+        }
+
+        #[test]
+        fn is_closure_callable_variant() {
+            let ty = PhpType::Callable {
+                kind: "Closure".to_string(),
+                params: vec![],
+                return_type: Some(Box::new(PhpType::void())),
+            };
+            assert!(ty.is_closure());
+        }
+
+        #[test]
+        fn is_closure_false_for_callable() {
+            assert!(!PhpType::parse("callable").is_closure());
+        }
+
+        #[test]
+        fn is_closure_false_for_string() {
+            assert!(!PhpType::parse("string").is_closure());
+        }
+
+        // ── is_resource ────────────────────────────────────────────
+
+        #[test]
+        fn is_resource_true_for_resource() {
+            assert!(PhpType::parse("resource").is_resource());
+        }
+
+        #[test]
+        fn is_resource_case_insensitive() {
+            assert!(PhpType::parse("Resource").is_resource());
+            assert!(PhpType::parse("RESOURCE").is_resource());
+        }
+
+        #[test]
+        fn is_resource_nullable() {
+            assert!(PhpType::parse("?resource").is_resource());
+        }
+
+        #[test]
+        fn is_resource_false_for_string() {
+            assert!(!PhpType::parse("string").is_resource());
+        }
+
+        // ── is_empty_sentinel ──────────────────────────────────────
+
+        #[test]
+        fn is_empty_sentinel_true() {
+            assert!(PhpType::Named("__empty".to_string()).is_empty_sentinel());
+            assert!(PhpType::empty_sentinel().is_empty_sentinel());
+        }
+
+        #[test]
+        fn is_named_case_sensitive() {
+            assert!(PhpType::Named("TModel".to_string()).is_named("TModel"));
+            assert!(!PhpType::Named("TModel".to_string()).is_named("tmodel"));
+            assert!(PhpType::int().is_named("int"));
+            assert!(!PhpType::int().is_named("INT"));
+        }
+
+        #[test]
+        fn is_named_false_for_non_named() {
+            assert!(!PhpType::Generic("list".to_string(), vec![PhpType::int()]).is_named("list"));
+            assert!(
+                !PhpType::Nullable(Box::new(PhpType::Named("Foo".to_string()))).is_named("Foo")
+            );
+        }
+
+        #[test]
+        fn is_named_ci_case_insensitive() {
+            assert!(PhpType::Named("stdClass".to_string()).is_named_ci("stdclass"));
+            assert!(PhpType::Named("stdclass".to_string()).is_named_ci("stdClass"));
+            assert!(!PhpType::Named("Foo".to_string()).is_named_ci("Bar"));
+        }
+
+        #[test]
+        fn list_constructor() {
+            let ty = PhpType::list(PhpType::string());
+            assert_eq!(ty.to_string(), "list<string>");
+        }
+
+        #[test]
+        fn generic_array_constructor() {
+            let ty = PhpType::generic_array(PhpType::string(), PhpType::int());
+            assert_eq!(ty.to_string(), "array<string, int>");
+        }
+
+        #[test]
+        fn generic_array_val_constructor() {
+            let ty = PhpType::generic_array_val(PhpType::int());
+            assert_eq!(ty.to_string(), "array<int>");
+        }
+
+        #[test]
+        fn is_empty_sentinel_false_for_regular() {
+            assert!(!PhpType::parse("string").is_empty_sentinel());
+            assert!(!PhpType::parse("").is_empty_sentinel());
         }
     }
 }

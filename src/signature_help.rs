@@ -255,7 +255,10 @@ fn build_signature(
     let params_str = param_labels.join(", ");
     let ret = format!(
         ": {}",
-        return_type.map_or("mixed".to_string(), crate::hover::shorten_php_type)
+        return_type.map_or_else(
+            || PhpType::mixed().to_string(),
+            crate::hover::shorten_php_type
+        )
     );
     let label = format!("({}){}", params_str, ret);
 

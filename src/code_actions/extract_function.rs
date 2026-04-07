@@ -1013,9 +1013,10 @@ struct ExtractionInfo {
 ///
 /// Each parameter is a triple `(var_name, cleaned_type, raw_type)` where
 /// `cleaned_type` is the native PHP hint (generics stripped) and
-/// `raw_type` is the full resolved type string (e.g. `Collection<User>`).
+/// `raw_type` is the full resolved type as a [`PhpType`] (e.g.
+/// `Collection<User>`).
 ///
-/// When `raw_type` already contains concrete generic arguments (`<`),
+/// When `raw_type` already contains concrete generic arguments,
 /// it is used verbatim as the docblock type.  Otherwise we fall back to
 /// `enrichment_plain` which reconstructs template parameters from the
 /// class definition (yielding placeholder names like `T`).
@@ -1025,7 +1026,7 @@ struct ExtractionInfo {
 ///
 /// Returns an empty string when no enrichment is needed.
 fn build_docblock_for_extraction(
-    params: &[(String, PhpType, String)],
+    params: &[(String, PhpType, PhpType)],
     return_type_hint: &PhpType,
     raw_return_type: &PhpType,
     member_indent: &str,
@@ -1035,34 +1036,27 @@ fn build_docblock_for_extraction(
 
     // Collect @param tags that need enrichment.
     for (name, type_hint, raw) in params {
-        let type_hint_str = type_hint.to_native_hint().unwrap_or_default();
-        if type_hint_str.is_empty() && raw.is_empty() {
+        let has_native_hint = type_hint.to_native_hint().is_some_and(|s| !s.is_empty());
+        if !has_native_hint && raw.is_empty() {
             continue;
         }
         // Prefer the raw resolved type when it carries concrete generics.
-        if PhpType::parse(raw).has_type_structure() {
+        if raw.has_type_structure() {
             tags.push(format!("@param {} {}", raw, name));
             continue;
         }
-        let hint = if type_hint_str.is_empty() {
-            raw.as_str()
-        } else {
-            &type_hint_str
-        };
-        let parsed = PhpType::parse(hint);
-        if let Some(enriched) = enrichment_plain(Some(&parsed), class_loader) {
+        let type_for_enrichment = if has_native_hint { type_hint } else { raw };
+        if let Some(enriched) = enrichment_plain(Some(type_for_enrichment), class_loader) {
             tags.push(format!("@param {} {}", enriched, name));
         }
     }
 
     // Collect @return tag if the return type needs enrichment.
-    let return_hint_str = return_type_hint.to_string();
-    let raw_return_str = raw_return_type.to_string();
-    if !return_hint_str.is_empty() || !raw_return_str.is_empty() {
+    if !return_type_hint.is_empty() || !raw_return_type.is_empty() {
         if raw_return_type.has_type_structure() {
             tags.push(format!("@return {}", raw_return_type));
         } else {
-            let hint = if return_hint_str.is_empty() {
+            let hint = if return_type_hint.is_empty() {
                 raw_return_type
             } else {
                 return_type_hint
@@ -2086,9 +2080,9 @@ fn resolve_enclosing_param_order(content: &str, offset: u32) -> Vec<String> {
 /// enclosing function's signature come first (in their original order),
 /// followed by any other variables in classification order.
 fn sort_params_by_enclosing_order(
-    mut params: Vec<(String, PhpType, String)>,
+    mut params: Vec<(String, PhpType, PhpType)>,
     enclosing_order: &[String],
-) -> Vec<(String, PhpType, String)> {
+) -> Vec<(String, PhpType, PhpType)> {
     if enclosing_order.is_empty() {
         return params;
     }
@@ -2242,7 +2236,7 @@ impl Backend {
         content: &str,
         offset: u32,
         var_names: &[String],
-    ) -> Vec<(String, PhpType, String)> {
+    ) -> Vec<(String, PhpType, PhpType)> {
         var_names
             .iter()
             .map(|name| {
@@ -2252,16 +2246,13 @@ impl Backend {
                     format!("${}", name)
                 };
                 let resolved_type = resolve_var_type(self, &dollar_name, content, offset, uri);
-                let type_hint = resolved_type
-                    .as_ref()
-                    .map(|t| t.to_string())
-                    .unwrap_or_default();
+                let raw_type = resolved_type.clone().unwrap_or_else(|| PhpType::parse(""));
                 // Clean up the type for use in a signature — stays as PhpType.
                 let cleaned = resolved_type
                     .as_ref()
                     .and_then(clean_type_for_signature_typed)
                     .unwrap_or_else(|| PhpType::parse(""));
-                (dollar_name, cleaned, type_hint)
+                (dollar_name, cleaned, raw_type)
             })
             .collect()
     }
@@ -2377,15 +2368,13 @@ impl Backend {
             PhpType::parse("")
         };
 
-        let enclosing_docblock_return = if matches!(
+        let enclosing_docblock_return: Option<PhpType> = if matches!(
             return_strategy,
             ReturnStrategy::TrailingReturn | ReturnStrategy::SentinelNull
         ) {
             crate::docblock::find_enclosing_return_type(content, start)
-                .map(|t| t.to_string())
-                .unwrap_or_default()
         } else {
-            String::new()
+            None
         };
 
         // ── PHPDoc generation ───────────────────────────────────────
@@ -2397,7 +2386,7 @@ impl Backend {
         let raw_return_type_for_docblock = build_raw_return_type_for_docblock(
             &return_strategy,
             &trailing_return_type,
-            &enclosing_docblock_return,
+            enclosing_docblock_return.as_ref(),
             &typed_returns,
         );
         let ctx = self.file_context(uri);
@@ -2488,7 +2477,7 @@ impl Backend {
 fn build_return_type_hint_for_docblock(
     strategy: &ReturnStrategy,
     trailing_return_type: &PhpType,
-    returns: &[(String, PhpType, String)],
+    returns: &[(String, PhpType, PhpType)],
 ) -> PhpType {
     match strategy {
         ReturnStrategy::TrailingReturn => trailing_return_type.clone(),
@@ -2526,33 +2515,31 @@ fn build_return_type_hint_for_docblock(
 }
 
 /// Like `build_return_type_hint_for_docblock` but returns the raw
-/// (un-cleaned) type string that preserves concrete generic arguments.
+/// (un-cleaned) type that preserves concrete generic arguments.
 fn build_raw_return_type_for_docblock(
     strategy: &ReturnStrategy,
     trailing_return_type: &PhpType,
-    enclosing_docblock_return: &str,
-    returns: &[(String, PhpType, String)],
+    enclosing_docblock_return: Option<&PhpType>,
+    returns: &[(String, PhpType, PhpType)],
 ) -> PhpType {
     match strategy {
         ReturnStrategy::TrailingReturn => {
             // Prefer the docblock @return type when it carries concrete
             // generics (e.g. `Collection<User>`) over the native hint
             // (e.g. `Collection`).
-            if !enclosing_docblock_return.is_empty() {
-                let parsed = PhpType::parse(enclosing_docblock_return);
-                if parsed.has_type_parameters() {
-                    return parsed;
-                }
+            if let Some(edr) = enclosing_docblock_return
+                && edr.has_type_parameters()
+            {
+                return edr.clone();
             }
             trailing_return_type.clone()
         }
         ReturnStrategy::VoidGuards | ReturnStrategy::UniformGuards(_) => PhpType::bool(),
         ReturnStrategy::SentinelNull => {
-            if !enclosing_docblock_return.is_empty() {
-                let parsed = PhpType::parse(enclosing_docblock_return);
-                if parsed.has_type_parameters() {
-                    return parsed;
-                }
+            if let Some(edr) = enclosing_docblock_return
+                && edr.has_type_parameters()
+            {
+                return edr.clone();
             }
             if !trailing_return_type.is_empty() {
                 trailing_return_type.clone()
@@ -2563,7 +2550,7 @@ fn build_raw_return_type_for_docblock(
         ReturnStrategy::NullGuardWithValue(_) => {
             // Use raw type (index 2) which preserves generics.
             if returns.len() == 1 && !returns[0].2.is_empty() {
-                PhpType::parse(&returns[0].2)
+                returns[0].2.clone()
             } else {
                 PhpType::parse("")
             }
@@ -2573,7 +2560,7 @@ fn build_raw_return_type_for_docblock(
                 PhpType::void()
             } else if returns.len() == 1 {
                 // Use raw type (index 2) which preserves generics.
-                PhpType::parse(&returns[0].2)
+                returns[0].2.clone()
             } else {
                 PhpType::array()
             }
@@ -4582,11 +4569,15 @@ function foo($x) {
     #[test]
     fn docblock_not_generated_for_scalar_types() {
         let params = vec![
-            ("$x".to_string(), PhpType::parse("int"), "int".to_string()),
+            (
+                "$x".to_string(),
+                PhpType::parse("int"),
+                PhpType::parse("int"),
+            ),
             (
                 "$y".to_string(),
                 PhpType::parse("string"),
-                "string".to_string(),
+                PhpType::parse("string"),
             ),
         ];
         let result = build_docblock_for_extraction(
@@ -4607,7 +4598,7 @@ function foo($x) {
         let params = vec![(
             "$items".to_string(),
             PhpType::parse("array"),
-            "array".to_string(),
+            PhpType::parse("array"),
         )];
         let result = build_docblock_for_extraction(
             &params,
@@ -4630,7 +4621,7 @@ function foo($x) {
         let params = vec![(
             "$fn".to_string(),
             PhpType::parse("Closure"),
-            "Closure".to_string(),
+            PhpType::parse("Closure"),
         )];
         let result = build_docblock_for_extraction(
             &params,
@@ -4648,7 +4639,7 @@ function foo($x) {
 
     #[test]
     fn docblock_not_generated_for_empty_types() {
-        let params = vec![("$x".to_string(), PhpType::parse(""), String::new())];
+        let params = vec![("$x".to_string(), PhpType::parse(""), PhpType::parse(""))];
         let result = build_docblock_for_extraction(
             &params,
             &PhpType::parse(""),
@@ -4668,12 +4659,12 @@ function foo($x) {
             (
                 "$items".to_string(),
                 PhpType::parse("array"),
-                "array<string, User>".to_string(),
+                PhpType::parse("array<string, User>"),
             ),
             (
                 "$x".to_string(),
                 PhpType::parse("Closure"),
-                "Closure".to_string(),
+                PhpType::parse("Closure"),
             ),
         ];
         let result = build_docblock_for_extraction(
@@ -4731,7 +4722,7 @@ function foo($x) {
         let returns = vec![(
             "$x".to_string(),
             PhpType::parse("array"),
-            "array".to_string(),
+            PhpType::parse("array"),
         )];
         let result = build_return_type_hint_for_docblock(
             &ReturnStrategy::None,
@@ -4758,7 +4749,7 @@ function foo($x) {
                 &[(
                     "$items".to_string(),
                     PhpType::parse("array"),
-                    "array".to_string(),
+                    PhpType::parse("array"),
                 )],
                 &PhpType::parse("void"),
                 &PhpType::parse("void"),
@@ -4799,8 +4790,16 @@ function foo($x) {
             trailing_return_type: PhpType::parse(""),
             docblock: build_docblock_for_extraction(
                 &[
-                    ("$a".to_string(), PhpType::parse("int"), "int".to_string()),
-                    ("$b".to_string(), PhpType::parse("int"), "int".to_string()),
+                    (
+                        "$a".to_string(),
+                        PhpType::parse("int"),
+                        PhpType::parse("int"),
+                    ),
+                    (
+                        "$b".to_string(),
+                        PhpType::parse("int"),
+                        PhpType::parse("int"),
+                    ),
                 ],
                 &PhpType::parse("int"),
                 &PhpType::parse("int"),

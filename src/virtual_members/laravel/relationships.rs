@@ -162,19 +162,18 @@ pub(super) fn classify_relationship_typed(return_type: &PhpType) -> Option<Relat
 /// Extract the `TRelated` type from a relationship return type's
 /// generic parameters.
 ///
-/// Given `"HasMany<Post, $this>"`, returns `Some("Post")`.
-/// Given `"HasOne<\\App\\Models\\Post, $this>"`, returns
-/// `Some("\\App\\Models\\Post")`.
+/// Given `HasMany<Post, $this>`, returns `Some(&PhpType::Named("Post"))`.
+/// Given `HasOne<\App\Models\Profile, $this>`, returns
+/// `Some(&PhpType::Named("\App\Models\Profile"))`.
 ///
 /// Returns `None` if no generic parameters are present.
-pub(super) fn extract_related_type_typed(return_type: &PhpType) -> Option<String> {
+pub(super) fn extract_related_type_typed(return_type: &PhpType) -> Option<&PhpType> {
     if let PhpType::Generic(_, args) = return_type {
         let first = args.first()?;
-        let s = first.to_string();
-        if s.is_empty() {
+        if first.is_empty() {
             return None;
         }
-        return Some(s);
+        return Some(first);
     }
     None
 }
@@ -187,18 +186,17 @@ pub(super) fn extract_related_type_typed(return_type: &PhpType) -> Option<String
 /// - MorphTo → `Illuminate\Database\Eloquent\Model`.
 pub(super) fn build_property_type(
     kind: RelationshipKind,
-    related_type: Option<&str>,
+    related_type: Option<&PhpType>,
     custom_collection: Option<&str>,
 ) -> Option<PhpType> {
     match kind {
-        RelationshipKind::Singular => related_type.map(|t| PhpType::Named(t.to_string())),
+        RelationshipKind::Singular => related_type.cloned(),
         RelationshipKind::Collection => {
-            let inner = related_type.unwrap_or("Illuminate\\Database\\Eloquent\\Model");
+            let inner = related_type.cloned().unwrap_or_else(|| {
+                PhpType::Named("Illuminate\\Database\\Eloquent\\Model".to_string())
+            });
             let collection_class = custom_collection.unwrap_or(ELOQUENT_COLLECTION_FQN);
-            Some(PhpType::Generic(
-                collection_class.to_string(),
-                vec![PhpType::Named(inner.to_string())],
-            ))
+            Some(PhpType::Generic(collection_class.to_string(), vec![inner]))
         }
         RelationshipKind::MorphTo => Some(PhpType::Named(
             "Illuminate\\Database\\Eloquent\\Model".to_string(),
@@ -404,7 +402,7 @@ fn extract_related_type_for_chain(
         }
     }
 
-    extract_related_type_typed(return_type)
+    extract_related_type_typed(return_type).map(|t| t.to_string())
 }
 
 /// Resolve a short or FQN related type to a loadable FQN.

@@ -784,7 +784,7 @@ impl Backend {
                     if base != ELOQUENT_BUILDER_FQN && base != "Builder" {
                         return None;
                     }
-                    Some(args[0].to_string())
+                    args[0].base_name().map(|s| s.to_string())
                 }
                 _ => None,
             }

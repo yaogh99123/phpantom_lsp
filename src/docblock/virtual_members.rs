@@ -285,11 +285,12 @@ fn parse_method_tag_params(params_str: &str) -> Vec<ParameterInfo> {
 
         let is_required = !has_default && !is_variadic;
 
+        let parsed_type = type_hint.as_deref().map(PhpType::parse);
         result.push(ParameterInfo {
             name: param_name,
             is_required,
-            type_hint: type_hint.as_deref().map(PhpType::parse),
-            native_type_hint: type_hint.as_deref().map(PhpType::parse),
+            type_hint: parsed_type.clone(),
+            native_type_hint: parsed_type,
             description: None,
             default_value: None,
             is_variadic,

@@ -325,13 +325,10 @@ fn extract_custom_collection(
 fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Option<String> {
     let method = methods.iter().find(|m| m.name == "newCollection")?;
     let return_type = method.return_type.as_ref()?;
-    let return_type_str = return_type.to_string();
 
-    // Strip generic parameters (e.g. `TaskCollection<int, static>` → `TaskCollection`).
-    // `base_name()` already strips leading `\`, so `base` is suitable for
-    // comparison but not for returning to `resolve_name` which needs the
-    // original form (with leading `\` for FQNs) to resolve correctly.
-    let base = return_type.base_name().unwrap_or(return_type_str.as_str());
+    // `base_name()` strips leading `\` and generic parameters, giving a
+    // clean class name suitable for comparison.
+    let base = return_type.base_name()?;
 
     // Ignore the standard Eloquent Collection — that's the default, not
     // a custom override.
@@ -343,21 +340,15 @@ fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Opti
         return None;
     }
 
-    // Use `return_type_str` to preserve the original form (including a
-    // leading `\` for FQNs) so that `resolve_name` in
-    // `resolve_parent_class_names` can distinguish FQN from short names.
-    // For generic return types like `TaskCollection<int, static>`, fall
-    // back to `base` (which has generics stripped by `base_name()`).
-    let raw = strip_fqn_prefix(&return_type_str);
-    if raw == base {
-        // No generics were stripped — use the original string which
-        // preserves the leading `\` when present.
-        Some(return_type_str)
-    } else {
-        // Generics were stripped by `base_name()`; the original string
-        // cannot be used as-is. `base` is already without `\`, which is
-        // the canonical FQN form used throughout the codebase.
-        Some(base.to_string())
+    // For Named types, use the full string representation which preserves
+    // the leading `\` for FQNs so that `resolve_name` can distinguish
+    // FQN from short names.
+    // For Generic types (e.g. `TaskCollection<int, static>`), use just
+    // the base name since the generic parameters aren't needed for
+    // collection class resolution.
+    match return_type {
+        PhpType::Named(_) => Some(return_type.to_string()),
+        _ => Some(base.to_string()),
     }
 }
 

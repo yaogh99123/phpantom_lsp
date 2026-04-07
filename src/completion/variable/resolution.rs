@@ -797,7 +797,6 @@ fn resolve_variable_in_members<'b>(
                     matched_param_is_variadic = param.ellipsis.is_some();
                     // Try the native AST type hint first.
                     let native_type = param.hint.as_ref().map(|h| extract_hint_type(h));
-                    let native_type_str = native_type.as_ref().map(|t| t.to_string());
 
                     // ── Eloquent scope Builder inference ────────
                     // When the enclosing method is a scope on an
@@ -823,10 +822,9 @@ fn resolve_variable_in_members<'b>(
                             ctx.class_loader,
                         )
                     });
-                    let enriched_type_str = enriched_type.as_ref().map(|t| t.to_string());
-
-                    let type_str_for_resolution =
-                        enriched_type_str.as_deref().or(native_type_str.as_deref());
+                    // Prefer the enriched type (Builder<Model>) over the bare native type.
+                    let type_for_resolution: Option<&PhpType> =
+                        enriched_type.as_ref().or(native_type.as_ref());
 
                     // Check the `@param` docblock annotation which may
                     // carry a more specific type than the native hint
@@ -883,7 +881,9 @@ fn resolve_variable_in_members<'b>(
                         param_results = ResolvedType::from_classes_with_hint(
                             resolved_from_effective,
                             effective_type.unwrap_or_else(|| {
-                                PhpType::parse(type_str_for_resolution.unwrap_or(""))
+                                type_for_resolution
+                                    .cloned()
+                                    .unwrap_or_else(|| PhpType::Raw(String::new()))
                             }),
                         );
                         break;
@@ -935,7 +935,6 @@ fn resolve_variable_in_members<'b>(
                             .find(|p| p.name == ctx.var_name)
                             && let Some(ref hint) = merged_param.type_hint
                         {
-                            let hint_str = hint.to_string();
                             let resolved =
                                 crate::completion::type_resolution::type_hint_to_classes_typed(
                                     hint,
@@ -944,10 +943,8 @@ fn resolve_variable_in_members<'b>(
                                     ctx.class_loader,
                                 );
                             if !resolved.is_empty() {
-                                param_results = ResolvedType::from_classes_with_hint(
-                                    resolved,
-                                    PhpType::parse(&hint_str),
-                                );
+                                param_results =
+                                    ResolvedType::from_classes_with_hint(resolved, hint.clone());
                                 break;
                             }
                             // The merged type hint is richer than the
@@ -976,7 +973,7 @@ fn resolve_variable_in_members<'b>(
                     } else if let Some(ref mth) = merged_type_hint {
                         Some(mth.clone())
                     } else {
-                        type_str_for_resolution.map(PhpType::parse)
+                        type_for_resolution.cloned()
                     };
                     if let Some(mut parsed) = best_type {
                         // ── Substitute method-level template params
@@ -1007,8 +1004,7 @@ fn resolve_variable_in_members<'b>(
             // type via `PhpType::extract_value_type`.
             if matched_param_is_variadic && !param_results.is_empty() {
                 for rt in &mut param_results {
-                    rt.type_string =
-                        PhpType::Generic("list".to_string(), vec![rt.type_string.clone()]);
+                    rt.type_string = PhpType::list(rt.type_string.clone());
                     // The variable is now an array, not a class instance,
                     // so clear the class_info.
                     rt.class_info = None;
@@ -3100,10 +3096,10 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
                 let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
                 let resolved =
                     super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
-                let value_type = if !resolved.is_empty() {
-                    ResolvedType::types_joined(&resolved).to_string()
+                let value_php_type = if !resolved.is_empty() {
+                    ResolvedType::types_joined(&resolved)
                 } else {
-                    "mixed".to_string()
+                    PhpType::mixed()
                 };
                 // Read the current base type from results (if any)
                 // and merge the new key into its shape.
@@ -3112,7 +3108,6 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
                     .map(|rt| &rt.type_string)
                     .cloned()
                     .unwrap_or_else(PhpType::array);
-                let value_php_type = PhpType::parse(&value_type);
                 let merged = merge_shape_key(&base, &key, &value_php_type);
                 // Replace results with the enriched shape type.
                 // Use extend_unique so this works in conditional
@@ -3176,10 +3171,10 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
 
             let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
             let resolved = super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
-            let value_type = if !resolved.is_empty() {
-                ResolvedType::types_joined(&resolved).to_string()
+            let value_php_type = if !resolved.is_empty() {
+                ResolvedType::types_joined(&resolved)
             } else {
-                "mixed".to_string()
+                PhpType::mixed()
             };
             // Read the current base type from results (if any)
             // and merge the push element type into it.
@@ -3197,7 +3192,6 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
             if base_type.is_array_shape() {
                 return;
             }
-            let value_php_type = PhpType::parse(&value_type);
             let merged = merge_push_type(&base_type, &value_php_type);
             let new_rt = ResolvedType::from_type_string(merged);
             results.clear();
@@ -3304,7 +3298,7 @@ fn merge_shape_key(base: &PhpType, key: &str, value_type: &PhpType) -> PhpType {
 /// the new type is unioned with it (e.g. `list<User|Admin>`).
 /// Otherwise, produces `list<value_type>`.
 ///
-/// Returns `PhpType::Generic("list", vec![elem_type])` or
+/// Returns `PhpType::list(elem_type)` or
 /// `PhpType::Named("array")` when no element types are available.
 fn merge_push_type(base: &PhpType, value_type: &PhpType) -> PhpType {
     let mut elem_types: Vec<PhpType> = Vec::new();
@@ -3312,7 +3306,7 @@ fn merge_push_type(base: &PhpType, value_type: &PhpType) -> PhpType {
     // Extract existing element types from the base.
     if let Some(existing_elem) = base.extract_element_type() {
         for member in existing_elem.union_members() {
-            if !matches!(member, PhpType::Named(n) if n.is_empty()) {
+            if !member.is_empty() {
                 elem_types.push(member.clone());
             }
         }
@@ -3320,9 +3314,7 @@ fn merge_push_type(base: &PhpType, value_type: &PhpType) -> PhpType {
 
     // Add new value type members (union-aware).
     for member in value_type.union_members() {
-        if !matches!(member, PhpType::Named(n) if n.is_empty())
-            && !elem_types.iter().any(|e| e.equivalent(member))
-        {
+        if !member.is_empty() && !elem_types.iter().any(|e| e.equivalent(member)) {
             elem_types.push(member.clone());
         }
     }
@@ -3337,7 +3329,7 @@ fn merge_push_type(base: &PhpType, value_type: &PhpType) -> PhpType {
         PhpType::Union(elem_types)
     };
 
-    PhpType::Generic("list".to_string(), vec![elem_type])
+    PhpType::list(elem_type)
 }
 
 /// Merge a keyed element type into an existing `PhpType` to produce
@@ -3350,23 +3342,21 @@ fn merge_push_type(base: &PhpType, value_type: &PhpType) -> PhpType {
 /// `array<string, User>`), the new value type is unioned with it and
 /// key types are unioned as well.
 ///
-/// Returns `PhpType::Generic("array", vec![key, val])`,
-/// `PhpType::Generic("array", vec![val])` when no key types are
+/// Returns `PhpType::generic_array(key, val)`,
+/// `PhpType::generic_array_val(val)` when no key types are
 /// available, or `PhpType::Named("array")` when no element types
 /// are available.
 fn merge_keyed_type(base: &PhpType, key_type: &PhpType, value_type: &PhpType) -> PhpType {
     // Collect existing key types from the base.
     let mut key_types: Vec<PhpType> = Vec::new();
     if let Some(existing_key) = base.extract_key_type(false)
-        && !matches!(existing_key, PhpType::Named(n) if n.is_empty())
+        && !existing_key.is_empty()
     {
         key_types.push(existing_key.clone());
     }
     // Add new key type members.
     for member in key_type.union_members() {
-        if !matches!(member, PhpType::Named(n) if n.is_empty())
-            && !key_types.iter().any(|e| e.equivalent(member))
-        {
+        if !member.is_empty() && !key_types.iter().any(|e| e.equivalent(member)) {
             key_types.push(member.clone());
         }
     }
@@ -3375,16 +3365,14 @@ fn merge_keyed_type(base: &PhpType, key_type: &PhpType, value_type: &PhpType) ->
     let mut elem_types: Vec<PhpType> = Vec::new();
     if let Some(existing_elem) = base.extract_element_type() {
         for member in existing_elem.union_members() {
-            if !matches!(member, PhpType::Named(n) if n.is_empty()) {
+            if !member.is_empty() {
                 elem_types.push(member.clone());
             }
         }
     }
     // Add new value type members.
     for member in value_type.union_members() {
-        if !matches!(member, PhpType::Named(n) if n.is_empty())
-            && !elem_types.iter().any(|e| e.equivalent(member))
-        {
+        if !member.is_empty() && !elem_types.iter().any(|e| e.equivalent(member)) {
             elem_types.push(member.clone());
         }
     }
@@ -3401,14 +3389,14 @@ fn merge_keyed_type(base: &PhpType, key_type: &PhpType, value_type: &PhpType) ->
 
     if key_types.is_empty() {
         // No key type information — use a single-param generic.
-        PhpType::Generic("array".to_string(), vec![val_type])
+        PhpType::generic_array_val(val_type)
     } else {
         let k_type = if key_types.len() == 1 {
             key_types.into_iter().next().unwrap()
         } else {
             PhpType::Union(key_types)
         };
-        PhpType::Generic("array".to_string(), vec![k_type, val_type])
+        PhpType::generic_array(k_type, val_type)
     }
 }
 
@@ -3475,8 +3463,10 @@ fn is_string_like_key(ty: &PhpType) -> bool {
 /// Returns `true` when the [`PhpType`] is `array-key` or the
 /// equivalent `int|string` union.
 fn is_array_key_type(ty: &PhpType) -> bool {
+    if ty.is_array_key() {
+        return true;
+    }
     match ty {
-        PhpType::Named(s) if s == "array-key" => true,
         PhpType::Union(members) if members.len() == 2 => {
             let has_int = members.iter().any(|m| m.is_int());
             let has_string = members.iter().any(|m| m.is_string_type());
@@ -3490,10 +3480,13 @@ fn is_array_key_type(ty: &PhpType) -> bool {
 /// is always coerced to `int` when used as an array key.
 fn is_int_like_key(ty: &str) -> bool {
     matches!(
-        ty,
+        ty.to_ascii_lowercase().as_str(),
         "int"
+            | "integer"
             | "float"
+            | "double"
             | "bool"
+            | "boolean"
             | "true"
             | "false"
             | "null"

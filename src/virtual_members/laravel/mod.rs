@@ -707,8 +707,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
             // `ProductCollection<Review>`.
             let custom_collection = if kind == RelationshipKind::Collection {
                 related_type
-                    .as_deref()
-                    .and_then(class_loader)
+                    .and_then(|t| t.base_name().and_then(class_loader))
                     .and_then(|related_class| {
                         related_class
                             .laravel
@@ -719,8 +718,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 None
             };
 
-            let type_hint =
-                build_property_type(kind, related_type.as_deref(), custom_collection.as_deref());
+            let type_hint = build_property_type(kind, related_type, custom_collection.as_deref());
 
             if let Some(ref th) = type_hint {
                 properties.push(PropertyInfo::virtual_property_typed(&method.name, Some(th)));

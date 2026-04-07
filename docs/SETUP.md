@@ -139,6 +139,82 @@ With [LSP for Sublime Text](https://github.com/sublimelsp/LSP):
 
 </details>
 
+<details>
+<summary><b>Helix</b></summary>
+
+Helix has built-in LSP support. Add PHPantom to your `languages.toml` (typically `~/.config/helix/languages.toml`):
+
+```toml
+[language-server.phpantom]
+command = "phpantom_lsp"
+
+[[language]]
+name = "php"
+language-servers = ["phpantom"]
+```
+
+</details>
+
+<details>
+<summary><b>Emacs (eglot)</b></summary>
+
+> [!NOTE]
+> This configuration is untested. If you get it working (or run into issues), please [open an issue](../../issues).
+
+Eglot is built into Emacs 29+. Add to your `init.el`:
+
+```elisp
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs
+               '(php-mode . ("phpantom_lsp"))))
+```
+
+Then open a PHP file and run `M-x eglot`.
+
+</details>
+
+<details>
+<summary><b>Emacs (lsp-mode)</b></summary>
+
+> [!NOTE]
+> This configuration is untested. If you get it working (or run into issues), please [open an issue](../../issues).
+
+Add to your `init.el`:
+
+```elisp
+(with-eval-after-load 'lsp-mode
+  (lsp-register-client
+   (make-lsp-client
+    :new-connection (lsp-stdio-connection '("phpantom_lsp"))
+    :activation-fn (lsp-activate-on "php")
+    :server-id 'phpantom)))
+```
+
+Then open a PHP file and run `M-x lsp`.
+
+</details>
+
+<details>
+<summary><b>Kate</b></summary>
+
+> [!NOTE]
+> This configuration is untested. If you get it working (or run into issues), please [open an issue](../../issues).
+
+Kate (KDE) has built-in LSP support. Open **Settings → Configure Kate → LSP Client → User Server Settings** and add:
+
+```json
+{
+  "servers": {
+    "php": {
+      "command": ["/path/to/phpantom_lsp"],
+      "url": "https://github.com/AJenbo/phpantom_lsp"
+    }
+  }
+}
+```
+
+</details>
+
 ## Project Configuration
 
 PHPantom works best with Composer projects. It reads `composer.json` to discover autoload directories and vendor packages, so completions and go-to-definition only surface classes that your autoloader can actually load. Projects without `composer.json` fall back to scanning every PHP file in the workspace.

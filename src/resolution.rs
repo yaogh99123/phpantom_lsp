@@ -57,18 +57,20 @@ impl Backend {
         // Defensively strip nullable prefix (`?Foo` → `Foo`) and generic
         // parameters (`Collection<int, User>` → `Collection`) so that
         // callers don't need to normalise before lookup.
-        let parsed = PhpType::parse(class_name);
-        let owned_name;
-        let class_name = if let Some(base) = parsed.base_name() {
-            owned_name = base.to_string();
-            owned_name.as_str()
+        self.find_or_load_class_typed(&PhpType::parse(class_name))
+    }
+
+    /// Like [`find_or_load_class`], but accepts a pre-parsed `PhpType`,
+    /// avoiding the redundant `PhpType::parse()` call that the string
+    /// overload performs internally.
+    pub(crate) fn find_or_load_class_typed(&self, ty: &PhpType) -> Option<Arc<ClassInfo>> {
+        if let Some(base) = ty.base_name() {
+            self.find_or_load_class_inner(base)
         } else {
             // Not a class-like type (scalar, union, etc.) — no useful
             // normalisation possible, try as-is.
-            class_name
-        };
-
-        self.find_or_load_class_inner(class_name)
+            self.find_or_load_class_inner(&ty.to_string())
+        }
     }
 
     /// Shared implementation used by [`find_or_load_class`].

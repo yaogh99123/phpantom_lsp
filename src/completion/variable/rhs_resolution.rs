@@ -560,11 +560,11 @@ fn build_constructor_template_subs(
         // Determine the binding mode by inspecting the parameter's
         // docblock type hint.  The type hint tells us how the template
         // param is embedded in the `@param` annotation.
-        let param_hint_str = ctor
+        let param_hint = ctor
             .parameters
             .get(param_idx)
-            .and_then(|p| p.type_hint_str());
-        let binding_mode = classify_template_binding(tpl_name, param_hint_str.as_deref());
+            .and_then(|p| p.type_hint.as_ref());
+        let binding_mode = classify_template_binding(tpl_name, param_hint);
 
         match binding_mode {
             TemplateBindingMode::Direct => {
@@ -659,18 +659,17 @@ pub(crate) enum TemplateBindingMode {
 /// Classify how a template parameter name appears in a `@param` type hint.
 ///
 /// Handles union types like `Arrayable<TKey, TValue>|iterable<TKey, TValue>|null`
-/// by parsing the hint with [`PhpType`] and recursively inspecting the structure.
+/// by recursively inspecting the [`PhpType`] structure.
 pub(crate) fn classify_template_binding(
     tpl_name: &str,
-    param_hint: Option<&str>,
+    param_hint: Option<&PhpType>,
 ) -> TemplateBindingMode {
     let hint = match param_hint {
         Some(h) => h,
         None => return TemplateBindingMode::Direct,
     };
 
-    let parsed = PhpType::parse(hint);
-    classify_from_php_type(tpl_name, &parsed)
+    classify_from_php_type(tpl_name, hint)
 }
 
 /// Recursively classify how a template parameter name appears in a parsed
@@ -688,14 +687,14 @@ fn classify_from_php_type(tpl_name: &str, ty: &PhpType) -> TemplateBindingMode {
                     return result;
                 }
                 // If it matched Direct because it IS the template name, return it.
-                if matches!(member, PhpType::Named(n) if n == tpl_name) {
+                if member.is_named(tpl_name) {
                     return TemplateBindingMode::Direct;
                 }
             }
             TemplateBindingMode::Direct
         }
         PhpType::Array(inner) => {
-            if matches!(inner.as_ref(), PhpType::Named(n) if n == tpl_name) {
+            if inner.as_ref().is_named(tpl_name) {
                 return TemplateBindingMode::ArrayElement;
             }
             TemplateBindingMode::Direct
@@ -703,7 +702,7 @@ fn classify_from_php_type(tpl_name: &str, ty: &PhpType) -> TemplateBindingMode {
         PhpType::Named(n) if n == tpl_name => TemplateBindingMode::Direct,
         PhpType::Generic(wrapper_name, args) => {
             for (i, arg) in args.iter().enumerate() {
-                if matches!(arg, PhpType::Named(n) if n == tpl_name) {
+                if arg.is_named(tpl_name) {
                     return TemplateBindingMode::GenericWrapper(wrapper_name.clone(), i);
                 }
             }
@@ -1005,11 +1004,11 @@ pub(crate) fn build_function_template_subs(
         // Determine the binding mode by inspecting the parameter's
         // docblock type hint.  The type hint tells us how the template
         // param is embedded in the `@param` annotation.
-        let param_hint_str = func_info
+        let param_hint = func_info
             .parameters
             .get(param_idx)
-            .and_then(|p| p.type_hint_str());
-        let binding_mode = classify_template_binding(tpl_name, param_hint_str.as_deref());
+            .and_then(|p| p.type_hint.as_ref());
+        let binding_mode = classify_template_binding(tpl_name, param_hint);
 
         match binding_mode {
             TemplateBindingMode::Direct => {
@@ -1068,10 +1067,9 @@ pub(crate) fn build_function_template_subs(
                 if is_array_like_wrapper(wrapper_name)
                     && arg_text.starts_with('$')
                     && let Some(resolved) = resolve_arg_variable_raw_type(arg_text, rctx)
-                    && let Some(concrete) =
-                        extract_array_type_at_position(&resolved.to_string(), tpl_position)
+                    && let Some(concrete) = extract_array_type_at_position(&resolved, tpl_position)
                 {
-                    subs.insert(tpl_name.clone(), PhpType::parse(&concrete));
+                    subs.insert(tpl_name.clone(), concrete);
                     continue;
                 }
                 // Fall back to direct resolution for non-array wrappers
@@ -1168,36 +1166,33 @@ fn resolve_arg_variable_raw_type(
 ///
 /// For single-param forms:
 /// - `array<User>` at position 0 → `"User"`
-fn extract_array_type_at_position(raw_type: &str, position: usize) -> Option<String> {
-    let trimmed = raw_type.trim();
-    let parsed = crate::php_type::PhpType::parse(trimmed);
-
-    match &parsed {
+fn extract_array_type_at_position(ty: &PhpType, position: usize) -> Option<PhpType> {
+    match ty {
         // `T[]` shorthand → key is int (position 0), value is T (position 1).
-        crate::php_type::PhpType::Array(inner) => match position {
-            0 => Some("int".to_string()),
-            1 => Some(inner.to_string()),
+        PhpType::Array(inner) => match position {
+            0 => Some(PhpType::int()),
+            1 => Some(inner.as_ref().clone()),
             _ => None,
         },
 
         // Generic types: `array<K, V>`, `array<V>`, `list<T>`, `iterable<K, V>`, etc.
-        crate::php_type::PhpType::Generic(name, args) => {
+        PhpType::Generic(name, args) => {
             let lower = name.to_ascii_lowercase();
             match lower.as_str() {
                 "list" | "non-empty-list" => match position {
-                    0 => Some("int".to_string()),
-                    1 => args.first().map(|a| a.to_string()),
+                    0 => Some(PhpType::int()),
+                    1 => args.first().cloned(),
                     _ => None,
                 },
                 "array" | "non-empty-array" | "iterable" | "associative-array" => {
                     if args.len() == 2 {
                         // `array<K, V>` — position maps directly.
-                        args.get(position).map(|a| a.to_string())
+                        args.get(position).cloned()
                     } else if args.len() == 1 {
                         // `array<V>` — position 0 = int (key), position 1 = V.
                         match position {
-                            0 => Some("int".to_string()),
-                            1 => args.first().map(|a| a.to_string()),
+                            0 => Some(PhpType::int()),
+                            1 => args.first().cloned(),
                             _ => None,
                         }
                     } else {
@@ -1508,7 +1503,6 @@ fn resolve_rhs_function_call<'b>(
             if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                 && let Some(ref ret) = invoke.return_type
             {
-                let ret_str = ret.to_string();
                 let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
                     ret,
                     current_class_name,
@@ -1523,7 +1517,7 @@ fn resolve_rhs_function_call<'b>(
                 // class lookup), emit a type-string-only entry so that
                 // callers like foreach resolution can still extract the
                 // element type via `PhpType::extract_value_type`.
-                if !ret_str.is_empty() {
+                if !ret.is_empty() {
                     return vec![ResolvedType::from_type_string(ret.clone())];
                 }
             }
@@ -1562,7 +1556,6 @@ fn resolve_rhs_function_call<'b>(
                 && let Some(invoke) = owner_cls.methods.iter().find(|m| m.name == "__invoke")
                 && let Some(ref ret) = invoke.return_type
             {
-                let ret_str = ret.to_string();
                 let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
                     ret,
                     current_class_name,
@@ -1572,7 +1565,7 @@ fn resolve_rhs_function_call<'b>(
                 if !resolved.is_empty() {
                     return ResolvedType::from_classes_with_hint(resolved, ret.clone());
                 }
-                if !ret_str.is_empty() {
+                if !ret.is_empty() {
                     return vec![ResolvedType::from_type_string(ret.clone())];
                 }
             }
@@ -1836,15 +1829,21 @@ fn resolve_rhs_static_call(
                     Loaders::with_function(ctx.function_loader()),
                 );
                 resolved.iter().find_map(|rt| match &rt.type_string {
-                    PhpType::ClassString(Some(inner)) => Some(inner.to_string()),
+                    PhpType::ClassString(Some(inner)) => inner.base_name().map(|s| s.to_string()),
                     PhpType::Nullable(inner) => match inner.as_ref() {
-                        PhpType::ClassString(Some(cs_inner)) => Some(cs_inner.to_string()),
+                        PhpType::ClassString(Some(cs_inner)) => {
+                            cs_inner.base_name().map(|s| s.to_string())
+                        }
                         _ => None,
                     },
                     PhpType::Union(members) => members.iter().find_map(|m| match m {
-                        PhpType::ClassString(Some(inner)) => Some(inner.to_string()),
+                        PhpType::ClassString(Some(inner)) => {
+                            inner.base_name().map(|s| s.to_string())
+                        }
                         PhpType::Nullable(inner) => match inner.as_ref() {
-                            PhpType::ClassString(Some(cs_inner)) => Some(cs_inner.to_string()),
+                            PhpType::ClassString(Some(cs_inner)) => {
+                                cs_inner.base_name().map(|s| s.to_string())
+                            }
                             _ => None,
                         },
                         _ => None,
@@ -1969,10 +1968,9 @@ fn resolve_rhs_property_access(
         all_classes: &[Arc<ClassInfo>],
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     ) -> Vec<ResolvedType> {
-        // Get the type hint string before resolving to ClassInfo.
+        // Get the type hint before resolving to ClassInfo.
         let type_hint =
-            crate::inheritance::resolve_property_type_hint(owner, prop_name, class_loader)
-                .map(|t| t.to_string());
+            crate::inheritance::resolve_property_type_hint(owner, prop_name, class_loader);
         let resolved = crate::completion::type_resolution::resolve_property_types(
             prop_name,
             owner,
@@ -1987,13 +1985,13 @@ fn resolve_rhs_property_access(
             // shapes, or names a non-scalar class).
             return match type_hint {
                 Some(hint) => {
-                    vec![ResolvedType::from_type_string(PhpType::parse(&hint))]
+                    vec![ResolvedType::from_type_string(hint)]
                 }
                 _ => vec![],
             };
         }
         match type_hint {
-            Some(ref hint) => ResolvedType::from_classes_with_hint(resolved, PhpType::parse(hint)),
+            Some(hint) => ResolvedType::from_classes_with_hint(resolved, hint),
             None => ResolvedType::from_classes(resolved),
         }
     }
@@ -2177,61 +2175,68 @@ mod tests {
 
     #[test]
     fn classify_direct_param() {
-        let mode = classify_template_binding("T", Some("T"));
+        let ty = PhpType::parse("T");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::Direct));
     }
 
     #[test]
     fn classify_array_element() {
-        let mode = classify_template_binding("T", Some("T[]"));
+        let ty = PhpType::parse("T[]");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::ArrayElement));
     }
 
     #[test]
     fn classify_generic_wrapper() {
-        let mode = classify_template_binding("T", Some("Collection<T>"));
+        let ty = PhpType::parse("Collection<T>");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::GenericWrapper(_, 0)));
     }
 
     #[test]
     fn classify_callable_return_type() {
-        let mode = classify_template_binding(
-            "TReduceReturnType",
-            Some("callable(TReduceInitial|TReduceReturnType, TValue): TReduceReturnType"),
-        );
+        let ty =
+            PhpType::parse("callable(TReduceInitial|TReduceReturnType, TValue): TReduceReturnType");
+        let mode = classify_template_binding("TReduceReturnType", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::CallableReturnType));
     }
 
     #[test]
     fn classify_closure_return_type() {
-        let mode = classify_template_binding("T", Some("Closure(int, string): T"));
+        let ty = PhpType::parse("Closure(int, string): T");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::CallableReturnType));
     }
 
     #[test]
     fn classify_callable_param_type() {
         // Template appears only in params, not in return type — should be CallableParamType.
-        let mode = classify_template_binding("T", Some("callable(T): void"));
+        let ty = PhpType::parse("callable(T): void");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::CallableParamType(0)));
     }
 
     #[test]
     fn classify_callable_param_type_second_position() {
-        let mode = classify_template_binding("T", Some("Closure(int, T): void"));
+        let ty = PhpType::parse("Closure(int, T): void");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::CallableParamType(1)));
     }
 
     #[test]
     fn classify_callable_return_type_preferred_over_param() {
         // When T appears in both params and return type, return type wins.
-        let mode = classify_template_binding("T", Some("callable(T): T"));
+        let ty = PhpType::parse("callable(T): T");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::CallableReturnType));
     }
 
     #[test]
     fn classify_nullable_union_callable() {
         // Template in callable return type within a union.
-        let mode = classify_template_binding("T", Some("callable(int): T|null"));
+        let ty = PhpType::parse("callable(int): T|null");
+        let mode = classify_template_binding("T", Some(&ty));
         assert!(matches!(mode, TemplateBindingMode::CallableReturnType));
     }
 

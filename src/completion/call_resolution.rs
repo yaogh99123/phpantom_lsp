@@ -1121,11 +1121,11 @@ impl Backend {
             // Classify how the template param appears in the parameter's
             // type hint (direct, array element, generic wrapper, or
             // callable return type).
-            let param_hint_str = method
+            let param_hint = method
                 .parameters
                 .get(param_idx)
-                .and_then(|p| p.type_hint_str());
-            let binding_mode = classify_template_binding(tpl_name, param_hint_str.as_deref());
+                .and_then(|p| p.type_hint.as_ref());
+            let binding_mode = classify_template_binding(tpl_name, param_hint);
 
             match binding_mode {
                 TemplateBindingMode::Direct | TemplateBindingMode::GenericWrapper(..) => {

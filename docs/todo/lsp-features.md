@@ -500,3 +500,186 @@ pure PHP is variable renaming within a scope.
 - The response must not include ranges that overlap or that would
   produce invalid syntax when edited together. Since all ranges are
   the same variable name, this is naturally satisfied.
+
+---
+
+## F11. VS Code extension
+
+| Field      | Value                    |
+| ---------- | ------------------------ |
+| **Impact** | High                     |
+| **Effort** | Medium (2-5 days)        |
+
+Create a VS Code extension that bundles PHPantom and publishes it to
+the VS Code Marketplace.
+
+### Approach
+
+Fork the [vscode-intelephense](https://github.com/bmewburn/vscode-intelephense)
+client extension (MIT-licensed). Intelephense is the #1 PHP extension
+in the VS Code Marketplace, so its `package.json` represents what
+PHP developers expect from an extension: the settings schema,
+activation events, file associations, categories, and contribution
+points are battle-tested. Starting from this base means we do not
+accidentally omit something users take for granted.
+
+Strip the proprietary Intelephense server dependency (`intelephense`
+npm package) and replace it with PHPantom binary management. The
+extension is a thin TypeScript wrapper around `vscode-languageclient`
+that spawns `phpantom_lsp` over stdio.
+
+**Cleanup process:** After forking, compare the result against a
+fresh VS Code extension scaffold (`yo code` generator) to identify
+and remove Intelephense-specific legacy that does not apply to
+PHPantom (licence key commands, telemetry integration, Node.js
+runtime configuration, premium feature gating). The goal is a clean
+extension that inherits the right UX expectations without carrying
+over implementation baggage.
+
+### Scope
+
+1. **Binary distribution.** Bundle or auto-download the correct
+   pre-built binary for each platform (linux-x64, linux-arm64,
+   darwin-x64, darwin-arm64, win-x64). Use GitHub Releases as the
+   download source.
+2. **Settings surface.** Expose PHPantom's `.phpantom.toml` settings
+   as VS Code settings (PHP version, diagnostics toggles, indexing
+   strategy).
+3. **Status bar.** Show indexing progress and server status.
+4. **Marketplace listing.** Icon, description, screenshots,
+   categories, keywords.
+5. **CI.** GitHub Actions workflow to build, test, and publish the
+   extension on release.
+
+### Code signing
+
+macOS and Windows builds must be signed so the OS
+stops flagging PHPantom as malware. This is a prerequisite for the
+VS Code extension (users will not trust an extension that triggers
+Gatekeeper or SmartScreen warnings).
+
+- **macOS:** Apple Developer ID certificate, `codesign`, and
+  `notarytool` in the release CI workflow.
+- **Windows:** Authenticode certificate (or Azure Trusted Signing)
+  and `signtool` in the release CI workflow.
+
+---
+
+## F12. IntelliJ / PHPStorm plugin
+
+| Field      | Value                    |
+| ---------- | ------------------------ |
+| **Impact** | High                     |
+| **Effort** | Medium (2-5 days)        |
+
+Create an IntelliJ plugin that depends on
+[LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) and
+bundles PHPantom. Publish it to the JetBrains Marketplace. Works in
+all IntelliJ-based IDEs (PHPStorm, IntelliJ IDEA, WebStorm, etc.).
+
+### Approach
+
+Fork [clojure-lsp-intellij](https://github.com/clojure-lsp/clojure-lsp-intellij)
+(MIT-licensed). It is a Kotlin/Gradle plugin that registers a
+language server via lsp4ij's `com.redhat.devtools.lsp4ij.server`
+extension point. Strip the Clojure-specific parts and replace them
+with PHPantom:
+
+- Register PHPantom as the language server in `plugin.xml`.
+- Map the `PHP` language and file type via
+  `com.redhat.devtools.lsp4ij.languageMapping`.
+- Bundle or auto-download the PHPantom binary.
+- Add a settings page for the binary path and any PHPantom-specific
+  options.
+
+### Scope
+
+1. **`plugin.xml` registration.** Server definition, language
+   mapping, file type mapping (`.php`, `.phtml`, `.inc`).
+2. **Binary management.** Auto-download from GitHub Releases on
+   first run, with a manual path override in settings.
+3. **Settings UI.** Binary path, PHP version override, diagnostic
+   toggles.
+4. **JetBrains Marketplace listing.** Icon, description, plugin
+   compatibility range (2024.2+, matching lsp4ij's requirement).
+5. **CI.** GitHub Actions workflow using `gradlew buildPlugin` and
+   `gradlew publishPlugin`.
+
+### Why not use the built-in IntelliJ LSP API
+
+IntelliJ's native LSP support (since 2023.2) is only available in
+Ultimate editions and is still limited in capability. LSP4IJ is free,
+works in all editions (including Community), and supports a broader
+set of LSP features. Using lsp4ij also means the plugin works in
+IntelliJ IDEA (for PHP projects opened there) and other JetBrains
+IDEs, not just PHPStorm.
+
+---
+
+## F13. Homebrew formula
+
+| Field      | Value                    |
+| ---------- | ------------------------ |
+| **Impact** | Medium                   |
+| **Effort** | Low (≤ 1 day)            |
+
+Create a Homebrew formula for PHPantom so users on macOS and Linux
+can install it with `brew install phpantom_lsp`.
+
+### Approach
+
+Submit a PR to [homebrew-core](https://github.com/Homebrew/homebrew-core)
+with a formula that downloads the pre-built binary from GitHub
+Releases for the current platform. Alternatively, the formula can
+build from source using `cargo install` if the Homebrew reviewers
+prefer source builds (common for Rust projects).
+
+### Formula contents
+
+- **Homepage:** `https://github.com/AJenbo/phpantom_lsp`
+- **Source:** GitHub Releases tarball or `cargo install` from crates.io.
+- **Binary:** `phpantom_lsp`
+- **Test block:** `system bin/"phpantom_lsp", "--version"`
+
+### Why this matters
+
+A Homebrew formula is a prerequisite for upstream PRs to editors like
+Helix, which prefer that language servers be installable via a
+package manager. It also simplifies the VS Code extension's binary
+management on macOS (detect Homebrew-installed binary before
+downloading).
+
+---
+
+## F14. Helix upstream PR
+
+| Field      | Value                    |
+| ---------- | ------------------------ |
+| **Impact** | Low-Medium               |
+| **Effort** | Low (≤ 1 day)            |
+
+**Depends on:** F13 (Homebrew formula).
+
+Submit a PR to the [Helix editor](https://github.com/helix-editor/helix)
+adding `phpantom_lsp` as a language server option in the default
+`languages.toml`.
+
+### Change
+
+Add a `phpantom` server definition and include it in the `php`
+language entry (alongside `intelephense`):
+
+```toml
+[language-server.phpantom]
+command = "phpantom_lsp"
+
+# In the [[language]] entry for php, add "phpantom" to language-servers.
+```
+
+### Prerequisites
+
+- F13 (Homebrew formula) should be merged so Helix maintainers can
+  point users at `brew install phpantom_lsp`.
+- Helix maintainers may want a brief README section documenting the
+  server and its feature set.
+

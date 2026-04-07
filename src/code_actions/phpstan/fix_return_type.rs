@@ -937,12 +937,12 @@ fn build_change_return_type_edits_to(
 /// type (if any) into a single effective type string that can be
 /// compared against our inference result.
 struct CurrentReturnType {
-    /// The native type hint after `:`, e.g. `"array"`, `"int"`.
+    /// The native type hint after `:`, e.g. `array`, `int`.
     /// `None` when the function has no return type declaration.
-    native: Option<String>,
-    /// The `@return` tag type, e.g. `"array<int, string>"`.
+    native: Option<PhpType>,
+    /// The `@return` tag type, e.g. `array<int, string>`.
     /// `None` when there is no docblock or no `@return` tag.
-    docblock: Option<String>,
+    docblock: Option<PhpType>,
 }
 
 /// Read the current native return type and `@return` tag type from the
@@ -984,7 +984,7 @@ fn read_current_return_type(content: &str, diag_line: usize) -> CurrentReturnTyp
         let type_len = type_text
             .find(|c: char| c.is_whitespace() || c == '{')
             .unwrap_or(type_text.len());
-        type_text[..type_len].to_string()
+        PhpType::parse(&type_text[..type_len])
     });
 
     // ── @return tag type ────────────────────────────────────────────
@@ -1000,7 +1000,7 @@ fn read_current_return_type(content: &str, diag_line: usize) -> CurrentReturnTyp
             return None;
         }
         let (type_token, _remainder) = split_type_token(trimmed);
-        Some(type_token.to_string())
+        Some(PhpType::parse(type_token))
     });
 
     CurrentReturnType { native, docblock }
@@ -1028,18 +1028,11 @@ fn should_use_own_inference(our: &Option<InferredReturnType>, current: &CurrentR
 
     // The effective type currently declared (prefers the @return tag,
     // falls back to the native hint).
-    let current_effective_str = current
-        .docblock
-        .as_deref()
-        .or(current.native.as_deref())
-        .unwrap_or("");
-
-    if current_effective_str.is_empty() {
+    let current_effective = current.docblock.as_ref().or(current.native.as_ref());
+    let Some(current_effective) = current_effective else {
         return true;
-    }
-
-    let current_effective = PhpType::parse(current_effective_str);
-    !our_effective.equivalent(&current_effective)
+    };
+    !our_effective.equivalent(current_effective)
 }
 
 /// Build edits using pre-split native and effective types from our
@@ -1492,13 +1485,12 @@ fn infer_array_literal_type(inner: &str) -> Option<PhpType> {
     }
 
     // Deduplicate value types.
-    let mut type_strings: Vec<String> = value_types.iter().map(|t| t.to_string()).collect();
-    type_strings.sort();
-    type_strings.dedup();
-    let deduped: Vec<PhpType> = type_strings
-        .into_iter()
-        .map(|s| PhpType::parse(&s))
-        .collect();
+    let mut deduped: Vec<PhpType> = Vec::with_capacity(value_types.len());
+    for ty in &value_types {
+        if !deduped.iter().any(|existing| existing.equivalent(ty)) {
+            deduped.push(ty.clone());
+        }
+    }
 
     let value_union_type = if deduped.len() > 3 {
         PhpType::mixed()
@@ -1509,15 +1501,12 @@ fn infer_array_literal_type(inner: &str) -> Option<PhpType> {
     };
 
     if has_string_keys && !has_int_keys {
-        Some(PhpType::Generic(
-            "array".to_owned(),
-            vec![PhpType::string(), value_union_type],
-        ))
+        Some(PhpType::generic_array(PhpType::string(), value_union_type))
     } else if has_string_keys {
         // Mixed key types — just use array with value type.
-        Some(PhpType::Generic("array".to_owned(), vec![value_union_type]))
+        Some(PhpType::generic_array_val(value_union_type))
     } else {
-        Some(PhpType::Generic("list".to_owned(), vec![value_union_type]))
+        Some(PhpType::list(value_union_type))
     }
 }
 
@@ -2399,7 +2388,7 @@ mod tests {
     fn literal_array_mixed_scalars() {
         assert_eq!(
             infer_type_from_literal("['a', 1]").map(|t| t.to_string()),
-            Some("list<int|string>".to_string())
+            Some("list<string|int>".to_string())
         );
     }
 
@@ -2411,7 +2400,7 @@ mod tests {
         );
         assert_eq!(
             infer_type_from_literal("['name' => 'Alice', 'age' => 42]").map(|t| t.to_string()),
-            Some("array<string, int|string>".to_string())
+            Some("array<string, string|int>".to_string())
         );
     }
 

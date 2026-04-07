@@ -1286,7 +1286,7 @@ fn resolve_closure_params_with_inferred(
             let parsed_inferred = inferred_types.get(idx).cloned();
             // 1. Try the explicit type hint first.
             if let Some(hint) = &param.hint {
-                let type_str = extract_hint_type(hint).to_string();
+                let hint_type = extract_hint_type(hint);
 
                 // When the explicit hint is a bare class name (no
                 // generic args) and the inferred type from the callable
@@ -1298,7 +1298,7 @@ fn resolve_closure_params_with_inferred(
                 // template substitution so that foreach iteration resolves
                 // the element type.
                 if let Some(inferred) = inferred_types.get(idx)
-                    && inferred_type_is_more_specific(&type_str, &inferred.to_string())
+                    && inferred_type_is_more_specific(&hint_type, inferred)
                 {
                     let pi = parsed_inferred.as_ref().unwrap();
                     let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
@@ -1316,10 +1316,9 @@ fn resolve_closure_params_with_inferred(
                     }
                 }
 
-                let parsed_type_str = PhpType::parse(&type_str);
                 let resolved_classes =
                     crate::completion::type_resolution::type_hint_to_classes_typed(
-                        &parsed_type_str,
+                        &hint_type,
                         &ctx.current_class.name,
                         ctx.all_classes,
                         ctx.class_loader,
@@ -1391,7 +1390,7 @@ fn resolve_closure_params_with_inferred(
                 // hover and diagnostics can see the parameter's type
                 // even when it's a scalar.  Prefer the docblock type
                 // over the native type when available.
-                let best_type = docblock_type.unwrap_or_else(|| PhpType::parse(&type_str));
+                let best_type = docblock_type.unwrap_or_else(|| hint_type.clone());
                 *results = vec![ResolvedType::from_type_string(best_type)];
                 break;
             }
@@ -1422,7 +1421,7 @@ fn resolve_closure_params_with_inferred(
     // `PhpType::extract_value_type`.
     if matched_param_is_variadic && !results.is_empty() {
         for rt in results.iter_mut() {
-            rt.type_string = PhpType::Generic("list".to_string(), vec![rt.type_string.clone()]);
+            rt.type_string = PhpType::list(rt.type_string.clone());
             // The variable is now an array, not a class instance,
             // so clear the class_info.
             rt.class_info = None;
@@ -1438,18 +1437,15 @@ fn resolve_closure_params_with_inferred(
 /// arguments (e.g. `Collection<int, Customer>`).  Namespace-qualified
 /// names are compared by their last segment so that `Collection` matches
 /// `Illuminate\Support\Collection<int, Customer>`.
-fn inferred_type_is_more_specific(explicit_hint: &str, inferred: &str) -> bool {
-    let explicit_parsed = PhpType::parse(explicit_hint);
-    let inferred_parsed = PhpType::parse(inferred);
-
+fn inferred_type_is_more_specific(explicit_hint: &PhpType, inferred: &PhpType) -> bool {
     // The explicit hint must be a bare class name (no generic args).
-    let explicit_base = match &explicit_parsed {
+    let explicit_base = match explicit_hint {
         PhpType::Named(name) => name.as_str(),
         _ => return false,
     };
 
     // The inferred type must be a generic type (carries generic args).
-    let inferred_base = match &inferred_parsed {
+    let inferred_base = match inferred {
         PhpType::Generic(name, _) => name.as_str(),
         _ => return false,
     };
@@ -1853,9 +1849,13 @@ fn build_receiver_self_type(
     if !receiver.extends_generics.is_empty() && receiver.template_params.len() == 1 {
         for (_, args) in &receiver.extends_generics {
             if let Some(first_arg) = args.first() {
-                let arg_str = first_arg.to_string();
                 // Skip raw template param names that weren't substituted.
-                if !receiver.template_params.contains(&arg_str) {
+                let is_unsubstituted = if let PhpType::Named(name) = first_arg {
+                    receiver.template_params.contains(name)
+                } else {
+                    false
+                };
+                if !is_unsubstituted {
                     return PhpType::Generic(fqn, vec![first_arg.clone()]);
                 }
             }
@@ -1877,9 +1877,13 @@ fn extract_generic_args_from_methods(class: &ClassInfo, class_fqn: &str) -> Opti
             let base_short = crate::util::short_name(base);
             if (base == class_fqn || base_short.eq_ignore_ascii_case(class_short))
                 && !args.is_empty()
-                && args
-                    .iter()
-                    .all(|a| !matches!(a, PhpType::Named(n) if class.template_params.contains(n)))
+                && args.iter().all(|a| {
+                    if let PhpType::Named(n) = a {
+                        !class.template_params.contains(n)
+                    } else {
+                        true
+                    }
+                })
             {
                 return Some(args.clone());
             }
@@ -1905,7 +1909,7 @@ fn find_model_from_receivers(
         let cls_fqn = cls.fqn();
         if (cls.name == "Builder" || cls_fqn == ELOQUENT_BUILDER_FQN)
             && let Some(model_type) = extract_model_from_builder(cls)
-            && let Some(model_cls) = class_loader(&model_type.to_string())
+            && let Some(model_cls) = model_type.base_name().and_then(class_loader)
             && extends_eloquent_model(&model_cls, class_loader)
         {
             return Some(model_cls);
@@ -1923,9 +1927,8 @@ fn extract_model_from_builder(builder: &ClassInfo) -> Option<PhpType> {
             && !args.is_empty()
             && (base == ELOQUENT_BUILDER_FQN || base == "Builder")
         {
-            let model_str = args[0].to_string();
             // Skip unsubstituted template params like "TModel".
-            if !model_str.is_empty() && model_str != "TModel" {
+            if !args[0].is_empty() && !args[0].is_named("TModel") {
                 return Some(args[0].clone());
             }
         }

@@ -51,8 +51,10 @@ struct SigParam {
 /// A `@param` tag parsed from an existing docblock.
 #[derive(Debug, Clone)]
 struct DocParam {
-    /// The full type string from the tag.
-    type_str: String,
+    /// The original type string from the tag, preserved for docblock output.
+    type_str_raw: String,
+    /// The parsed type, constructed once from `type_str_raw`.
+    type_parsed: PhpType,
     /// Parameter name including `$` prefix (and optional `...` prefix for variadic).
     name: String,
     /// Description text after the `$name`.
@@ -62,8 +64,8 @@ struct DocParam {
 /// A `@return` tag parsed from an existing docblock.
 #[derive(Debug, Clone)]
 struct DocReturn {
-    /// The type string from the tag.
-    type_str: String,
+    /// The parsed type, constructed once from the raw tag string.
+    type_parsed: PhpType,
     /// Description text after the type.
     description: String,
 }
@@ -469,7 +471,8 @@ fn parse_doc_params_from_info(info: &DocblockInfo) -> Vec<DocParam> {
             .join(" ");
 
         results.push(DocParam {
-            type_str: type_str.to_string(),
+            type_parsed: PhpType::parse(type_str),
+            type_str_raw: type_str.to_string(),
             name,
             description,
         });
@@ -495,7 +498,7 @@ fn parse_doc_return_from_info(info: &DocblockInfo) -> Option<DocReturn> {
         let description = remainder.trim().to_string();
 
         return Some(DocReturn {
-            type_str: type_str.to_string(),
+            type_parsed: PhpType::parse(type_str),
             description,
         });
     }
@@ -585,7 +588,7 @@ fn check_needs_update(
                 let n = n.strip_prefix("...").unwrap_or(n);
                 n == sig_param.name
             })
-            && is_type_contradiction(&doc_param.type_str, &native_type.to_string())
+            && is_type_contradiction(&doc_param.type_parsed, native_type)
         {
             return true;
         }
@@ -602,11 +605,11 @@ fn check_needs_update(
         }) {
             // If the doc type already carries generic params or a callable
             // signature, it is already enriched — no update needed.
-            if PhpType::parse(&doc_param.type_str).has_type_structure() {
+            if doc_param.type_parsed.has_type_structure() {
                 continue;
             }
             if let Some(enriched) = enrichment_plain(sig_param.type_hint.as_ref(), class_loader)
-                && enriched != doc_param.type_str
+                && enriched != doc_param.type_str_raw
             {
                 return true;
             }
@@ -618,10 +621,10 @@ fn check_needs_update(
         && let Some(doc_ret) = &info.doc_return
     {
         // Remove `@return void` if the signature also has `: void`.
-        if sig_ret.is_void() && PhpType::parse(&doc_ret.type_str).is_void() {
+        if sig_ret.is_void() && doc_ret.type_parsed.is_void() {
             return true;
         }
-        if is_type_contradiction(&doc_ret.type_str, &sig_ret.to_string()) {
+        if is_type_contradiction(&doc_ret.type_parsed, sig_ret) {
             return true;
         }
     }
@@ -633,7 +636,7 @@ fn check_needs_update(
         let doc_already_rich = info
             .doc_return
             .as_ref()
-            .is_some_and(|dr| PhpType::parse(&dr.type_str).has_type_structure());
+            .is_some_and(|dr| dr.type_parsed.has_type_structure());
         if !doc_already_rich
             && let Some(enriched) = enrichment_return_type(
                 content,
@@ -646,11 +649,10 @@ fn check_needs_update(
             && !enriched.is_mixed()
             && !enriched.equivalent(sig_ret)
         {
-            let enriched_str = enriched.to_string();
             let differs_from_doc = info
                 .doc_return
                 .as_ref()
-                .is_none_or(|dr| dr.type_str != enriched_str);
+                .is_none_or(|dr| !dr.type_parsed.equivalent(&enriched));
             if differs_from_doc {
                 return true;
             }
@@ -697,15 +699,12 @@ fn check_needs_update(
 /// type. For example, docblock says `string` but native says `int` is a
 /// contradiction. But docblock says `non-empty-string` while native says
 /// `string` is a refinement (not a contradiction).
-fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
-    let doc_parsed = PhpType::parse(doc_type);
-    let native_parsed = PhpType::parse(native_type);
-
+fn is_type_contradiction(doc_type: &PhpType, native_type: &PhpType) -> bool {
     // `PhpType::equivalent` handles `?T` ↔ `T|null`, order-independent
     // unions, and FQN shortening.  It does not do case-insensitive
     // comparison, but PHP class names in practice come from the same
     // source so casing matches.
-    if doc_parsed.equivalent(&native_parsed) {
+    if doc_type.equivalent(native_type) {
         return false;
     }
 
@@ -714,12 +713,10 @@ fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
     // `list<User>` refines `array`, `positive-int` refines `int`).
     // This uses the shared refinement checker that also guards
     // `resolve_effective_type`.
-    let native_core = native_parsed
+    let native_core = native_type
         .non_null_type()
-        .unwrap_or_else(|| native_parsed.clone());
-    let doc_core = doc_parsed
-        .non_null_type()
-        .unwrap_or_else(|| doc_parsed.clone());
+        .unwrap_or_else(|| native_type.clone());
+    let doc_core = doc_type.non_null_type().unwrap_or_else(|| doc_type.clone());
     if is_compatible_refinement_typed(&doc_core, &native_core) {
         return false;
     }
@@ -727,8 +724,8 @@ fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
     // For single-member types, compare base names directly.  If they
     // differ and neither is a refinement of the other, it is a
     // contradiction.
-    let doc_bases = doc_parsed.union_members();
-    let native_bases = native_parsed.union_members();
+    let doc_bases = doc_type.union_members();
+    let native_bases = native_type.union_members();
 
     if doc_bases.len() == 1
         && native_bases.len() == 1
@@ -797,33 +794,33 @@ fn build_updated_docblock(
                 // If the existing type is a refinement, keep it.
                 if let Some(native) = &sig.type_hint {
                     let native_str = native.to_string();
-                    if is_type_contradiction(&existing.type_str, &native_str) {
+                    if is_type_contradiction(&existing.type_parsed, native) {
                         // Type is contradicted — try enrichment first, fall
                         // back to the raw native hint.
                         {
                             enrichment_plain(sig.type_hint.as_ref(), class_loader)
                                 .unwrap_or(native_str)
                         }
-                    } else if PhpType::parse(&existing.type_str).has_type_structure() {
+                    } else if existing.type_parsed.has_type_structure() {
                         // Doc already has generics / callable / shape — keep it.
-                        existing.type_str.clone()
+                        existing.type_str_raw.clone()
                     } else {
                         // Check if enrichment would upgrade the type (e.g.
                         // bare `Closure` → `(Closure(): mixed)`).
                         if let Some(enriched) =
                             enrichment_plain(sig.type_hint.as_ref(), class_loader)
                         {
-                            if enriched != existing.type_str {
+                            if enriched != existing.type_str_raw {
                                 enriched
                             } else {
-                                existing.type_str.clone()
+                                existing.type_str_raw.clone()
                             }
                         } else {
-                            existing.type_str.clone()
+                            existing.type_str_raw.clone()
                         }
                     }
                 } else {
-                    existing.type_str.clone()
+                    existing.type_str_raw.clone()
                 }
             } else if has_any_doc_params {
                 // The docblock already documents some params, so add this
@@ -833,7 +830,7 @@ fn build_updated_docblock(
                         sig.type_hint
                             .as_ref()
                             .map(|t| t.to_string())
-                            .unwrap_or_else(|| "mixed".to_string())
+                            .unwrap_or_else(|| PhpType::mixed().to_string())
                     })
                 }
             } else {
@@ -966,11 +963,10 @@ fn build_updated_docblock(
             && !enriched.is_mixed()
             && !enriched.equivalent(sig_ret)
         {
-            let enriched_str = enriched.to_string();
             let differs_from_doc = info
                 .doc_return
                 .as_ref()
-                .is_none_or(|dr| dr.type_str != enriched_str);
+                .is_none_or(|dr| !dr.type_parsed.equivalent(&enriched));
             if differs_from_doc {
                 // Update existing @return line or insert a new one.
                 let mut updated_existing = false;
@@ -1229,7 +1225,7 @@ fn should_remove_return(info: &FunctionWithDocblock) -> bool {
     if let Some(sig_ret) = &info.sig_return
         && let Some(doc_ret) = &info.doc_return
         && sig_ret.is_void()
-        && PhpType::parse(&doc_ret.type_str).is_void()
+        && doc_ret.type_parsed.is_void()
         && doc_ret.description.is_empty()
     {
         return true;
@@ -1241,7 +1237,7 @@ fn should_remove_return(info: &FunctionWithDocblock) -> bool {
 fn should_update_return(info: &FunctionWithDocblock) -> bool {
     if let Some(sig_ret) = &info.sig_return
         && let Some(doc_ret) = &info.doc_return
-        && is_type_contradiction(&doc_ret.type_str, &sig_ret.to_string())
+        && is_type_contradiction(&doc_ret.type_parsed, sig_ret)
     {
         return true;
     }
@@ -1773,17 +1769,35 @@ class Foo {
 
     #[test]
     fn is_contradiction_basic() {
-        assert!(is_type_contradiction("string", "int"));
-        assert!(!is_type_contradiction("string", "string"));
-        assert!(!is_type_contradiction("non-empty-string", "string"));
-        assert!(!is_type_contradiction("array<int, string>", "array"));
+        assert!(is_type_contradiction(
+            &PhpType::parse("string"),
+            &PhpType::parse("int")
+        ));
+        assert!(!is_type_contradiction(
+            &PhpType::parse("string"),
+            &PhpType::parse("string")
+        ));
+        assert!(!is_type_contradiction(
+            &PhpType::parse("non-empty-string"),
+            &PhpType::parse("string")
+        ));
+        assert!(!is_type_contradiction(
+            &PhpType::parse("array<int, string>"),
+            &PhpType::parse("array")
+        ));
     }
 
     #[test]
     fn is_contradiction_nullable() {
         // ?string and string|null are equivalent.
-        assert!(!is_type_contradiction("?string", "?string"));
-        assert!(!is_type_contradiction("string|null", "?string"));
+        assert!(!is_type_contradiction(
+            &PhpType::parse("?string"),
+            &PhpType::parse("?string")
+        ));
+        assert!(!is_type_contradiction(
+            &PhpType::parse("string|null"),
+            &PhpType::parse("?string")
+        ));
     }
 
     #[test]
@@ -2034,7 +2048,7 @@ class Foo {
         let params = test_parse_params(docblock);
         assert_eq!(params.len(), 1, "should parse one param: {:?}", params);
         assert_eq!(params[0].name, "$name");
-        assert_eq!(params[0].type_str, "");
+        assert_eq!(params[0].type_str_raw, "");
         assert_eq!(params[0].description, "The user name");
     }
 
@@ -2046,7 +2060,7 @@ class Foo {
         let params = test_parse_params(docblock);
         assert_eq!(params.len(), 1, "should parse one param: {:?}", params);
         assert_eq!(params[0].name, "...$args");
-        assert_eq!(params[0].type_str, "");
+        assert_eq!(params[0].type_str_raw, "");
         assert_eq!(params[0].description, "The arguments");
     }
 
@@ -2058,7 +2072,7 @@ class Foo {
         let params = test_parse_params(docblock);
         assert_eq!(params.len(), 1, "should parse one param: {:?}", params);
         assert_eq!(params[0].name, "$name");
-        assert_eq!(params[0].type_str, "");
+        assert_eq!(params[0].type_str_raw, "");
     }
 
     #[test]
@@ -2071,12 +2085,12 @@ class Foo {
         let params = test_parse_params(docblock);
         assert_eq!(params.len(), 3, "should parse three params: {:?}", params);
         assert_eq!(params[0].name, "$a");
-        assert_eq!(params[0].type_str, "string");
+        assert_eq!(params[0].type_str_raw, "string");
         assert_eq!(params[1].name, "$b");
-        assert_eq!(params[1].type_str, "");
+        assert_eq!(params[1].type_str_raw, "");
         assert_eq!(params[1].description, "Second");
         assert_eq!(params[2].name, "$c");
-        assert_eq!(params[2].type_str, "int");
+        assert_eq!(params[2].type_str_raw, "int");
     }
 
     #[test]
@@ -2101,7 +2115,7 @@ class Foo {
         // The param must still be recognised (not duplicated).
         assert_eq!(info.doc_params.len(), 1);
         assert_eq!(info.doc_params[0].name, "$name");
-        assert_eq!(info.doc_params[0].type_str, "");
+        assert_eq!(info.doc_params[0].type_str_raw, "");
         assert_eq!(info.doc_params[0].description, "The user name");
     }
 

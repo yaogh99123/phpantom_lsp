@@ -1222,19 +1222,12 @@ pub fn should_override_type_typed(docblock_type: &PhpType, native_type: &PhpType
     }
 
     // Produce a lowercased base name for the native type's inner part
-    // (stripping nullable).  This is used for broad-type and refinement
-    // checks below.
-    let native_inner_str = native_inner.to_string();
-    let native_lower = native_inner_str.to_ascii_lowercase();
-
     // `array`, `iterable`, `callable`, and `Closure` are broad types
     // that docblocks commonly refine (e.g. `array` → `list<User>`,
     // `iterable` → `Collection<int, Order>`,
     // `callable` → `callable(Task): void`).
-    if matches!(
-        native_lower.as_str(),
-        "array" | "iterable" | "callable" | "closure" | "\\closure"
-    ) {
+    // `is_callable()` covers both `callable` and `Closure` (including `\Closure`).
+    if native_inner.is_bare_array() || native_inner.is_iterable() || native_inner.is_callable() {
         return true;
     }
 
@@ -1333,22 +1326,20 @@ fn is_bare_primitive_scalar(ty: &PhpType) -> bool {
 /// Unlike `base_name()` this includes scalar names (`array`, `int`, ...)
 /// which are needed for the refinement checks.
 pub(crate) fn is_compatible_refinement_typed(doc_type: &PhpType, native_type: &PhpType) -> bool {
-    let doc_base = extract_base_name_lower(doc_type);
-
     if native_type.is_string_type() {
-        return doc_base.contains("string");
+        return is_string_refinement(doc_type);
     }
     if native_type.is_int() {
-        return doc_base.contains("int");
+        return is_int_refinement(doc_type);
     }
     if native_type.is_float() {
-        return doc_base.contains("float") || doc_base.contains("double");
+        return is_float_refinement(doc_type);
     }
     if native_type.is_bool() {
-        return doc_base == "true" || doc_base == "false" || doc_base.contains("bool");
+        return doc_type.is_bool() || doc_type.is_true() || doc_type.is_false();
     }
     if native_type.is_bare_array() {
-        return doc_base.contains("array") || doc_base.contains("list") || doc_base == "iterable";
+        return is_array_refinement(doc_type);
     }
     if native_type.is_mixed() {
         return true;
@@ -1371,12 +1362,100 @@ pub(crate) fn is_compatible_refinement_typed(doc_type: &PhpType, native_type: &P
         return true;
     }
 
-    // Check for iterable and resource via name matching (no dedicated predicates)
-    let native_lower = native_type.to_string().to_ascii_lowercase();
-    match native_lower.as_str() {
-        "iterable" => true,
-        "closure" => true,
-        "resource" => doc_base.contains("resource"),
+    if native_type.is_iterable() {
+        return true;
+    }
+    if native_type.is_closure() {
+        return true;
+    }
+    if native_type.is_resource() {
+        return doc_type.is_resource();
+    }
+    false
+}
+
+/// Whether `ty` is a PHPDoc type that refines the native `string` type.
+///
+/// Returns `true` for `string`, `non-empty-string`, `class-string`,
+/// `numeric-string`, `literal-string`, `truthy-string`, `callable-string`,
+/// `lowercase-string`, `non-falsy-string`, parameterised `class-string<T>`,
+/// `interface-string<T>`, and string literals (`'foo'`, `"bar"`).
+fn is_string_refinement(ty: &PhpType) -> bool {
+    match ty {
+        PhpType::Named(s) => matches!(
+            s.to_ascii_lowercase().as_str(),
+            "string"
+                | "non-empty-string"
+                | "numeric-string"
+                | "literal-string"
+                | "truthy-string"
+                | "callable-string"
+                | "class-string"
+                | "interface-string"
+                | "lowercase-string"
+                | "non-falsy-string"
+        ),
+        PhpType::ClassString(_) | PhpType::InterfaceString(_) => true,
+        PhpType::Literal(s) => s.starts_with('\'') || s.starts_with('"'),
+        PhpType::Nullable(inner) => is_string_refinement(inner),
+        PhpType::Generic(name, _) => matches!(
+            name.to_ascii_lowercase().as_str(),
+            "class-string" | "interface-string"
+        ),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is a PHPDoc type that refines the native `int` type.
+///
+/// Returns `true` for `int`, `integer`, `positive-int`, `negative-int`,
+/// `non-negative-int`, `non-positive-int`, `non-zero-int`, `int<min, max>`
+/// ranges, and integer literals (`42`, `-1`).
+fn is_int_refinement(ty: &PhpType) -> bool {
+    match ty {
+        PhpType::Named(s) => matches!(
+            s.to_ascii_lowercase().as_str(),
+            "int"
+                | "integer"
+                | "positive-int"
+                | "negative-int"
+                | "non-negative-int"
+                | "non-positive-int"
+                | "non-zero-int"
+        ),
+        PhpType::IntRange(_, _) => true,
+        PhpType::Literal(s) => {
+            // Integer literals: optional leading minus, then digits only.
+            let trimmed = s.strip_prefix('-').unwrap_or(s);
+            !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit())
+        }
+        PhpType::Nullable(inner) => is_int_refinement(inner),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is a PHPDoc type that refines the native `float` type.
+///
+/// Returns `true` for `float` and `double`.
+fn is_float_refinement(ty: &PhpType) -> bool {
+    match ty {
+        PhpType::Named(s) => matches!(s.to_ascii_lowercase().as_str(), "float" | "double"),
+        PhpType::Nullable(inner) => is_float_refinement(inner),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is a PHPDoc type that refines the native `array` type.
+///
+/// Returns `true` for any array-like type (`array`, `list`,
+/// `non-empty-array`, `non-empty-list`, `array<K, V>`, `T[]`,
+/// `array{...}`) as well as `iterable`.
+fn is_array_refinement(ty: &PhpType) -> bool {
+    if ty.is_array_like() || ty.is_iterable() {
+        return true;
+    }
+    match ty {
+        PhpType::Nullable(inner) => is_array_refinement(inner),
         _ => false,
     }
 }
@@ -1389,6 +1468,9 @@ pub(crate) fn is_compatible_refinement_typed(doc_type: &PhpType, native_type: &P
 ///
 /// For types that don't have a simple base name (e.g. unions, literals),
 /// falls back to the full `Display` output lowercased.
+///
+/// Used by `should_override_type_typed` for its hyphen-based pseudo-type
+/// heuristic.
 fn extract_base_name_lower(ty: &PhpType) -> String {
     match ty {
         PhpType::Named(name) => name.to_ascii_lowercase(),
