@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Nested array shape inference from multi-level key assignments.** Assignments like `$b['a']['b'] = 'x'` now produce a nested array shape type (`array{a: array{b: string}}`), enabling array key completion and hover for arrays built incrementally with nested keys. Previously only single-level key assignments were tracked.
+
+### Fixed
+
+- **False-positive undefined variable on nested array access assignment.** `$b['a']['a'] = 'a'` no longer flags `$b` as undefined. The scope collector now correctly propagates write context through nested `ArrayAccess` and `ArrayAppend` expressions, so the base variable is recognized as defined.
+
 ## [0.7.0] - 2026-04-08
 
 ### Added

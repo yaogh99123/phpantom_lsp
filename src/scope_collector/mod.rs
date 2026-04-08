@@ -1181,7 +1181,7 @@ fn walk_expression_as_write(expr: &Expression<'_>, collector: &mut Collector<'_>
                 let name = dv.name.to_string();
                 collector.push_access(name, dv.span().start.offset, AccessKind::ReadWrite);
             } else {
-                walk_expression(access.array, collector);
+                walk_expression_as_write(access.array, collector);
             }
             walk_expression(access.index, collector);
         }
@@ -1191,7 +1191,7 @@ fn walk_expression_as_write(expr: &Expression<'_>, collector: &mut Collector<'_>
                 let name = dv.name.to_string();
                 collector.push_access(name, dv.span().start.offset, AccessKind::ReadWrite);
             } else {
-                walk_expression(append.array, collector);
+                walk_expression_as_write(append.array, collector);
             }
         }
         Expression::Access(Access::Property(pa)) => {

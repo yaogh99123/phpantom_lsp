@@ -3072,88 +3072,92 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
         }
 
         // ── Incremental key assignment: `$var['key'] = expr;` ──
+        // Also handles nested assignments: `$var['a']['b'] = expr;`
         // Track string-keyed assignments and merge them into the
         // base type's array shape.  This produces type strings like
         // `array{name: string, age: int}` which downstream consumers
         // use for shape-aware completion and hover.
-        if let Expression::ArrayAccess(array_access) = assignment.lhs
-            && let Expression::Variable(Variable::Direct(dv)) = array_access.array
-            && dv.name == var_name
-        {
-            // ── Skip when cursor is inside the RHS ────────
-            // Same guard as the base-assignment path below.
-            // Without this, `$var['key'] = $var['key']->method()`
-            // would infinitely recurse: resolving the RHS triggers
-            // resolution of `$var`, which re-discovers the same
-            // assignment and resolves its RHS again.
-            let rhs_start = assignment.rhs.span().start.offset;
-            let assign_end = assignment.span().end.offset;
-            if ctx.cursor_offset >= rhs_start && ctx.cursor_offset <= assign_end {
-                return;
-            }
-
-            let key = extract_array_key_for_shape(array_access.index);
-            if let Some(key) = key {
-                // ── String-literal key: merge into array shape ──
-                let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
-                let resolved =
-                    super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
-                let value_php_type = if !resolved.is_empty() {
-                    ResolvedType::types_joined(&resolved)
-                } else {
-                    PhpType::mixed()
-                };
-                // Read the current base type from results (if any)
-                // and merge the new key into its shape.
-                let base = results
-                    .last()
-                    .map(|rt| &rt.type_string)
-                    .cloned()
-                    .unwrap_or_else(PhpType::array);
-                let merged = merge_shape_key(&base, &key, &value_php_type);
-                // Replace results with the enriched shape type.
-                // Use extend_unique so this works in conditional
-                // branches (appends) as well as unconditional
-                // (results cleared first by push_results via the
-                // base assignment that preceded this).
-                // We always push here without clearing — shape keys
-                // accumulate on top of the existing base.
-                let new_rt = ResolvedType::from_type_string(merged);
-                results.clear();
-                results.push(new_rt);
-            } else {
-                // ── Non-literal key (variable, numeric, expression) ──
-                // Track the RHS type as the array's value type so that
-                // subsequent `foreach` iteration and bracket access
-                // resolve element members.  This handles patterns like
-                // `$arr[$id] = $orderLine` inside a loop.
-                let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
-                let resolved =
-                    super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
-                let value_php_type = if !resolved.is_empty() {
-                    ResolvedType::types_joined(&resolved)
-                } else {
-                    PhpType::mixed()
-                };
-                let base_type = results
-                    .last()
-                    .map(|rt| &rt.type_string)
-                    .cloned()
-                    .unwrap_or_else(PhpType::array);
-                // When the base already has a shape type from prior
-                // string-keyed assignments, do not overwrite it with
-                // a generic element type — shapes take precedence.
-                if base_type.is_array_shape() {
+        if let Expression::ArrayAccess(array_access) = assignment.lhs {
+            // Extract the base variable name and chain of keys from
+            // potentially nested array accesses like `$var['a']['b']['c']`.
+            if let Some((base_name, key_chain)) =
+                extract_nested_array_access_chain(array_access)
+                && base_name == var_name
+            {
+                // ── Skip when cursor is inside the RHS ────────
+                // Same guard as the base-assignment path below.
+                // Without this, `$var['key'] = $var['key']->method()`
+                // would infinitely recurse: resolving the RHS triggers
+                // resolution of `$var`, which re-discovers the same
+                // assignment and resolves its RHS again.
+                let rhs_start = assignment.rhs.span().start.offset;
+                let assign_end = assignment.span().end.offset;
+                if ctx.cursor_offset >= rhs_start && ctx.cursor_offset <= assign_end {
                     return;
                 }
-                // Infer the key type from the index expression.
-                let key_php_type = infer_array_key_type(array_access.index, &rhs_ctx);
-                let merged = merge_keyed_type(&base_type, &key_php_type, &value_php_type);
-                let new_rt = ResolvedType::from_type_string(merged);
-                results.clear();
-                results.push(new_rt);
+
+                // Check if all keys in the chain are string literals.
+                let all_string_keys: Option<Vec<String>> = key_chain
+                    .iter()
+                    .map(|idx| extract_array_key_for_shape(idx))
+                    .collect();
+
+                if let Some(keys) = all_string_keys {
+                    // ── All string-literal keys: merge into (nested) array shape ──
+                    let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
+                    let resolved =
+                        super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
+                    let value_php_type = if !resolved.is_empty() {
+                        ResolvedType::types_joined(&resolved)
+                    } else {
+                        PhpType::mixed()
+                    };
+                    // Read the current base type from results (if any)
+                    // and merge the new key(s) into its shape.
+                    let base = results
+                        .last()
+                        .map(|rt| &rt.type_string)
+                        .cloned()
+                        .unwrap_or_else(PhpType::array);
+                    let merged = merge_nested_shape_keys(&base, &keys, &value_php_type);
+                    // Replace results with the enriched shape type.
+                    let new_rt = ResolvedType::from_type_string(merged);
+                    results.clear();
+                    results.push(new_rt);
+                } else if key_chain.len() == 1 {
+                    // ── Single non-literal key (variable, numeric, expression) ──
+                    // Track the RHS type as the array's value type so that
+                    // subsequent `foreach` iteration and bracket access
+                    // resolve element members.  This handles patterns like
+                    // `$arr[$id] = $orderLine` inside a loop.
+                    let rhs_ctx = ctx.with_cursor_offset(assignment.span().start.offset);
+                    let resolved =
+                        super::rhs_resolution::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
+                    let value_php_type = if !resolved.is_empty() {
+                        ResolvedType::types_joined(&resolved)
+                    } else {
+                        PhpType::mixed()
+                    };
+                    let base_type = results
+                        .last()
+                        .map(|rt| &rt.type_string)
+                        .cloned()
+                        .unwrap_or_else(PhpType::array);
+                    // When the base already has a shape type from prior
+                    // string-keyed assignments, do not overwrite it with
+                    // a generic element type — shapes take precedence.
+                    if base_type.is_array_shape() {
+                        return;
+                    }
+                    // Infer the key type from the index expression.
+                    let key_php_type = infer_array_key_type(key_chain[0], &rhs_ctx);
+                    let merged = merge_keyed_type(&base_type, &key_php_type, &value_php_type);
+                    let new_rt = ResolvedType::from_type_string(merged);
+                    results.clear();
+                    results.push(new_rt);
+                }
+                return;
             }
-            return;
         }
 
         // ── Push assignment: `$var[] = expr;` ──
@@ -3239,6 +3243,64 @@ pub(in crate::completion) fn check_expression_for_assignment<'b>(
 }
 
 // ── Shape mutation helpers ───────────────────────────────────────────
+
+/// Walk a (possibly nested) `ArrayAccess` chain and return the base
+/// variable name and the ordered list of index expressions from
+/// outermost to innermost.
+///
+/// For `$var['a']['b']['c']` returns `Some(("$var", [expr_a, expr_b, expr_c]))`.
+/// Returns `None` when the base expression is not a simple direct variable.
+fn extract_nested_array_access_chain<'a, 'b>(
+    outermost: &'a ArrayAccess<'b>,
+) -> Option<(String, Vec<&'a Expression<'b>>)> {
+    let mut keys: Vec<&'a Expression<'b>> = Vec::new();
+    keys.push(outermost.index);
+
+    let mut current: &'a Expression<'b> = outermost.array;
+    loop {
+        match current {
+            Expression::ArrayAccess(inner) => {
+                keys.push(inner.index);
+                current = inner.array;
+            }
+            Expression::Variable(Variable::Direct(dv)) => {
+                // We collected keys innermost-first; reverse so the
+                // outermost key (closest to the variable) comes first.
+                keys.reverse();
+                return Some((dv.name.to_string(), keys));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Merge a chain of string keys into a (possibly nested) array shape.
+///
+/// For keys `["a", "b"]` and value type `string`, produces:
+///   `array{a: array{b: string}}`
+///
+/// When the base already contains entries, they are preserved and the
+/// nested key path is merged in.  For example, merging `["a", "c"]`
+/// with value `int` into `array{a: array{b: string}}` produces:
+///   `array{a: array{b: string, c: int}}`
+fn merge_nested_shape_keys(base: &PhpType, keys: &[String], value_type: &PhpType) -> PhpType {
+    debug_assert!(!keys.is_empty());
+    if keys.len() == 1 {
+        return merge_shape_key(base, &keys[0], value_type);
+    }
+
+    // For nested keys, we need to:
+    // 1. Look up the existing inner type for the first key
+    // 2. Recursively merge the remaining keys into that inner type
+    // 3. Merge the result back at the first key level
+    let first_key = &keys[0];
+    let inner_base = base
+        .shape_value_type(first_key)
+        .cloned()
+        .unwrap_or_else(PhpType::array);
+    let inner_merged = merge_nested_shape_keys(&inner_base, &keys[1..], value_type);
+    merge_shape_key(base, first_key, &inner_merged)
+}
 
 /// Extract a string key from an array access index expression.
 ///

@@ -3057,4 +3057,72 @@ function test(): void {
         );
         assert!(diags[0].message.contains("$local"));
     }
+
+    #[test]
+    fn no_diagnostic_for_array_access_assignment() {
+        let diags = collect(
+            r#"<?php
+function test(): void {
+    $b['a'] = 'hello';
+    echo $b;
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "Array access assignment should define the variable. Got: {:?}",
+            diags,
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_nested_array_access_assignment() {
+        let diags = collect(
+            r#"<?php
+function test(): void {
+    $b['a']['a'] = 'a';
+    echo $b;
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "Nested array access assignment should define the variable. Got: {:?}",
+            diags,
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_deeply_nested_array_access_assignment() {
+        let diags = collect(
+            r#"<?php
+function test(): void {
+    $config['db']['host']['primary'] = 'localhost';
+    echo $config;
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "Deeply nested array access assignment should define the variable. Got: {:?}",
+            diags,
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_array_append_assignment() {
+        let diags = collect(
+            r#"<?php
+function test(): void {
+    $items[] = 'hello';
+    echo $items;
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "Array append assignment should define the variable. Got: {:?}",
+            diags,
+        );
+    }
 }
