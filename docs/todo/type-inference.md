@@ -569,4 +569,162 @@ statement analyzers. Both converge on the same architecture: the
 scope is the single source of truth, populated eagerly as the walk
 progresses.
 
+---
+
+## T26. Populate `ClassInfo` on return-type `ResolvedType`s
+**Impact: Medium · Effort: Low**
+
+Multiple sites in `completion/variable/rhs_resolution.rs` resolve a
+method or function return type and wrap it in
+`ResolvedType::from_type_string(parsed_effective)`, even when the
+`PhpType` names a class. This produces a `ResolvedType` with
+`class_info: None`, forcing downstream consumers to either re-resolve
+the type or silently miss it.
+
+**Affected call sites** (all in `rhs_resolution.rs`): lines around
+1283, 1363, 1491, 1539, 1728, 1911, 1958, 2031. Each resolves a
+return type hint, gets a `PhpType` that may contain a class name
+(e.g. `Collection<User>`), and creates a type-string-only
+`ResolvedType`.
+
+**Fix:** When the `PhpType` has a `base_name()` that resolves to a
+known class, look up the `ClassInfo` and use
+`ResolvedType::from_both(type_hint, class_info)` instead of
+`from_type_string`. A helper like
+`ResolvedType::from_type_with_lookup(php_type, class_loader)` could
+centralise this pattern.
+
+**After fixing:** downstream code that checks `rt.class_info` (hover,
+narrowing, completion builder) will find populated class info without
+a second resolution pass.
+
+---
+
+## T27. `from_class` loses generic parameters
+**Impact: Low-Medium · Effort: Low**
+
+`ResolvedType::from_class(class)` constructs the `type_string` as
+`PhpType::Named(class.name.clone())`, discarding any generic
+parameters the caller may know about. For example, if the caller
+resolved `Collection<int, User>` to a `ClassInfo`, the resulting
+`ResolvedType` stores `PhpType::Named("Collection")` instead of the
+full parameterised type.
+
+The `from_classes_with_hint` variant exists to preserve the original
+`PhpType`, but `from_class` and `from_classes` (which calls
+`from_class` in a loop) are still used by callers that have the
+original type available upstream but do not thread it through.
+
+**Fix:** Audit all callers of `from_class` and `from_classes`. Where
+the original `PhpType` is available (or can be threaded through
+cheaply), switch to `from_both` or `from_classes_with_hint`. Consider
+deprecating the bare `from_class` constructor or adding a lint-level
+comment discouraging its use when a type hint is available.
+
+---
+
+## T28. Centralise self-keyword string checks
+**Impact: Low-Medium · Effort: Low**
+
+Approximately eight call sites across five files compare raw subject
+expression strings against `"self"`, `"static"`, `"parent"`, and
+`"$this"` with ad-hoc `==` checks:
+
+- `completion/call_resolution.rs` (L1197, L1332-1342)
+- `completion/handler.rs` (L849, L892)
+- `completion/source/helpers.rs` (L413, L450, L664)
+- `completion/variable/class_string_resolution.rs` (L187-197)
+- `completion/types/conditional.rs` (L365-370)
+
+`PhpType` already has `is_self_like()` and `is_self_ref()` methods
+that handle this structurally, but the call sites operate on raw
+subject strings, not parsed `PhpType` values.
+
+**Fix:** Add a small shared utility (e.g. `fn is_self_keyword(s: &str)
+-> bool` in `util.rs` or `names.rs`) that checks all four variants
+case-insensitively. Replace the scattered inline comparisons with
+calls to this helper. Alternatively, parse the subject text into a
+`PhpType` at the call site boundary and use `is_self_like()`.
+
+---
+
+## T29. Replace hand-rolled expression parsing in `resolve_inline_arg_raw_type`
+**Impact: Low-Medium · Effort: Low**
+
+`resolve_inline_arg_raw_type` in `completion/call_resolution.rs`
+(around L1319-1362) manually parses call and property chains from
+text by splitting on `->` and `::` via `rfind`:
+
+```rust
+if let Some(pos) = call_body.rfind("->") {
+    let base = &call_body[..pos];
+    let base = base.strip_suffix('?').unwrap_or(base);
+    let method_name = &call_body[pos + 2..];
+    // ...
+}
+if let Some(pos) = call_body.rfind("::") {
+    let class_part = &call_body[..pos];
+    let method_name = &call_body[pos + 2..];
+    // ...
+}
+```
+
+`SubjectExpr::parse` already handles this structurally and is tested.
+
+**Fix:** Replace the manual `rfind` splitting with
+`SubjectExpr::parse(call_body)` and match on the resulting
+`SubjectExpr::MethodCall` / `SubjectExpr::StaticMethodCall` /
+`SubjectExpr::PropertyAccess` variants. This eliminates the
+hand-rolled parsing and the keyword string comparisons that follow.
+
+---
+
+## T30. Narrowing helpers on `ResolvedType` to prevent field desync
+**Impact: Low · Effort: Low**
+
+Multiple functions in `completion/types/narrowing.rs` mutate
+`rt.type_string` (e.g. stripping null, filtering by guard type) and
+separately check or clear `rt.class_info`. Because the two fields are
+updated independently, they can drift out of sync. For example, after
+null-stripping, the `type_string` might change from `?Foo` to `Foo`
+while `class_info` stays as-is (in practice `class_info` does not
+track nullability, so this specific case is benign, but the pattern
+is fragile).
+
+**Fix:** Add helper methods on `ResolvedType` that keep both fields
+consistent:
+
+- `strip_null(&mut self)` — calls `non_null_type()` on `type_string`
+  and preserves `class_info` (since null-stripping never invalidates
+  the class).
+- `filter_by_guard(&mut self, guard: &PhpType)` — filters
+  `type_string` and clears `class_info` when the type no longer
+  matches the original class.
+- `replace_type(&mut self, new_type: PhpType)` — updates
+  `type_string` and clears `class_info` when the type changes to
+  something that does not match the existing class.
+
+Then update the narrowing call sites to use these helpers instead of
+reaching into the fields directly.
+
+---
+
+## T31. Eliminate minor string-to-PhpType round-trips
+**Impact: Low · Effort: Low**
+
+Several places construct a `PhpType` (or already have one) but
+convert it back to a string unnecessarily, or use a string-accepting
+API when a typed variant exists:
+
+| Location | Pattern |
+|----------|---------|
+| `code_actions/extract_constant.rs` L264-314 | `literal_type_name()` returns `&str` after calling `PhpType` predicates. Should return `Option<PhpType>` directly. |
+| `virtual_members/laravel/factory.rs` L128-134 | Uses `MethodInfo::virtual_method(name, Some(&str))` instead of `virtual_method_typed(name, Some(&PhpType))`. |
+| `docblock/virtual_members.rs` L226-237 | `parse_method_tag_params` creates an intermediate `Option<String>` that is parsed to `PhpType` a few lines later. Could parse directly. |
+| `code_actions/phpstan/fix_return_type.rs` L1987-1995 | Extracts return type hint from source text via `find(':')` + split and compares against `"void"`. Could parse with `PhpType::parse()` and use `is_void()`. |
+
+**Fix:** Address each site individually. These are small, isolated
+changes that each remove one unnecessary string allocation or
+round-trip.
+
 

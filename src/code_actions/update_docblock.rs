@@ -925,14 +925,10 @@ fn build_updated_docblock(
     if let Some(sig_ret) = &info.sig_return
         && !sig_ret.is_void()
     {
-        let has_rich_return = lines.iter().any(|l| {
-            if let DocLine::Return(text) = l {
-                let parsed = crate::php_type::PhpType::parse(text);
-                parsed.has_type_structure()
-            } else {
-                false
-            }
-        });
+        let has_rich_return = info
+            .doc_return
+            .as_ref()
+            .is_some_and(|dr| dr.type_parsed.has_type_structure());
         if !has_rich_return
             && let Some(enriched) = enrichment_return_type(
                 content,

@@ -23,9 +23,16 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit & type inference
 
-| #    | Item                                                                                                    | Impact | Effort |
-| ---- | ------------------------------------------------------------------------------------------------------- | ------ | ------ |
-|      | **Release 0.7.0**                                                                                       |        |        |
+| #    | Item                                                                                                                                                            | Impact     | Effort |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
+| T12  | [Intersection types flattened to unions during resolution](todo/type-inference.md#t12-intersection-types-flattened-to-unions-by-type_strings_joined)              | Low-Medium | Low    |
+| T26  | [Populate `ClassInfo` on return-type `ResolvedType`s](todo/type-inference.md#t26-populate-classinfo-on-return-type-resolvedtypes)                                | Medium     | Low    |
+| T27  | [`from_class` loses generic parameters](todo/type-inference.md#t27-from_class-loses-generic-parameters)                                                         | Low-Medium | Low    |
+| T28  | [Centralise self-keyword string checks](todo/type-inference.md#t28-centralise-self-keyword-string-checks)                                                       | Low-Medium | Low    |
+| T29  | [Replace hand-rolled expression parsing in `resolve_inline_arg_raw_type`](todo/type-inference.md#t29-replace-hand-rolled-expression-parsing-in-resolve_inline_arg_raw_type) | Low-Medium | Low    |
+| T30  | [Narrowing helpers on `ResolvedType` to prevent field desync](todo/type-inference.md#t30-narrowing-helpers-on-resolvedtype-to-prevent-field-desync)              | Low        | Low    |
+| T31  | [Eliminate minor string-to-PhpType round-trips](todo/type-inference.md#t31-eliminate-minor-string-to-phptype-round-trips)                                        | Low        | Low    |
+|      | **Release 0.7.0**                                                                                                                                               |            |        |
 
 ## Sprint 5 — Polish for office adoption
 
@@ -111,7 +118,6 @@ unlikely to move the needle for most users.
 | T25  | [Forward-walking scope model](todo/type-inference.md#t25-forward-walking-scope-model-for-variable-type-resolution) (eliminate backward-scanning depth limit)                | High        | Very High      |
 | T20  | [Type narrowing reconciliation engine](todo/type-inference.md#t20-type-narrowing-reconciliation-engine) (sure/sureNot tracking, AND/OR algebra)                             | Medium-High | High           |
 | T6   | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                                      | Low-Medium  | Low-Medium     |
-| T12  | [Intersection types flattened to unions during resolution](todo/type-inference.md#t12-intersection-types-flattened-to-unions-by-type_strings_joined)                          | Low-Medium  | Low            |
 | T13  | [Closure variables lose callable signature detail](todo/type-inference.md#t13-closure-variables-lose-callable-signature-detail)                                             | Low-Medium  | Medium         |
 | T4   | Non-empty-\* type narrowing and propagation                                                                                                                                 | Low         | Low            |
 | T5   | Fiber type resolution                                                                                                                                                       | Low         | Low            |
