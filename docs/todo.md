@@ -26,7 +26,6 @@ within the same impact tier.
 | #   | Item                                                                                                                         | Impact      | Effort |
 | --- | ---------------------------------------------------------------------------------------------------------------------------- | ----------- | ------ |
 | A36 | [Import all missing classes](todo/actions.md#a36-import-all-missing-classes) (bulk import)                                    | Medium      | Low    |
-| F6  | [Machine-readable CLI output formats](todo/lsp-features.md#f6-machine-readable-cli-output-formats) (`--format github\|json`) | Medium      | Low    |
 | D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variable-diagnostic)                                              | Medium      | Medium |
 | D12 | [Mago linter integration](todo/diagnostics.md#d12-mago-linter-integration-optional-diagnostics)                              | Medium      | Medium |
 | F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints) | Medium  | Medium |

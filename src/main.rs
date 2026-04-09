@@ -67,6 +67,11 @@ enum Command {
         /// Project root directory. Defaults to the current working directory.
         #[arg(long, value_name = "DIR")]
         project_root: Option<std::path::PathBuf>,
+
+        /// Output format. When running in GitHub Actions the default
+        /// automatically includes workflow annotations alongside the table.
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<FormatArg>,
     },
 
     /// Apply automated code fixes across PHP files.
@@ -103,6 +108,11 @@ enum Command {
         /// Project root directory. Defaults to the current working directory.
         #[arg(long, value_name = "DIR")]
         project_root: Option<std::path::PathBuf>,
+
+        /// Output format. When running in GitHub Actions the default
+        /// automatically includes workflow annotations alongside the table.
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<FormatArg>,
     },
 
     /// Create a default .phpantom.toml configuration file in the current directory.
@@ -126,6 +136,27 @@ impl From<SeverityArg> for phpantom_lsp::analyse::SeverityFilter {
             SeverityArg::All => Self::All,
             SeverityArg::Warning => Self::Warning,
             SeverityArg::Error => Self::Error,
+        }
+    }
+}
+
+/// Output format for the analyze and fix commands.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum FormatArg {
+    /// Human-readable table (default).
+    Table,
+    /// GitHub Actions workflow annotations.
+    Github,
+    /// Machine-readable JSON object.
+    Json,
+}
+
+impl From<FormatArg> for phpantom_lsp::analyse::OutputFormat {
+    fn from(arg: FormatArg) -> Self {
+        match arg {
+            FormatArg::Table => Self::Table,
+            FormatArg::Github => Self::Github,
+            FormatArg::Json => Self::Json,
         }
     }
 }
@@ -163,6 +194,7 @@ async fn main() {
             severity,
             no_colour,
             project_root,
+            format,
         }) => {
             let workspace_root = project_root
                 .or_else(|| std::env::current_dir().ok())
@@ -175,11 +207,17 @@ async fn main() {
             // passed or stdout is not a terminal.
             let use_colour = !no_colour && atty_stdout();
 
+            let output_format = match format {
+                Some(f) => f.into(),
+                None => phpantom_lsp::analyse::OutputFormat::Table,
+            };
+
             let options = phpantom_lsp::analyse::AnalyseOptions {
                 workspace_root,
                 path_filter: path,
                 severity_filter: severity.into(),
                 use_colour,
+                output_format,
             };
 
             let exit_code = phpantom_lsp::analyse::run(options).await;
@@ -192,6 +230,7 @@ async fn main() {
             with_phpstan,
             no_colour,
             project_root,
+            format,
         }) => {
             let workspace_root = project_root
                 .or_else(|| std::env::current_dir().ok())
@@ -202,6 +241,11 @@ async fn main() {
 
             let use_colour = !no_colour && atty_stdout();
 
+            let output_format = match format {
+                Some(f) => f.into(),
+                None => phpantom_lsp::analyse::OutputFormat::Table,
+            };
+
             let options = phpantom_lsp::fix::FixOptions {
                 workspace_root,
                 path_filter: path,
@@ -209,6 +253,7 @@ async fn main() {
                 dry_run,
                 use_colour,
                 with_phpstan,
+                output_format,
             };
 
             let exit_code = phpantom_lsp::fix::run(options).await;
