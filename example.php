@@ -2995,7 +2995,7 @@ class InlayHintsDemo
     public function demo(): void
     {
         // Parameter name hints appear before each argument:
-        $user = createUser('Alice', 25);          // name:, age:
+        $user = createUser('Alice', 'test@example.com');          // name:, email:
 
         // By-reference parameters show & before the name:
         $arr = [1, 2, 3];
