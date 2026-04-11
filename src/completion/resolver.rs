@@ -25,6 +25,7 @@
 ///   parent chain).
 /// - [`super::conditional_resolution`]: PHPStan conditional return type
 ///   resolution at call sites.
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -36,6 +37,66 @@ use crate::subject_expr::SubjectExpr;
 use crate::types::*;
 use crate::util::{find_class_by_name, is_self_or_static, resolve_class_keyword};
 use crate::virtual_members::resolve_class_fully_maybe_cached;
+
+// ─── Thread-local chain resolution cache ────────────────────────────────────
+//
+// During a single diagnostic pass a file may contain many chain expressions
+// that share common prefixes (e.g. `$model->where(...)` is the prefix of
+// `$model->where(...)->whereNotNull(...)` which is the prefix of
+// `$model->where(...)->whereNotNull(...)->orderBy(...)`, etc.).
+//
+// Without caching, each chain link re-resolves the entire prefix from
+// scratch via recursive calls to `resolve_target_classes_expr`.  For a
+// 6-link Eloquent chain this means the base variable is resolved 6 times,
+// the first method call 5 times, etc. — O(depth²) total work.
+//
+// The chain cache stores `resolve_target_classes` results keyed by the
+// raw subject text string.  It is activated at the diagnostic loop level
+// (via [`with_chain_resolution_cache`]) and consulted by
+// `resolve_target_classes` before doing any work.  When the cache is not
+// active (completion, hover, etc.) the function behaves exactly as before.
+
+thread_local! {
+    /// When `Some`, `resolve_target_classes` will consult and populate
+    /// this map.  Set by [`with_chain_resolution_cache`], cleared on
+    /// guard drop.
+    static CHAIN_CACHE: RefCell<Option<HashMap<String, Vec<ResolvedType>>>> =
+        const { RefCell::new(None) };
+}
+
+/// RAII guard that clears the thread-local chain cache on drop.
+pub(crate) struct ChainCacheGuard {
+    /// `true` when this guard owns the cache (outermost activation).
+    owns: bool,
+}
+
+impl Drop for ChainCacheGuard {
+    fn drop(&mut self) {
+        if self.owns {
+            CHAIN_CACHE.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
+    }
+}
+
+/// Activate the thread-local chain resolution cache.
+///
+/// While the returned guard is alive, `resolve_target_classes` caches
+/// its results by subject text so that shared chain prefixes are
+/// resolved only once.
+///
+/// Nested activations are no-ops — the outermost guard owns the cache.
+pub(crate) fn with_chain_resolution_cache() -> ChainCacheGuard {
+    let already_active = CHAIN_CACHE.with(|cell| cell.borrow().is_some());
+    if already_active {
+        return ChainCacheGuard { owns: false };
+    }
+    CHAIN_CACHE.with(|cell| {
+        *cell.borrow_mut() = Some(HashMap::new());
+    });
+    ChainCacheGuard { owns: true }
+}
 
 /// Type alias for the optional function-loader closure passed through
 /// the resolution chain.  Reduces clippy `type_complexity` warnings.
@@ -266,6 +327,78 @@ pub(crate) fn resolve_target_classes(
 /// Core dispatch for [`resolve_target_classes`], operating on a
 /// pre-parsed [`SubjectExpr`].
 pub(crate) fn resolve_target_classes_expr(
+    expr: &SubjectExpr,
+    access_kind: AccessKind,
+    ctx: &ResolutionCtx<'_>,
+) -> Vec<ResolvedType> {
+    // ── Chain cache lookup ───────────────────────────────────────
+    // During diagnostic passes the chain cache is active and stores
+    // results by subject text.  This eliminates O(depth²) re-resolution
+    // of shared chain prefixes (e.g. `$model->where(...)` resolved once
+    // and reused by `$model->where(...)->whereNotNull(...)` etc.).
+    //
+    // The cache is NOT used for variable-only subjects (no `->` or `::`
+    // in the expression) because those are context-sensitive: the same
+    // `$var` may resolve to different types at different cursor offsets
+    // due to reassignment or narrowing.
+    //
+    // PropertyChain expressions rooted in a variable (e.g. `$this->pet`,
+    // `$obj->prop`) are also excluded because instanceof narrowing can
+    // change the resolved type at different positions within the same
+    // method body.  For example, `$this->pet` may resolve to `Dog`
+    // inside `if ($this->pet instanceof Dog)` but to `Cat` after
+    // `if (!$this->pet instanceof Cat) { return; }`.
+    //
+    // Call expressions and static accesses are safe to cache because
+    // their return types are deterministic (method signatures don't
+    // change based on narrowing context).
+    let is_cacheable_chain = match expr {
+        SubjectExpr::CallExpr { .. }
+        | SubjectExpr::MethodCall { .. }
+        | SubjectExpr::StaticMethodCall { .. }
+        | SubjectExpr::StaticAccess { .. } => true,
+        // PropertyChain is only cacheable when the base is NOT a
+        // bare variable — e.g. `$this->method()->prop` (CallExpr
+        // base) is safe, but `$this->pet` (This/Variable base) is
+        // subject to narrowing.
+        SubjectExpr::PropertyChain { base, .. } => !matches!(
+            base.as_ref(),
+            SubjectExpr::This
+                | SubjectExpr::SelfKw
+                | SubjectExpr::StaticKw
+                | SubjectExpr::Parent
+                | SubjectExpr::Variable(_)
+        ),
+        _ => false,
+    };
+    if is_cacheable_chain {
+        let cache_key = expr.to_subject_text();
+        let cached = CHAIN_CACHE.with(|cell| {
+            let borrow = cell.borrow();
+            borrow.as_ref().and_then(|map| map.get(&cache_key).cloned())
+        });
+        if let Some(result) = cached {
+            return result;
+        }
+
+        let result = resolve_target_classes_expr_inner(expr, access_kind, ctx);
+
+        CHAIN_CACHE.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            if let Some(ref mut map) = *borrow {
+                map.insert(cache_key, result.clone());
+            }
+        });
+
+        return result;
+    }
+
+    resolve_target_classes_expr_inner(expr, access_kind, ctx)
+}
+
+/// Inner implementation of [`resolve_target_classes_expr`] without
+/// chain caching.  The outer function handles cache lookup/store.
+fn resolve_target_classes_expr_inner(
     expr: &SubjectExpr,
     access_kind: AccessKind,
     ctx: &ResolutionCtx<'_>,

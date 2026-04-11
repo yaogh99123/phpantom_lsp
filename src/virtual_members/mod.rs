@@ -591,6 +591,64 @@ pub fn resolve_class_fully_maybe_cached(
     resolve_class_fully_inner(class, class_loader, cache, &[])
 }
 
+/// Resolve a class fully and apply generic type argument substitution,
+/// caching the combined result under `(FQN, generic_arg_strings)`.
+///
+/// For generic classes like `Builder<Product>`, calling
+/// [`resolve_class_fully_maybe_cached`] followed by
+/// [`apply_generic_args`](crate::inheritance::apply_generic_args) is
+/// expensive because `apply_generic_args` clones the entire class and
+/// substitutes template parameters in every method and property.  On
+/// an Eloquent model with hundreds of virtual members this takes
+/// milliseconds per call, and a large service file can trigger it
+/// hundreds of times for the same `(FQN, generic_args)` pair.
+///
+/// This function fuses the two steps and caches the result so the
+/// substitution is performed at most once per `(FQN, generic_args)`.
+/// When `generic_args` is empty or the class has no template
+/// parameters, this behaves identically to
+/// [`resolve_class_fully_maybe_cached`].
+pub fn resolve_class_fully_with_generics(
+    class: &ClassInfo,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    cache: Option<&ResolvedClassCache>,
+    generic_arg_strings: &[String],
+    generic_args: &[crate::php_type::PhpType],
+) -> Arc<ClassInfo> {
+    // Fast path: no generics — just do the base resolution.
+    if generic_args.is_empty() {
+        return resolve_class_fully_inner(class, class_loader, cache, &[]);
+    }
+
+    // Check the cache for (FQN, generic_args).
+    let fqn = class.fqn();
+    let cache_key: ResolvedClassCacheKey = (fqn, generic_arg_strings.to_vec());
+
+    if let Some(c) = cache {
+        let map = c.lock();
+        if let Some(cached) = map.get(&cache_key) {
+            return Arc::clone(cached);
+        }
+    }
+
+    // Resolve the base class (cached at (FQN, [])).
+    let base = resolve_class_fully_inner(class, class_loader, cache, &[]);
+
+    // Apply generic substitution.
+    let result = if !base.template_params.is_empty() {
+        Arc::new(crate::inheritance::apply_generic_args(&base, generic_args))
+    } else {
+        base
+    };
+
+    // Store the substituted result.
+    if let Some(c) = cache {
+        c.lock().insert(cache_key, Arc::clone(&result));
+    }
+
+    result
+}
+
 /// Shared implementation behind [`resolve_class_fully`] and
 /// [`resolve_class_fully_cached`].
 fn resolve_class_fully_inner(

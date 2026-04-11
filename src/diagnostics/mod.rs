@@ -172,6 +172,23 @@ impl Backend {
         content: &str,
         out: &mut Vec<Diagnostic>,
     ) {
+        // Activate the chain resolution cache so that all slow
+        // diagnostic collectors share cached intermediate chain
+        // prefix results (e.g. `$model->where(...)` resolved once
+        // and reused by `$model->where(...)->whereNotNull(...)`).
+        // This eliminates O(depth²) re-resolution of shared chain
+        // prefixes across unknown_member, argument_count, type_error,
+        // and deprecated collectors.
+        let _chain_guard = crate::completion::resolver::with_chain_resolution_cache();
+
+        // Activate the callable target cache so that the same method
+        // on the same class is resolved at most once across all
+        // diagnostic collectors.  For example, `Builder::where` is
+        // looked up once and reused for every `$q->where(...)`,
+        // `$query->where(...)`, and `Product::query()->where(...)`
+        // call site in the file.
+        let _callable_guard = crate::completion::call_resolution::with_callable_target_cache();
+
         self.collect_unknown_class_diagnostics(uri_str, content, out);
         self.collect_unknown_member_diagnostics(uri_str, content, out);
         self.collect_unknown_function_diagnostics(uri_str, content, out);

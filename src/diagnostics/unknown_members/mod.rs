@@ -46,6 +46,31 @@
 //! same but has a different type in each method.  The cache lives for
 //! a single `collect_unknown_member_diagnostics` call and is not
 //! shared across files or invocations.
+//!
+//! ## Performance: narrowing re-resolution fallback
+//!
+//! The cache key intentionally omits per-access byte offsets to keep
+//! the cache effective.  A large service file with 200 accesses to
+//! `$model->` should resolve the variable type ONCE, not 200 times.
+//!
+//! Expression-level narrowing (ternary `instanceof`, inline `&&`
+//! chains) can change a variable's type at a specific byte offset
+//! without creating a narrowing block.  To handle this without
+//! busting the cache, we use a two-phase approach:
+//!
+//! 1. **Coarse resolution** (cached): resolve the subject WITHOUT
+//!    per-access discrimination.  If the member exists on the
+//!    resolved classes, we're done — no diagnostic, no re-resolution.
+//!
+//! 2. **Narrowing fallback** (uncached, rare): when the member is
+//!    NOT found on the coarsely-resolved classes AND the subject is
+//!    a bare variable, re-resolve with the exact cursor position.
+//!    If the re-resolution finds the member (because ternary/`&&`
+//!    narrowing refined the type), suppress the diagnostic.
+//!
+//! This makes the common case (member exists) O(1) per unique
+//! subject+scope, while preserving correctness for the rare case
+//! where expression-level narrowing matters.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -56,7 +81,9 @@ use crate::parser::with_parse_cache;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
-use crate::completion::resolver::{ResolutionCtx, SubjectOutcome, resolve_subject_outcome};
+use crate::completion::resolver::{
+    ResolutionCtx, SubjectOutcome, resolve_subject_outcome, with_chain_resolution_cache,
+};
 use crate::symbol_map::SymbolKind;
 use crate::types::{AccessKind, ClassInfo, ClassLikeKind};
 use crate::virtual_members::resolve_class_fully_cached;
@@ -123,6 +150,13 @@ enum ScopeKey {
 /// `var_def_offset` distinguishes accesses that fall under different
 /// definitions of the same variable.  Without this, the cache would
 /// return the parameter type for accesses after a reassignment.
+///
+/// The cache key intentionally omits per-access byte offsets.
+/// Expression-level narrowing (ternary branches, inline `&&` chains)
+/// is handled by a re-resolution fallback: when a member is not found
+/// on the coarsely-cached type, the subject is re-resolved at the
+/// exact cursor position to give narrowing a second chance.  See the
+/// module-level documentation for details.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct SubjectCacheKey {
     subject_text: String,
@@ -147,15 +181,6 @@ struct SubjectCacheKey {
     /// creating a block scope, so accesses before and after the
     /// assert must get separate cache entries.
     assert_offset: u32,
-    /// The byte offset of the member-access span for variable subjects
-    /// (excluding `$this`), or `0` for non-variable subjects.  This
-    /// ensures that accesses inside expression-level narrowing contexts
-    /// (ternary branches, inline `&&` chains) get independent cache
-    /// entries even when they share the same block-level
-    /// `narrowing_offset`.  Without this, a prior access outside the
-    /// ternary caches the un-narrowed type and the ternary-narrowed
-    /// access reuses that stale result.
-    access_offset: u32,
 }
 
 /// Per-pass cache mapping subject keys to their resolution outcomes.
@@ -239,6 +264,9 @@ impl Backend {
         // will reuse the same parsed AST instead of re-parsing the
         // entire file from scratch.
         let _parse_guard = with_parse_cache(content);
+
+        // ── Chain resolution cache for this diagnostic pass ─────────────
+        let _chain_guard = with_chain_resolution_cache();
 
         // ── Subject resolution cache for this diagnostic pass ───────────
         let mut subject_cache: SubjectCache = HashMap::new();
@@ -357,28 +385,14 @@ impl Backend {
                 0
             };
 
-            // Use the access span offset as a cache discriminator so
-            // that expression-level narrowing (ternary branches,
-            // inline && chains) produces independent entries.
-            // Block-level narrowing (if/else) is already covered by
-            // `narrowing_offset`, but ternary expressions are
-            // standalone statements — they don't create a narrowing
-            // block.  Using the access offset ensures each member
-            // access is resolved at its own cursor position, which is
-            // what the unified resolution pipeline expects.
-            //
-            // This only applies to local variables ($var), NOT to
-            // $this->prop chains.  Property accesses on $this are
-            // already discriminated by narrowing_offset and
-            // assert_offset (which cover if/else and assert()
-            // narrowing).  Adding per-access offsets for $this->prop
-            // would bust the cache on every distinct source location,
-            // turning O(1) cached lookups into O(N) full resolutions
-            // and causing pathological slowdowns on large files.
-            let needs_access_offset = subject_text.starts_with('$')
+            // Whether this subject is a bare variable that could
+            // benefit from expression-level narrowing re-resolution.
+            // $this and $this->prop chains are excluded because their
+            // type is already fully determined by block-level
+            // narrowing (if/else) and assert narrowing.
+            let is_narrowable_variable = subject_text.starts_with('$')
                 && subject_text != "$this"
                 && !subject_text.starts_with("$this->");
-            let access_offset = if needs_access_offset { span.start } else { 0 };
 
             let cache_key = SubjectCacheKey {
                 subject_text: subject_text.clone(),
@@ -387,7 +401,6 @@ impl Backend {
                 var_def_offset,
                 narrowing_offset,
                 assert_offset,
-                access_offset,
             };
 
             let outcome = subject_cache
@@ -510,6 +523,10 @@ impl Backend {
                 }
 
                 SubjectOutcome::Resolved(ref base_classes) => {
+                    // Capture diagnostic count before the coarse member
+                    // check so we can roll back if re-resolution succeeds.
+                    let diag_count_before = out.len();
+
                     let result = self.check_member_on_resolved_classes(
                         base_classes,
                         member_name,
@@ -523,6 +540,56 @@ impl Backend {
                         span.end,
                         out,
                     );
+
+                    // ── Narrowing re-resolution fallback ────────────
+                    // When the member was not found on the coarsely-cached
+                    // type AND the subject is a bare variable, re-resolve
+                    // at the exact cursor position.  Expression-level
+                    // narrowing (ternary instanceof, inline && chains)
+                    // may refine the type so the member becomes visible.
+                    //
+                    // This is the rare path — most accesses find the
+                    // member on the coarse type and never reach here.
+                    let result = if result != MemberCheckResult::Ok && is_narrowable_variable {
+                        let rctx = ResolutionCtx {
+                            current_class,
+                            all_classes: &local_classes,
+                            content,
+                            cursor_offset: span.start,
+                            class_loader: &class_loader,
+                            resolved_class_cache: Some(resolved_cache),
+                            function_loader: Some(&function_loader),
+                        };
+                        let fresh = resolve_subject_outcome(subject_text, access_kind, &rctx);
+                        if let SubjectOutcome::Resolved(ref fresh_classes) = fresh {
+                            // Remove the diagnostic(s) emitted by the
+                            // coarse check so the re-check can replace
+                            // them with a fresh verdict.
+                            out.truncate(diag_count_before);
+                            // Re-check with the narrowed classes.
+                            self.check_member_on_resolved_classes(
+                                fresh_classes,
+                                member_name,
+                                is_static,
+                                is_method_call,
+                                is_docblock_ref,
+                                &class_loader,
+                                resolved_cache,
+                                content,
+                                span.start,
+                                span.end,
+                                out,
+                            )
+                        } else {
+                            // Re-resolution changed the outcome category
+                            // (e.g. became Untyped).  Keep the original
+                            // diagnostic from the coarse check.
+                            result
+                        }
+                    } else {
+                        result
+                    };
+
                     // Only break the chain when the member is truly
                     // missing (no magic method fallback).  When
                     // `__call`/`__callStatic` exists, the diagnostic

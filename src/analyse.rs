@@ -267,6 +267,10 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         let _parse_guard = with_parse_cache(content);
                         let _cache_guard =
                             with_active_resolved_class_cache(&backend.resolved_class_cache);
+                        let _chain_guard =
+                            crate::completion::resolver::with_chain_resolution_cache();
+                        let _callable_guard =
+                            crate::completion::call_resolution::with_callable_target_cache();
 
                         let mut raw = Vec::new();
 
@@ -368,16 +372,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         #[cfg(not(debug_assertions))]
                         {
                             backend.collect_fast_diagnostics(uri, content, &mut raw);
-                            backend.collect_unknown_class_diagnostics(uri, content, &mut raw);
-                            backend.collect_unknown_member_diagnostics(uri, content, &mut raw);
-                            backend.collect_unknown_function_diagnostics(uri, content, &mut raw);
-                            backend.collect_argument_count_diagnostics(uri, content, &mut raw);
-                            backend.collect_type_error_diagnostics(uri, content, &mut raw);
-                            backend
-                                .collect_implementation_error_diagnostics(uri, content, &mut raw);
-                            backend.collect_deprecated_diagnostics(uri, content, &mut raw);
-                            backend.collect_undefined_variable_diagnostics(uri, content, &mut raw);
-                            backend.collect_invalid_class_kind_diagnostics(uri, content, &mut raw);
+                            backend.collect_slow_diagnostics(uri, content, &mut raw);
                         }
 
                         let mut filtered: Vec<FileDiagnostic> = raw

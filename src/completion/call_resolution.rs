@@ -1,4 +1,16 @@
-/// Call expression and callable target resolution.
+//! Call expression and callable target resolution.
+//!
+//! ## Callable target cache
+//!
+//! During diagnostic passes, `resolve_instance_method_callable` is
+//! called for every call site in the file.  Many different chain
+//! expressions resolve to the same (class, method) pair — e.g.
+//! `$q->where(...)`, `$query->where(...)`, and
+//! `Product::query()->where(...)` all end up looking for `where` on
+//! `Builder<Product>`.  The per-file callable-target cache
+//! (`CALLABLE_TARGET_CACHE`) stores `Option<ResolvedCallableTarget>`
+//! keyed by `(class_fqn, method_name_lower)` so these redundant
+//! resolutions are free after the first hit.
 ///
 /// This module contains the logic for resolving call expressions (method
 /// calls, static calls, function calls, constructor calls) to their
@@ -19,6 +31,7 @@
 /// - [`Backend::build_method_template_subs`]: builds a template
 ///   substitution map for method-level `@template` parameters from
 ///   pre-split call-site argument texts.
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -99,13 +112,56 @@ pub(super) fn build_var_resolver<'a>(
     }
 }
 
+// ─── Thread-local callable target cache ─────────────────────────────────────
+
+thread_local! {
+    /// When `Some`, `resolve_instance_method_callable` caches results
+    /// by `"FQN::method_lower"`.  Activated by
+    /// [`with_callable_target_cache`], cleared on guard drop.
+    static CALLABLE_TARGET_CACHE: RefCell<Option<HashMap<String, Option<ResolvedCallableTarget>>>> =
+        const { RefCell::new(None) };
+}
+
+/// RAII guard that clears the callable target cache on drop.
+pub(crate) struct CallableTargetCacheGuard {
+    owns: bool,
+}
+
+impl Drop for CallableTargetCacheGuard {
+    fn drop(&mut self) {
+        if self.owns {
+            CALLABLE_TARGET_CACHE.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
+    }
+}
+
+/// Activate the thread-local callable target cache.
+///
+/// While the returned guard is alive, `resolve_instance_method_callable`
+/// caches callable target resolutions by `"FQN::method_lower"` so
+/// that the same method on the same class is resolved at most once per
+/// diagnostic pass, regardless of how many different chain expressions
+/// lead to it.
+pub(crate) fn with_callable_target_cache() -> CallableTargetCacheGuard {
+    let already_active = CALLABLE_TARGET_CACHE.with(|cell| cell.borrow().is_some());
+    if already_active {
+        return CallableTargetCacheGuard { owns: false };
+    }
+    CALLABLE_TARGET_CACHE.with(|cell| {
+        *cell.borrow_mut() = Some(HashMap::new());
+    });
+    CallableTargetCacheGuard { owns: true }
+}
+
 impl Backend {
     /// Resolve an instance method base expression + method name to a
     /// [`ResolvedCallableTarget`].
     ///
     /// Resolves `base` to owner classes, merges each via
-    /// `resolve_class_fully`, and returns the first match for
-    /// `method_name`.
+    /// `resolve_class_fully_with_generics`, and returns the first match
+    /// for `method_name`.
     fn resolve_instance_method_callable(
         base: &SubjectExpr,
         method_name: &str,
@@ -137,34 +193,72 @@ impl Backend {
                 _ => vec![],
             };
 
+            // ── Callable target cache check ─────────────────────────
+            // When args_text is None (argument_count diagnostics),
+            // the callable target depends only on the resolved class
+            // and method name, not on the specific chain expression.
+            // Cache by "FQN::method_lower" so that `$q->where(...)`,
+            // `$query->where(...)`, and `Product::query()->where(...)`
+            // all share the result.
+            //
+            // When args_text is Some (type_error diagnostics with
+            // method-level template substitution), the result depends
+            // on the call-site arguments and cannot be cached this way.
+            let method_lower = method_name.to_ascii_lowercase();
+            let generic_arg_strings: Vec<String> =
+                generic_args.iter().map(|a| a.to_string()).collect();
+            let callable_cache_key = if args_text.is_none() {
+                let fqn = owner.fqn();
+                let key_str = if generic_arg_strings.is_empty() {
+                    format!("{}::{}", fqn, method_lower)
+                } else {
+                    format!(
+                        "{}<{}>::{}",
+                        fqn,
+                        generic_arg_strings.join(","),
+                        method_lower
+                    )
+                };
+                Some(key_str)
+            } else {
+                None
+            };
+
+            if let Some(ref key) = callable_cache_key {
+                let cached = CALLABLE_TARGET_CACHE.with(|cell| {
+                    let borrow = cell.borrow();
+                    borrow.as_ref().and_then(|map| map.get(key).cloned())
+                });
+                if let Some(result) = cached {
+                    return result;
+                }
+            }
+
             // Always use a fully-resolved class so that inherited
             // docblock types (return types, parameter types,
             // descriptions) are visible in signature help.  The
             // candidate from `resolve_target_classes` may not have
             // gone through `resolve_class_fully` (e.g. bare `new X`
             // instantiation without generics).
-            let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
+            //
+            // Use the fused resolve+substitute helper so that the
+            // result of `apply_generic_args` is cached under
+            // `(FQN, generic_args)`.  For Eloquent Builder<Model>
+            // chains where the same generic class appears at dozens
+            // of call sites, this avoids re-cloning and
+            // re-substituting hundreds of virtual members each time.
+            let effective = crate::virtual_members::resolve_class_fully_with_generics(
                 &owner,
                 rctx.class_loader,
                 rctx.resolved_class_cache,
+                &generic_arg_strings,
+                &generic_args,
             );
-
-            // Apply class-level template substitutions when generic
-            // type arguments are available (e.g. `Collection<User>`
-            // substitutes `TValue` → `User` in method params).
-            let effective = if !generic_args.is_empty() && !merged.template_params.is_empty() {
-                Arc::new(crate::inheritance::apply_generic_args(
-                    &merged,
-                    &generic_args,
-                ))
-            } else {
-                Arc::clone(&merged)
-            };
 
             if let Some(m) = effective
                 .methods
                 .iter()
-                .find(|m| m.name.eq_ignore_ascii_case(method_name))
+                .find(|m| m.name.eq_ignore_ascii_case(&method_lower))
             {
                 let mut result_method = m.clone();
 
@@ -186,24 +280,58 @@ impl Backend {
                     }
                 }
 
-                return Some(ResolvedCallableTarget {
+                let target = ResolvedCallableTarget {
                     parameters: result_method.parameters.clone(),
                     return_type: result_method.return_type.clone(),
-                });
+                };
+
+                // Store positive result in the callable target cache.
+                if let Some(ref key) = callable_cache_key {
+                    CALLABLE_TARGET_CACHE.with(|cell| {
+                        let mut borrow = cell.borrow_mut();
+                        if let Some(ref mut map) = *borrow {
+                            map.insert(key.clone(), Some(target.clone()));
+                        }
+                    });
+                }
+
+                return Some(target);
             }
 
-            // Fall back to the candidate directly — it may contain
-            // model-specific members (e.g. Eloquent scope methods
-            // injected onto Builder<Model>) that the FQN-keyed
-            // cache does not have.
+            // Fall back to __call / __callStatic — the candidate
+            // directly may contain model-specific members (e.g.
+            // Eloquent scope methods injected onto Builder<Model>)
+            // that the FQN-keyed cache does not have.
             if let Some(m) = owner
                 .methods
                 .iter()
                 .find(|m| m.name.eq_ignore_ascii_case(method_name))
             {
-                return Some(ResolvedCallableTarget {
+                let target = ResolvedCallableTarget {
                     parameters: m.parameters.clone(),
                     return_type: m.return_type.clone(),
+                };
+
+                // Store __call fallback in the callable target cache.
+                if let Some(ref key) = callable_cache_key {
+                    CALLABLE_TARGET_CACHE.with(|cell| {
+                        let mut borrow = cell.borrow_mut();
+                        if let Some(ref mut map) = *borrow {
+                            map.insert(key.clone(), Some(target.clone()));
+                        }
+                    });
+                }
+
+                return Some(target);
+            }
+
+            // Store negative result (method not found) in the cache.
+            if let Some(ref key) = callable_cache_key {
+                CALLABLE_TARGET_CACHE.with(|cell| {
+                    let mut borrow = cell.borrow_mut();
+                    if let Some(ref mut map) = *borrow {
+                        map.insert(key.clone(), None);
+                    }
                 });
             }
         }
@@ -1688,6 +1816,7 @@ fn resolve_literal_type(text: &str) -> Option<PhpType> {
     None
 }
 
+/// Like [`resolve_instance_method_callable`](Self::resolve_instance_method_callable)
 impl Backend {
     /// Extract the first argument from a comma-separated argument text,
     /// respecting nested parentheses, brackets, and braces.

@@ -1,34 +1,5 @@
 # PHPantom — Bug Fixes
 
-## B1 — Pathological `unknown_member` performance on large service files
-
-`collect_unknown_member_diagnostics` takes 194+ seconds on
-`src/core/Purchase/Services/PurchaseFileService.php`, causing the
-analyze command to time out (debug build) or hang indefinitely
-(release build). The next-slowest collectors on the same file never
-even get to run.
-
-Other files show the same pattern at smaller scale: `unknown_member`
-dominates the breakdown on every slow file (often 50–70% of the total
-time). The worst offenders are large service/repository classes that
-chain many method calls on Eloquent models, payment gateways, and
-similar deeply-inherited types.
-
-Likely causes to investigate:
-
-- Repeated full class merges (inheritance + virtual members) for the
-  same type within a single file — the per-file resolved-class cache
-  may not be covering all code paths in the unknown-member walker.
-- Expensive subject resolution (long `$this->foo()->bar()->baz()`
-  chains) re-resolved for every member access instead of being
-  cached across diagnostic collectors that share the same file.
-- Virtual member synthesis (Laravel model provider) running
-  repeatedly for the same model class.
-
-Reproducer: run `phpantom_lsp analyze --project-root <project>`
-on any Laravel project with large service classes and observe the
-`unknown_member` timing in the slow-file breakdown.
-
 ## B2 — Variable resolution pipeline produces short names instead of FQN
 
 The variable resolution pipeline (`resolve_rhs_expression`,
@@ -278,5 +249,3 @@ function test(): void {
     $store->products()->filter()->add($product);
 }
 ```
-
-
