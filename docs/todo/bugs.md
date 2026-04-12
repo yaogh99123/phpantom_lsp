@@ -276,14 +276,16 @@ continues to show the stale docblock content instead of the updated
 version. The parsed `ClassInfo` cached in `ast_map` and/or
 `fqn_index` is not invalidated when the dependency file changes.
 
-Six integration tests document the failure:
+**Tests:** Six integration tests covering this bug were removed
+because they were committed in a failing state. The fix must
+include new passing tests for at least these scenarios:
 
-- `hover_cross_file_property_docblock_cache_invalidation_psr4_then_edit`
-- `hover_cross_file_property_docblock_cache_invalidation_dependent_class`
-- `hover_cross_file_property_docblock_cache_invalidation_via_var_annotation`
-- `hover_cross_file_property_docblock_cache_invalidation_dependent_class_with_model`
-- `hover_cross_file_property_docblock_cache_invalidation_via_method_chain`
-- `hover_cross_file_property_docblock_cache_warm_then_invalidate`
+- PSR-4 lazy-loaded class, then docblock edited (`did_change`)
+- Dependent child class inheriting a changed `@property`
+- `@var`-annotated variable accessing a cross-file property
+- Method-chain access (`$this->getJob()->class_name`)
+- Cache warm → edit → hover (eviction path)
+- Child class with Model parent (Laravel `@property` interaction)
 
 **Where to fix:** The cache layer that stores cross-file
 `ClassInfo` results must be invalidated (or re-parsed) when
